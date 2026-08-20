@@ -24,6 +24,50 @@ export const PRODUCTION_CONTRACT = Object.freeze({
   downloadsService: 'cloudflare-download-site',
 });
 
+// Wrangler 4.124.0 loads these files, in this order, for `--env production`.
+// They are gitignored here, so Git cleanliness alone cannot make them safe.
+export const WRANGLER_PRODUCTION_DOTENV_FILES = Object.freeze([
+  '.env',
+  '.env.local',
+  '.env.production',
+  '.env.production.local',
+]);
+
+export const FORBIDDEN_LOCAL_CREDENTIAL_FILES = Object.freeze([
+  ...WRANGLER_PRODUCTION_DOTENV_FILES,
+  '.dev.vars',
+  '.dev.vars.production',
+]);
+
+// These variables are read by the pinned Wrangler release and can redirect the
+// control plane, select a proxy, or change audit log/machine-output handling.
+// Production accepts only the scoped credential names checked below.
+export const FORBIDDEN_PRODUCTION_ENVIRONMENT_VARIABLES = Object.freeze([
+  'CLOUDFLARE_API_BASE_URL',
+  'CF_API_BASE_URL',
+  'CLOUDFLARE_BASE_URL',
+  'WRANGLER_API_ENVIRONMENT',
+  'CLOUDFLARE_COMPLIANCE_REGION',
+  'CLOUDFLARE_ENV',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'WRANGLER_LOG',
+  'WRANGLER_LOG_PATH',
+  'WRANGLER_LOG_SANITIZE',
+  'WRANGLER_OUTPUT_FILE_DIRECTORY',
+  'WRANGLER_OUTPUT_FILE_PATH',
+  'CF_API_TOKEN',
+  'CF_ACCOUNT_ID',
+  'CLOUDFLARE_API_KEY',
+  'CF_API_KEY',
+  'CLOUDFLARE_EMAIL',
+  'CF_EMAIL',
+]);
+
 export function resolveExecutionMode(args) {
   if (args.length === 0) return 'deploy';
   if (args.length === 1 && args[0] === '--dry-run') return 'dry-run';
@@ -152,34 +196,30 @@ export async function assertProductionRuntimeContract() {
 export async function main(args = process.argv.slice(2), env = process.env) {
   const mode = resolveExecutionMode(args);
   assertNodeVersion();
-  await assertNoLocalCredentialFiles();
+  await assertProductionInvocationInputs(env);
   const config = await readFile(WRANGLER_CONFIG_PATH, 'utf8');
   assertProductionConfig(config);
   await assertProductionRuntimeContract();
-  process.stdout.write(
-    '[production preflight] PASS: production is fixture/non-live for Docs and Pricing; download forwarding uses the production service-binding gate.\n',
-  );
 
   if (mode === 'deploy') assertCredentialPrerequisites(env);
-  const commit = mode === 'deploy' ? await assertCleanCommit() : null;
-  await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'validate']);
+  const commit = await assertCleanCommit();
+  process.stdout.write(
+    `[production preflight] PASS: clean commit ${commit}; production is fixture/non-live for Docs and Pricing; download forwarding uses the production service-binding gate.\n`,
+  );
+
+  await validateProductionCommit(commit, env);
+  process.stdout.write(
+    `[production validation] PASS: clean commit ${commit}; HEAD and tracked/untracked worktree are unchanged.\n`,
+  );
 
   if (mode === 'dry-run') {
     process.stdout.write(
-      '[production preflight] DRY RUN ONLY: validation completed; no Cloudflare upload or deployment occurred.\n',
+      `[production preflight] DRY RUN ONLY: clean commit ${commit} validated; no Cloudflare upload or deployment occurred.\n`,
     );
     return;
   }
 
-  assert.equal(
-    await assertCleanCommit(),
-    commit,
-    'worktree or HEAD changed after validation; refusing deployment',
-  );
-  process.stdout.write(
-    `[production deploy] deploying clean commit ${commit} with fixed --env production --strict.\n`,
-  );
-  await run(process.execPath, productionDeployArgs(commit), env);
+  await runProductionDeploy(commit, env);
 }
 
 function parseWranglerSections(source) {
@@ -280,11 +320,12 @@ function assertNodeVersion() {
   assert.ok(major >= 22, `Node >=22 is required; found ${process.versions.node}`);
 }
 
-async function assertNoLocalCredentialFiles() {
-  const forbidden = ['.env', '.env.production', '.dev.vars', '.dev.vars.production'];
-  for (const name of forbidden) {
+export async function assertNoLocalCredentialFiles(
+  repositoryRoot = REPOSITORY_ROOT,
+) {
+  for (const name of FORBIDDEN_LOCAL_CREDENTIAL_FILES) {
     try {
-      await access(resolve(REPOSITORY_ROOT, name));
+      await access(resolve(repositoryRoot, name));
     } catch (error) {
       if (error?.code === 'ENOENT') continue;
       throw error;
@@ -293,6 +334,25 @@ async function assertNoLocalCredentialFiles() {
       `${name} is present. Production credentials must come from the current shell or an external secret manager, not repository files.`,
     );
   }
+}
+
+export function assertNoUnsafeProductionEnvironment(env) {
+  const present = FORBIDDEN_PRODUCTION_ENVIRONMENT_VARIABLES.filter((name) =>
+    Object.hasOwn(env, name),
+  );
+  assert.deepEqual(
+    present,
+    [],
+    `production environment contains forbidden Wrangler controls: ${present.join(', ')}`,
+  );
+}
+
+export async function assertProductionInvocationInputs(
+  env,
+  repositoryRoot = REPOSITORY_ROOT,
+) {
+  assertNoUnsafeProductionEnvironment(env);
+  await assertNoLocalCredentialFiles(repositoryRoot);
 }
 
 export function assertCredentialPrerequisites(env) {
@@ -306,37 +366,142 @@ export function assertCredentialPrerequisites(env) {
       env.CLOUDFLARE_API_TOKEN.trim().length > 0,
     'CLOUDFLARE_API_TOKEN is required for production deployment',
   );
+  for (const name of [
+    'CF_API_TOKEN',
+    'CF_ACCOUNT_ID',
+    'CLOUDFLARE_API_KEY',
+    'CF_API_KEY',
+    'CLOUDFLARE_EMAIL',
+    'CF_EMAIL',
+  ]) {
+    assert.equal(env[name], undefined, `legacy credential ${name} is not allowed`);
+  }
+}
+
+export async function assertCleanCommit(repositoryRoot = REPOSITORY_ROOT) {
+  const commitBeforeStatus = (
+    await capture(
+      'git',
+      ['rev-parse', '--verify', 'HEAD^{commit}'],
+      repositoryRoot,
+    )
+  ).trim();
+  assert.match(
+    commitBeforeStatus,
+    /^[0-9a-f]{40}$/,
+    'unable to resolve a full deployment commit',
+  );
+
+  const status = await capture(
+    'git',
+    ['status', '--porcelain=v1', '--untracked-files=all'],
+    repositoryRoot,
+  );
+  assert.equal(status.trim(), '', 'production deployment requires a clean worktree');
+  const commitAfterStatus = (
+    await capture(
+      'git',
+      ['rev-parse', '--verify', 'HEAD^{commit}'],
+      repositoryRoot,
+    )
+  ).trim();
   assert.equal(
-    env.CLOUDFLARE_API_KEY,
-    undefined,
-    'legacy CLOUDFLARE_API_KEY authentication is not allowed',
+    commitAfterStatus,
+    commitBeforeStatus,
+    'HEAD changed while verifying the production snapshot',
+  );
+  return commitAfterStatus;
+}
+
+export async function assertSameCleanCommit(
+  expectedCommit,
+  repositoryRoot = REPOSITORY_ROOT,
+  resolveCleanCommit = assertCleanCommit,
+) {
+  assert.match(expectedCommit, /^[0-9a-f]{40}$/, 'expected a full Git commit');
+  const actualCommit = await resolveCleanCommit(repositoryRoot);
+  assert.equal(
+    actualCommit,
+    expectedCommit,
+    'worktree or HEAD changed after validation; refusing deployment',
+  );
+  return actualCommit;
+}
+
+export async function validateProductionCommit(
+  commit,
+  env,
+  {
+    repositoryRoot = REPOSITORY_ROOT,
+    runCommand = run,
+    resolveCleanCommit = assertCleanCommit,
+  } = {},
+) {
+  // Recheck immediately before spawning validation: ignored dotenv files are
+  // outside Git's clean-worktree proof and are loaded by Wrangler itself.
+  await assertProductionInvocationInputs(env, repositoryRoot);
+  await runCommand(
+    process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    ['run', 'validate'],
+    env,
+    null,
+    repositoryRoot,
+  );
+  await assertSameCleanCommit(commit, repositoryRoot, resolveCleanCommit);
+  await assertProductionInvocationInputs(env, repositoryRoot);
+}
+
+export async function runProductionDeploy(
+  commit,
+  env,
+  {
+    repositoryRoot = REPOSITORY_ROOT,
+    runCommand = run,
+    resolveCleanCommit = assertCleanCommit,
+  } = {},
+) {
+  assertCredentialPrerequisites(env);
+  await assertProductionInvocationInputs(env, repositoryRoot);
+  await assertSameCleanCommit(commit, repositoryRoot, resolveCleanCommit);
+  // This final check is intentionally adjacent to the real Wrangler spawn. It
+  // catches ignored dotenv or environment drift after validation/provenance.
+  await assertProductionInvocationInputs(env, repositoryRoot);
+  process.stdout.write(
+    `[production deploy] deploying clean commit ${commit} with fixed --env production --strict.\n`,
+  );
+  await runCommand(
+    process.execPath,
+    productionDeployArgs(commit),
+    env,
+    null,
+    repositoryRoot,
   );
 }
 
-async function assertCleanCommit() {
-  const status = await capture('git', [
-    'status',
-    '--porcelain=v1',
-    '--untracked-files=all',
-  ]);
-  assert.equal(status.trim(), '', 'production deployment requires a clean worktree');
-  const commit = (await capture('git', ['rev-parse', 'HEAD'])).trim();
-  assert.match(commit, /^[0-9a-f]{40}$/, 'unable to resolve deployment commit');
-  return commit;
-}
-
-async function capture(command, args) {
+async function capture(command, args, repositoryRoot = REPOSITORY_ROOT) {
   let output = '';
-  await run(command, args, process.env, (chunk) => {
-    output += chunk;
-  });
+  await run(
+    command,
+    args,
+    process.env,
+    (chunk) => {
+      output += chunk;
+    },
+    repositoryRoot,
+  );
   return output;
 }
 
-async function run(command, args, env = process.env, onStdout = null) {
+async function run(
+  command,
+  args,
+  env = process.env,
+  onStdout = null,
+  repositoryRoot = REPOSITORY_ROOT,
+) {
   await new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
-      cwd: REPOSITORY_ROOT,
+      cwd: repositoryRoot,
       env,
       shell: false,
       stdio: onStdout ? ['ignore', 'pipe', 'inherit'] : 'inherit',

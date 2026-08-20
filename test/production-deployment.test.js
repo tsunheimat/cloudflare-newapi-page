@@ -1,17 +1,62 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 
 import {
+  FORBIDDEN_LOCAL_CREDENTIAL_FILES,
+  FORBIDDEN_PRODUCTION_ENVIRONMENT_VARIABLES,
+  WRANGLER_PRODUCTION_DOTENV_FILES,
+  assertCleanCommit,
   assertProductionConfig,
   assertProductionRuntimeContract,
   assertCredentialPrerequisites,
+  assertNoLocalCredentialFiles,
+  assertNoUnsafeProductionEnvironment,
   productionDeployArgs,
   resolveExecutionMode,
+  runProductionDeploy,
+  validateProductionCommit,
 } from '../scripts/production-deploy.mjs';
 
 const CONFIG_URL = new URL('../wrangler.toml', import.meta.url);
 const PACKAGE_URL = new URL('../package.json', import.meta.url);
+const execFileAsync = promisify(execFile);
+
+async function createTemporaryRepository(t) {
+  const repositoryRoot = await mkdtemp(
+    join(tmpdir(), 'cloudflare-newapi-page-production-test-'),
+  );
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  await execFileAsync('git', ['init', '--quiet'], { cwd: repositoryRoot });
+  await writeFile(join(repositoryRoot, 'fixture.txt'), 'reviewed\n');
+  await execFileAsync('git', ['add', 'fixture.txt'], { cwd: repositoryRoot });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.name=Production contract test',
+      '-c',
+      'user.email=production-contract@example.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '--quiet',
+      '-m',
+      'fixture',
+    ],
+    { cwd: repositoryRoot },
+  );
+  return repositoryRoot;
+}
+
+const syntheticDeployEnvironment = () => ({
+  CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32),
+  CLOUDFLARE_API_TOKEN: 'synthetic-token-value',
+});
 
 test('production preflight accepts the committed deployment contract', async () => {
   const source = await readFile(CONFIG_URL, 'utf8');
@@ -101,6 +146,148 @@ test('production deploy requires scoped token authentication and rejects legacy 
       CLOUDFLARE_API_TOKEN: 'scoped-token-for-test',
     }),
   );
+});
+
+test('production input gate covers every dotenv file loaded by pinned Wrangler', async (t) => {
+  const packageJson = JSON.parse(await readFile(PACKAGE_URL, 'utf8'));
+  assert.equal(packageJson.devDependencies.wrangler, '4.124.0');
+  assert.deepEqual(WRANGLER_PRODUCTION_DOTENV_FILES, [
+    '.env',
+    '.env.local',
+    '.env.production',
+    '.env.production.local',
+  ]);
+
+  const repositoryRoot = await mkdtemp(
+    join(tmpdir(), 'cloudflare-newapi-page-dotenv-test-'),
+  );
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+
+  for (const name of FORBIDDEN_LOCAL_CREDENTIAL_FILES) {
+    const path = join(repositoryRoot, name);
+    await writeFile(path, 'SYNTHETIC_VALUE=not-a-credential\n');
+    await assert.rejects(assertNoLocalCredentialFiles(repositoryRoot), {
+      message: new RegExp(name.replaceAll('.', '\\.')),
+    });
+    await rm(path);
+  }
+  await assert.doesNotReject(assertNoLocalCredentialFiles(repositoryRoot));
+});
+
+test('production input gate rejects pinned Wrangler control-plane, proxy, log, output, and legacy auth variables', () => {
+  assert.ok(FORBIDDEN_PRODUCTION_ENVIRONMENT_VARIABLES.length > 0);
+  for (const name of FORBIDDEN_PRODUCTION_ENVIRONMENT_VARIABLES) {
+    assert.throws(
+      () => assertNoUnsafeProductionEnvironment({ [name]: 'synthetic-value' }),
+      new RegExp(name),
+    );
+  }
+  assert.doesNotThrow(() =>
+    assertNoUnsafeProductionEnvironment(syntheticDeployEnvironment()),
+  );
+});
+
+test('clean snapshot gate rejects tracked and untracked validation output', async (t) => {
+  const repositoryRoot = await createTemporaryRepository(t);
+  const commit = await assertCleanCommit(repositoryRoot);
+  assert.match(commit, /^[0-9a-f]{40}$/);
+
+  await assert.rejects(
+    validateProductionCommit(commit, {}, {
+      repositoryRoot,
+      async runCommand() {
+        await writeFile(join(repositoryRoot, 'untracked.txt'), 'validation drift\n');
+      },
+    }),
+    /clean worktree/,
+  );
+  await rm(join(repositoryRoot, 'untracked.txt'));
+
+  await assert.rejects(
+    validateProductionCommit(commit, {}, {
+      repositoryRoot,
+      async runCommand() {
+        await writeFile(
+          join(repositoryRoot, 'fixture.txt'),
+          'tracked validation drift\n',
+        );
+      },
+    }),
+    /clean worktree/,
+  );
+});
+
+test('validation gate rejects a different clean HEAD after the validation child exits', async (t) => {
+  const repositoryRoot = await createTemporaryRepository(t);
+  const commit = await assertCleanCommit(repositoryRoot);
+
+  await assert.rejects(
+    validateProductionCommit(commit, {}, {
+      repositoryRoot,
+      async runCommand() {
+        await writeFile(join(repositoryRoot, 'second.txt'), 'new clean snapshot\n');
+        await execFileAsync('git', ['add', 'second.txt'], { cwd: repositoryRoot });
+        await execFileAsync(
+          'git',
+          [
+            '-c',
+            'user.name=Production contract test',
+            '-c',
+            'user.email=production-contract@example.invalid',
+            '-c',
+            'commit.gpgsign=false',
+            'commit',
+            '--quiet',
+            '-m',
+            'drift',
+          ],
+          { cwd: repositoryRoot },
+        );
+      },
+    }),
+    /changed after validation/,
+  );
+});
+
+test('real deploy rechecks ignored inputs immediately before the Wrangler child spawn', async (t) => {
+  const repositoryRoot = await createTemporaryRepository(t);
+  const commit = await assertCleanCommit(repositoryRoot);
+  let spawned = false;
+
+  await assert.rejects(
+    runProductionDeploy(commit, syntheticDeployEnvironment(), {
+      repositoryRoot,
+      async resolveCleanCommit() {
+        await writeFile(
+          join(repositoryRoot, '.env.production.local'),
+          'SYNTHETIC_VALUE=not-a-credential\n',
+        );
+        return commit;
+      },
+      async runCommand() {
+        spawned = true;
+      },
+    }),
+    /\.env\.production\.local is present/,
+  );
+  assert.equal(spawned, false);
+
+  await rm(join(repositoryRoot, '.env.production.local'));
+  const mutatedEnvironment = syntheticDeployEnvironment();
+  await assert.rejects(
+    runProductionDeploy(commit, mutatedEnvironment, {
+      repositoryRoot,
+      async resolveCleanCommit() {
+        mutatedEnvironment.WRANGLER_OUTPUT_FILE_PATH = 'synthetic-output.json';
+        return commit;
+      },
+      async runCommand() {
+        spawned = true;
+      },
+    }),
+    /WRANGLER_OUTPUT_FILE_PATH/,
+  );
+  assert.equal(spawned, false);
 });
 
 test('package exposes one guarded production deploy entrypoint and keeps build lanes dry-run only', async () => {

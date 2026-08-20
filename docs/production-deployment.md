@@ -15,6 +15,15 @@ Production entrypoint 要求 `CLOUDFLARE_ACCOUNT_ID` 与 `CLOUDFLARE_API_TOKEN` 
 - [Wrangler system environment variables](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)
 - [External CI/CD authentication](https://developers.cloudflare.com/workers/ci-cd/external-cicd/gitlab-cicd/)
 
+本 repo 锁定的 Wrangler 4.124.0 在 `--env production` 下会自动依序加载 `.env`、`.env.local`、`.env.production` 与 `.env.production.local`。这些文件都被 Git 忽略，clean worktree 不能证明它们不存在；production entrypoint 会逐一拒绝，并继续拒绝 `.dev.vars` 与 `.dev.vars.production`。测试只在 OS temporary directory 建立 synthetic non-credential files，不会把 credential 或 dotenv 写进 repository。
+
+Entrypoint 也会 fail closed 拒绝下列会改变 pinned Wrangler 行为的 process environment；若 operator 的普通 shell 预设了这些变量，必须先在受控环境中清除，不能靠它们改向或旁路 production：
+
+- control plane/environment：`CLOUDFLARE_API_BASE_URL`、`CF_API_BASE_URL`、`CLOUDFLARE_BASE_URL`、`WRANGLER_API_ENVIRONMENT`、`CLOUDFLARE_COMPLIANCE_REGION`、`CLOUDFLARE_ENV`；
+- proxy：`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及其小写形式；
+- log/output：`WRANGLER_LOG`、`WRANGLER_LOG_PATH`、`WRANGLER_LOG_SANITIZE`、`WRANGLER_OUTPUT_FILE_DIRECTORY`、`WRANGLER_OUTPUT_FILE_PATH`；
+- deprecated/global credential aliases：`CF_API_TOKEN`、`CF_ACCOUNT_ID`、`CLOUDFLARE_API_KEY`、`CF_API_KEY`、`CLOUDFLARE_EMAIL`、`CF_EMAIL`。
+
 资源还必须满足：
 
 1. `CLOUDFLARE_ACCOUNT_ID` 指向准备部署 caller Worker 的 account，且该 account 已有可用的 `workers.dev` subdomain。
@@ -33,10 +42,11 @@ npm ci
 npm run deploy:production -- --dry-run
 ```
 
-该命令只允许 `--dry-run` 这个可选参数。它会检查 production config、fixture/non-live runtime metadata、download production gate，并运行完整 tests 与 default/staging/production Wrangler dry-run。成功结尾必须包含：
+该命令只允许 `--dry-run` 这个可选参数。它会在 validation 前取得 clean full commit，检查 production config、fixture/non-live runtime metadata、download production gate，并运行完整 tests 与 default/staging/production Wrangler dry-run。Validation 后会再次要求同一 HEAD 与 clean tracked/untracked worktree；成功结尾必须包含同一个 40 位 commit：
 
 ```text
-DRY RUN ONLY: validation completed; no Cloudflare upload or deployment occurred.
+[production validation] PASS: clean commit <40_HEX_COMMIT>; HEAD and tracked/untracked worktree are unchanged.
+[production preflight] DRY RUN ONLY: clean commit <40_HEX_COMMIT> validated; no Cloudflare upload or deployment occurred.
 ```
 
 这不是 actual deployment evidence。
@@ -63,7 +73,7 @@ export CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN
 npm run deploy:production
 ```
 
-Entrypoint 会再次要求 clean Git worktree，重新运行完整 validation，然后固定调用本地锁定的 Wrangler：
+Entrypoint 会在 validation 前锁定 clean full commit，validation 后重验同一 HEAD 与 clean tracked/untracked worktree；在真正建立 Wrangler child process 前，还会再次检查同一 commit、所有 ignored dotenv 路径与上述 process environment。任一 dirty file、untracked file、HEAD drift 或隐藏输入出现都会停止。全部通过后才固定调用本地锁定的 Wrangler：
 
 ```text
 wrangler deploy --config <repo>/wrangler.toml --env production --strict

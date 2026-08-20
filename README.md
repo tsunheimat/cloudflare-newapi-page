@@ -46,7 +46,7 @@ npm run build:production
 npm run deploy:production -- --dry-run
 ```
 
-最后一条是 production 部署入口的本地 preflight 模式：它验证 production config、fixture/non-live runtime contract，再执行完整 `validate`；输出 `DRY RUN ONLY` 后退出，不上传任何 Worker。
+最后一条是 production 部署入口的本地 preflight 模式：它先锁定 clean full commit，验证 production config、fixture/non-live runtime contract，再执行完整 `validate`，最后重验同一 HEAD 与 clean tracked/untracked worktree；PASS 与 `DRY RUN ONLY` 输出都会包含该 40 位 commit，不上传任何 Worker。
 
 ## Pricing 产品语义
 
@@ -119,13 +119,14 @@ Production 只有一个 repository-owned 部署入口：
 npm run deploy:production
 ```
 
-脚本不接受 environment/config override，固定执行 `wrangler deploy --env production --strict`。执行前会要求 Node 22+、clean Git commit、当前 shell 中的 `CLOUDFLARE_ACCOUNT_ID` 与 `CLOUDFLARE_API_TOKEN`，并验证：
+脚本不接受 environment/config override，固定执行 `wrangler deploy --env production --strict`。执行前会要求 Node 22+、clean full Git commit、当前 shell 中的 `CLOUDFLARE_ACCOUNT_ID` 与 `CLOUDFLARE_API_TOKEN`，拒绝 pinned Wrangler 会读取的 ignored production dotenv、control-plane/proxy/log/output overrides 与 legacy credential aliases，并验证：
 
 - default 仍是 `disabled`；staging contract 未被破坏；
 - production 必须是 `CONTENT_ADAPTER=fixture`、`DOWNLOADS_INTEGRATION=production-service-binding`；
 - production 必须且只能有 `DOWNLOADS_SERVICE -> cloudflare-download-site`；
 - Docs/Pricing runtime metadata 必须是 `source=fixture`、`fixture=true`、`live=false`，价格上下文继续锁定 `default/default`；
-- 完整 tests 与 default/staging/production dry-run 全部通过。
+- 完整 tests 与 default/staging/production dry-run 全部通过，且 validation 后仍是同一 HEAD 与 clean tracked/untracked worktree；
+- 真正 spawn Wrangler 前再次重验 commit、worktree、ignored dotenv 与 process environment。
 
 Credential 最小基线、same-account/deployed-target 前置条件、部署前版本记录、production verification 与 rollback 命令见 [production-deployment.md](docs/production-deployment.md)。该入口只部署本 repo 的调用方 Worker，不修改 sibling source 或直接写 R2；但部署后 `/admin/*` POST 会经 binding 原样作用于 downstream production state，必须由执行者自行控制访问与操作。此仓库没有保存 credential，也不得使用 local preflight/dry-run 冒充实际部署。
 
