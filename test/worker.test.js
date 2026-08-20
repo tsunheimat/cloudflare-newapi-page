@@ -8,6 +8,7 @@ const fetchWorker = (path, env = {}, init = undefined) =>
 
 const fixtureEnv = {
   CONTENT_ADAPTER: 'fixture',
+  DOWNLOADS_INTEGRATION: 'disabled',
   ASSETS: {
     fetch: async (request) =>
       new Response(`asset:${new URL(request.url).pathname}`, {
@@ -26,17 +27,20 @@ test('health reports phase and explicit non-live boundaries', async () => {
   const response = await fetchWorker('/api/health', fixtureEnv);
   const body = await response.json();
   assert.equal(response.status, 200);
-  assert.equal(body.phase, 1);
+  assert.equal(body.phase, '2A');
   assert.equal(body.live_newapi, false);
   assert.deepEqual(body.pricing_context, {
     user_group: 'default',
     selected_group: 'default',
   });
   assert.equal(body.downloads.configured, false);
+  assert.equal(body.downloads.enabled, false);
+  assert.equal(body.downloads.binding_present, false);
   assert.equal(body.downloads.bound, false);
+  assert.equal(body.downloads.active, false);
   assert.equal(body.downloads.healthy, null);
   assert.equal(body.downloads.live, false);
-  assert.equal(body.downloads.phase, 'reserved');
+  assert.equal(body.downloads.phase, 'disabled');
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
   assert.match(response.headers.get('content-security-policy'), /default-src 'self'/);
 });
@@ -102,6 +106,7 @@ test('download routes fail closed while service binding is absent', async () => 
   const body = await response.json();
   assert.equal(response.status, 503);
   assert.equal(body.error.details.transport, 'cloudflare-service-binding');
+  assert.equal(body.error.details.phase, 'disabled');
   assert.deepEqual(body.error.details.capabilities, [
     'downloads',
     'admin',
@@ -109,6 +114,18 @@ test('download routes fail closed while service binding is absent', async () => 
     'rollback',
     'wechat_qr',
   ]);
+
+  const stagingUnbound = await fetchWorker('/downloads', {
+    ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'staging-service-binding',
+  });
+  const stagingBody = await stagingUnbound.json();
+  assert.equal(stagingUnbound.status, 503);
+  assert.equal(stagingBody.error.details.configured, false);
+  assert.equal(stagingBody.error.details.binding_present, false);
+  assert.equal(stagingBody.error.details.bound, false);
+  assert.equal(stagingBody.error.details.active, false);
+  assert.equal(stagingBody.error.details.phase, 'unbound');
 });
 
 test('software-specific download APIs stay behind the service binding boundary', async () => {
@@ -117,7 +134,7 @@ test('software-specific download APIs stay behind the service binding boundary',
     fixtureEnv,
   );
   assert.equal(response.status, 503);
-  assert.equal((await response.json()).error.details.phase, 'reserved');
+  assert.equal((await response.json()).error.details.phase, 'disabled');
 });
 
 test('download prefixes require a path segment boundary', async () => {
@@ -133,29 +150,53 @@ test('download prefixes require a path segment boundary', async () => {
 test('binding presence is not reported as healthy or live', async () => {
   const response = await fetchWorker('/api/integrations/downloads', {
     ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'staging-service-binding',
     DOWNLOADS_SERVICE: { fetch: async () => new Response('ok') },
   });
   const status = (await response.json()).data;
   assert.equal(status.configured, true);
+  assert.equal(status.enabled, true);
+  assert.equal(status.binding_present, true);
   assert.equal(status.bound, true);
+  assert.equal(status.active, true);
   assert.equal(status.healthy, null);
   assert.equal(status.live, false);
   assert.equal(status.phase, 'bound-unverified');
 
   const invalid = await fetchWorker('/api/integrations/downloads', {
     ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'staging-service-binding',
     DOWNLOADS_SERVICE: {},
   });
   const invalidStatus = (await invalid.json()).data;
   assert.equal(invalidStatus.configured, true);
   assert.equal(invalidStatus.bound, false);
+  assert.equal(invalidStatus.active, false);
   assert.equal(invalidStatus.phase, 'invalid-binding');
+
+  const disabled = await fetchWorker('/api/integrations/downloads', {
+    ...fixtureEnv,
+    DOWNLOADS_SERVICE: { fetch: async () => new Response('must not run') },
+  });
+  const disabledStatus = (await disabled.json()).data;
+  assert.equal(disabledStatus.configured, true);
+  assert.equal(disabledStatus.binding_present, true);
+  assert.equal(disabledStatus.bound, true);
+  assert.equal(disabledStatus.active, false);
+  assert.equal(disabledStatus.phase, 'disabled');
+
+  const blocked = await fetchWorker('/downloads', {
+    ...fixtureEnv,
+    DOWNLOADS_SERVICE: { fetch: async () => new Response('must not run') },
+  });
+  assert.equal(blocked.status, 503);
 });
 
 test('download service binding preserves request semantics and maps reserved prefix', async () => {
   let observed;
   const env = {
     ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'staging-service-binding',
     DOWNLOADS_SERVICE: {
       async fetch(request) {
         observed = {
@@ -196,6 +237,7 @@ test('direct legacy download routes do not claim the mounted downloads prefix', 
   const observed = [];
   const env = {
     ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'staging-service-binding',
     DOWNLOADS_SERVICE: {
       async fetch(request) {
         observed.push({
@@ -231,6 +273,7 @@ test('download binding preserves relative, root-relative, and external redirects
         path,
         {
           ...fixtureEnv,
+          DOWNLOADS_INTEGRATION: 'staging-service-binding',
           DOWNLOADS_SERVICE: {
             fetch: async () =>
               new Response(null, {
@@ -250,6 +293,7 @@ test('downstream inline-style HTML does not receive the SPA CSP', async () => {
   const inlineHtml = '<!doctype html><style>body{color:red}</style><h1>Admin</h1>';
   const response = await fetchWorker('/admin', {
     ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'staging-service-binding',
     DOWNLOADS_SERVICE: {
       fetch: async () =>
         new Response(inlineHtml, {
@@ -268,6 +312,7 @@ test('downstream CSP is preserved instead of overwritten by the SPA policy', asy
   const downstreamCsp = "default-src 'none'; style-src 'unsafe-inline'";
   const response = await fetchWorker('/downloads/admin', {
     ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'staging-service-binding',
     DOWNLOADS_SERVICE: {
       fetch: async () =>
         new Response('<style>body{color:red}</style>', {

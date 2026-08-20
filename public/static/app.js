@@ -76,7 +76,7 @@ async function renderHome() {
   const copy = node(
     'p',
     { class: 'home-lead' },
-    '独立的 Cloudflare Worker 公共站点。第一阶段聚焦 Docs 与 Pricing，并把 live NewAPI 和既有下载 Worker 留在明确的 integration boundary 之后。',
+    '独立的 Cloudflare Worker 公共站点。Phase 1 提供 Docs 与 Pricing fixture 基线；Phase 2A 增加 staging-only download Service Binding，并继续把 live 能力留在明确的验证边界之后。',
   );
   const actions = node('div', { class: 'hero-actions' });
   actions.append(
@@ -87,7 +87,7 @@ async function renderHome() {
 
   const cards = node('section', {
     class: 'home-grid',
-    'aria-label': '第一阶段功能',
+    'aria-label': 'Phase 1 与 Phase 2A 功能',
   });
   cards.append(
     featureCard('01', 'Docs', '结构化导航、页内目录、搜索和可复制示例。', '/docs/quickstart', '打开文档'),
@@ -97,12 +97,12 @@ async function renderHome() {
 
   const boundary = node('section', { class: 'boundary-panel' });
   boundary.append(
-    node('div', { class: 'eyebrow' }, 'PHASE 1 BOUNDARY'),
-    node('h2', {}, '现在可验证，未来可替换。'),
+    node('div', { class: 'eyebrow' }, 'PHASE 2A BOUNDARY'),
+    node('h2', {}, 'Staging 可接入，健康状态不冒进。'),
     node(
       'p',
       {},
-      '页面明确标识 fixture 来源；live adapter 不会在没有 service binding、私网连通性与已核对 API contract 时静默启用。下载、admin、R2、rollback 和微信群二维码继续由原 Worker 持有。',
+      '页面明确标识 fixture 来源；只有 staging 的显式 runtime gate 与 callable binding 同时成立才会转发。即使 bound，状态仍是未验证健康、非 live。下载、admin、R2、rollback 和微信群二维码继续由原 Worker 持有。',
     ),
   );
   fragment.append(hero, cards, boundary);
@@ -644,15 +644,17 @@ function statusCard(status) {
   card.append(
     node('span', { class: 'feature-number' }, '03'),
     node('h2', {}, 'Downloads binding'),
-    node('p', {}, '既有 Worker 保持独立；新站只保留 Cloudflare service binding 入口。'),
+    node('p', {}, '既有 Worker 保持独立；只有 staging environment 可显式启用 Service Binding。'),
     node(
       'strong',
-      { class: status.bound ? 'status-on' : 'status-off' },
-      status.bound
-        ? '已绑定 · 健康状态未探测'
-        : status.configured
-          ? '配置无效'
-          : '待配置',
+      { class: status.active ? 'status-on' : 'status-off' },
+      status.active
+        ? 'Bound-unverified · 非 healthy/live'
+        : status.enabled
+          ? status.binding_present
+            ? 'Staging binding 无效'
+            : 'Staging binding 未提供'
+          : '当前环境 disabled · fail closed',
     ),
   );
   return card;
@@ -714,7 +716,7 @@ function renderNotFound() {
   replaceMain(node('section', { class: 'error-page' },
     node('span', {}, '404'),
     node('h1', {}, '没有找到这个页面'),
-    node('p', {}, '链接可能已经移动，或者尚未在第一阶段开放。'),
+    node('p', {}, '链接可能已经移动，或者尚未开放。'),
     linkButton('/docs/quickstart', '返回文档', 'primary'),
   ));
 }

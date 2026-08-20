@@ -1,4 +1,4 @@
-# 第一阶段架构与后续接入条件
+# Phase 1 架构与 Phase 2A staging integration
 
 ## 组件边界
 
@@ -7,8 +7,10 @@ Browser
   ├─ /docs/*, /pricing ──> Worker Assets (Phase 1 SPA)
   ├─ /api/content/* ─────> ContentAdapter
   │                          └─ FixtureAdapter (Phase 1 only)
-  └─ download routes ─────> DOWNLOADS_SERVICE (reserved, not configured)
-                               └─ existing cloudflare-download-site Worker
+  └─ download routes ─────> explicit runtime gate
+                               ├─ default/production: disabled -> 503
+                               └─ staging: DOWNLOADS_SERVICE
+                                    └─ cloudflare-download-site Worker
 
 Future:
   ContentAdapter
@@ -83,15 +85,15 @@ Future live adapter 还需要原样保留结构化 video pricing、capability、
 - 上传或保存微信群二维码；
 - 保存任何相关 secret。
 
-当前 gateway 会保留 method、body、cookie，并把 `/downloads/...` 去掉 namespace 后传给 bound Worker；download Worker 原有的 `/software`、`/download`、`/admin`、QR 和 metadata route 也有 direct boundary。正式配置前还需完成：
+当前 gateway 会保留 method、原始 body bytes、query、cookie 和 content type，并把 `/downloads/...` 去掉 namespace 后传给 bound Worker；download Worker 原有的 `/software`、`/download`、`/admin`、assets、QR 和 metadata route 也有 direct boundary。Mounted request 会覆盖 `x-forwarded-prefix=/downloads`，direct request 会删除客户端伪造的该 header。Response 保留 body stream、status、content type、content length/disposition、cookies、redirect 和 downstream-owned headers。
 
-Gateway route matcher 要求完整 path segment，`/administrator`、`/api/latest-news` 不属于 download Worker。本站 SPA/API 使用严格的 `style-src 'self'` CSP；downstream response 保留自己的 CSP（或保持无 CSP），只补上缺少且与内容无关的安全 headers，避免破坏既有 inline-style HTML/admin response。状态中的 `configured`、`bound`、`healthy`、`live` 分开报告；binding 存在不等于 downstream 已健康或已完成 production 验证。
+Gateway route matcher 要求完整 path segment，`/administrator`、`/api/latest-news` 不属于 download Worker。本站 SPA/API 使用严格的 `style-src 'self'` CSP；downstream response 保留自己的 CSP（或保持无 CSP），只补上缺少且与内容无关的安全 headers，避免破坏既有 inline-style HTML/admin response。状态中的 `configured`、`bound`、`active`、`healthy`、`live` 分开报告；binding 存在不等于 gate 已启用、downstream 已健康或已完成 production 验证。
 
-1. 在 Cloudflare 环境建立 `DOWNLOADS_SERVICE` binding（不是在代码中写 endpoint）。
-2. 核对 service name、production environment 和 route ownership。
-3. 以实际 bound Worker 验证下载 stream/redirect、admin cookie、POST form、R2 metadata、rollback 与 QR image/content-type。
-4. 验证 `/downloads` 下游 HTML 的 root links/assets 是否全部落到 gateway 保留路由；若不成立，应在现有 download Worker 增加显式 mounted-prefix contract，不能做脆弱的 HTML string rewrite。
-5. 决定 admin 是否应由独立 hostname/Access policy 承载；service binding 本身不等于浏览器侧 admin authorization。
+Phase 2A 在 `env.staging` 明确绑定 `DOWNLOADS_SERVICE -> cloudflare-download-site`，同时以 `DOWNLOADS_INTEGRATION=staging-service-binding` 启用 runtime gate。Default/top-level 与 `env.production` 都明确为 `disabled` 且没有 service binding。Repository tests 会验证配置隔离以及完整 forwarding contract；三条 Wrangler lane 只执行 dry-run。
+
+`/downloads` 下游 HTML 使用 root-relative links/assets/forms，因此它们会落入本站保留的 direct boundary。Gateway 不做 HTML string rewrite。Service binding 本身也不等于浏览器侧 admin authorization；admin session 仍完全由 downstream Worker 持有。
+
+Actual remote closure 留给 Phase 2B：以临时 remote preview 执行 GET/HEAD-only probe，检查真实 Service Binding、public metadata、redirect 与 content type。不得执行 admin POST、带 admin cookie 的请求、production deploy 或任何 R2 mutation。详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md)。
 
 ## NewAPI live adapter 后续门槛
 
@@ -105,3 +107,5 @@ Gateway route matcher 要求完整 path segment，`/administrator`、`/api/lates
 6. staging 端到端验收；页面上的 live badge 只能由已验证 adapter 明确产生。
 
 当前 artifact 不包含任何 hostname、credential、Tunnel ID、service token 或 live data mutation。
+
+Phase 2A 的 local/mock 与 Wrangler dry-run 不能证明实际 Cloudflare account 已存在该 binding、deployed target 与只读 source snapshot 相同、R2 objects 可用或 production routing 已完成。

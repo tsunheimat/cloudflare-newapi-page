@@ -15,7 +15,7 @@ import {
   withSecurityHeaders,
 } from './http.js';
 
-const PHASE = 1;
+const PHASE = '2A';
 
 export default {
   async fetch(request, env = {}) {

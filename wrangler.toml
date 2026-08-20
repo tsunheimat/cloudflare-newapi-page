@@ -14,12 +14,26 @@ not_found_handling = "single-page-application"
 # will be selected here only after its private connectivity and live contracts
 # have been verified.
 CONTENT_ADAPTER = "fixture"
+DOWNLOADS_INTEGRATION = "disabled"
 
-# A live service binding is intentionally NOT configured in this phase.
-# When the existing download Worker is ready to be attached, configure it in
-# the Cloudflare environment instead of copying its R2/admin logic here:
-#
-# [[services]]
-# binding = "DOWNLOADS_SERVICE"
-# service = "cloudflare-download-site"
+# Service bindings and vars are non-inheritable Wrangler environment keys.
+# Only the staging environment opts into the existing download Worker.
+[env.staging]
+workers_dev = true
 
+[env.staging.vars]
+CONTENT_ADAPTER = "fixture"
+DOWNLOADS_INTEGRATION = "staging-service-binding"
+
+[[env.staging.services]]
+binding = "DOWNLOADS_SERVICE"
+service = "cloudflare-download-site"
+
+# Keep an explicit named production environment fail-closed as well as the
+# default/top-level environment above. Neither has a DOWNLOADS_SERVICE entry.
+[env.production]
+workers_dev = true
+
+[env.production.vars]
+CONTENT_ADAPTER = "fixture"
+DOWNLOADS_INTEGRATION = "disabled"

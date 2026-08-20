@@ -5,10 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "build": "wrangler deploy --dry-run --outdir dist",
-    "check": "node --check src/worker.js && node --check src/adapters/content-adapter.js && node --check src/adapters/download-service.js && node --check src/fixtures/docs.js && node --check src/fixtures/pricing.js && node --check public/static/app.js && node --check public/static/pricing.js",
+    "phase2b:remote": "wrangler dev --remote --env staging --ip 127.0.0.1 --port 8787",
+    "phase2b:probe": "node scripts/phase2b-readonly-probe.mjs",
+    "build": "wrangler deploy --dry-run --env=\"\" --outdir dist",
+    "build:staging": "wrangler deploy --dry-run --env staging --outdir dist/staging",
+    "build:production": "wrangler deploy --dry-run --env production --outdir dist/production",
+    "check": "node --check src/worker.js && node --check src/adapters/content-adapter.js && node --check src/adapters/download-service.js && node --check src/fixtures/docs.js && node --check src/fixtures/pricing.js && node --check public/static/app.js && node --check public/static/pricing.js && node --check scripts/phase2b-readonly-probe.mjs",
     "test": "node --test",
-    "validate": "npm run check && npm test && npm run build"
+    "validate": "npm run check && npm test && npm run build && npm run build:staging && npm run build:production"
   },
   "devDependencies": {
     "wrangler": "4.124.0"
