@@ -76,7 +76,7 @@ async function renderHome() {
   const copy = node(
     'p',
     { class: 'home-lead' },
-    '独立的 Cloudflare Worker 公共站点。Phase 1 提供 Docs 与 Pricing fixture 基线；Phase 2A 增加 staging-only download Service Binding，并继续把 live 能力留在明确的验证边界之后。',
+    '独立的 Cloudflare Worker 公共站点。Docs 与 Pricing 保持明确的 fixture／非 live 数据；命名 staging 与 production 环境可通过 Service Binding 使用既有下载服务，default 开发环境继续 fail closed。',
   );
   const actions = node('div', { class: 'hero-actions' });
   actions.append(
@@ -87,7 +87,7 @@ async function renderHome() {
 
   const cards = node('section', {
     class: 'home-grid',
-    'aria-label': 'Phase 1 与 Phase 2A 功能',
+    'aria-label': 'Phase 2 功能与数据边界',
   });
   cards.append(
     featureCard('01', 'Docs', '结构化导航、页内目录、搜索和可复制示例。', '/docs/quickstart', '打开文档'),
@@ -97,12 +97,12 @@ async function renderHome() {
 
   const boundary = node('section', { class: 'boundary-panel' });
   boundary.append(
-    node('div', { class: 'eyebrow' }, 'PHASE 2A BOUNDARY'),
-    node('h2', {}, 'Staging 可接入，健康状态不冒进。'),
+    node('div', { class: 'eyebrow' }, 'PHASE 2 DEPLOYMENT BOUNDARY'),
+    node('h2', {}, 'Production downloads 可接入，内容仍是 fixture。'),
     node(
       'p',
       {},
-      '页面明确标识 fixture 来源；只有 staging 的显式 runtime gate 与 callable binding 同时成立才会转发。即使 bound，状态仍是未验证健康、非 live。下载、admin、R2、rollback 和微信群二维码继续由原 Worker 持有。',
+      '页面明确标识 fixture 来源；只有命名 staging／production 的对应 runtime gate 与 callable binding 同时成立才会转发。即使 bound，状态仍是未验证健康、非 live。下载、admin、R2、rollback 和微信群二维码继续由原 Worker 持有。',
     ),
   );
   fragment.append(hero, cards, boundary);
@@ -278,7 +278,7 @@ async function renderPricing() {
 
   const notice = node('section', { class: 'pricing-notice' });
   notice.append(
-    node('strong', {}, '第一阶段 fixture'),
+    node('strong', {}, 'Fixture／非 live'),
     node('span', {}, payload.meta.notice),
     node('span', { class: 'formula' }, '按量输入价 = model_ratio × 2 × default group ratio'),
   );
@@ -644,7 +644,7 @@ function statusCard(status) {
   card.append(
     node('span', { class: 'feature-number' }, '03'),
     node('h2', {}, 'Downloads binding'),
-    node('p', {}, '既有 Worker 保持独立；只有 staging environment 可显式启用 Service Binding。'),
+    node('p', {}, '既有 Worker 保持独立；命名 staging／production 环境以各自 gate 显式启用 Service Binding。'),
     node(
       'strong',
       { class: status.active ? 'status-on' : 'status-off' },
@@ -652,8 +652,8 @@ function statusCard(status) {
         ? 'Bound-unverified · 非 healthy/live'
         : status.enabled
           ? status.binding_present
-            ? 'Staging binding 无效'
-            : 'Staging binding 未提供'
+            ? '当前环境 binding 无效'
+            : '当前环境 binding 未提供'
           : '当前环境 disabled · fail closed',
     ),
   );

@@ -1,6 +1,6 @@
 # Cloudflare NewAPI Public Page
 
-独立的 Cloudflare Worker 公共站点。Phase 1 提供可执行、可测试的 Docs 与 Pricing 基线；Phase 2A 增加仅限 staging 的既有 download Worker Service Binding 配置与 repository-owned integration contract。两个阶段都不修改 NewAPI backend，也不复制 download Worker 的 R2/admin 逻辑。
+独立的 Cloudflare Worker 公共站点。Phase 1 提供可执行、可测试的 Docs 与 Pricing 基线；Phase 2 为命名 staging 与 production 环境配置既有 download Worker Service Binding，并提供 fail-closed production deployment contract。网站仍不修改 NewAPI backend，也不复制 download Worker 的 R2/admin 逻辑。
 
 ## 已包含
 
@@ -43,7 +43,10 @@ npm run validate
 npm run build
 npm run build:staging
 npm run build:production
+npm run deploy:production -- --dry-run
 ```
+
+最后一条是 production 部署入口的本地 preflight 模式：它验证 production config、fixture/non-live runtime contract，再执行完整 `validate`；输出 `DRY RUN ONLY` 后退出，不上传任何 Worker。
 
 ## Pricing 产品语义
 
@@ -68,7 +71,7 @@ npm run build:production
 
 Fixture 数字只验证以上路径。未来 adapter 必须投影 NewAPI 的公开价格 response，而不是建立另一套价格表。
 
-## Phase 2A staging download integration
+## Phase 2 download integration
 
 Wrangler environment 的 bindings 与 vars 不会自动继承。Repository 明确配置：
 
@@ -87,10 +90,14 @@ service = "cloudflare-download-site"
 
 [env.production.vars]
 CONTENT_ADAPTER = "fixture"
-DOWNLOADS_INTEGRATION = "disabled"
+DOWNLOADS_INTEGRATION = "production-service-binding"
+
+[[env.production.services]]
+binding = "DOWNLOADS_SERVICE"
+service = "cloudflare-download-site"
 ```
 
-只有 staging 同时具有显式 runtime gate 与 callable binding 时才会转发。Default 与 production 都没有 `DOWNLOADS_SERVICE` 配置且 gate 为 `disabled`；即使运行环境意外注入同名 binding，也不会启用下载转发。未知 mode、缺失或无效 binding 全部返回 503。
+Default/top-level 不声明 `DOWNLOADS_SERVICE` 且 gate 为 `disabled`，继续供 local/dev fail closed。命名 staging 与 production 都显式绑定同一个已部署的 `cloudflare-download-site`，但使用不同 runtime gate；只有当前 gate 与 callable binding 同时存在才会转发。未知 mode、缺失或无效 binding 全部返回 503。
 
 既有 `/mnt/vibe-coding-share/tokenrouter/cloudflare-download-site` 仍然单独持有下载、admin session、R2、rollback 和微信群二维码功能。本 repo 只负责 HTTP forwarding boundary。保留的入口包括：
 
@@ -100,9 +107,27 @@ DOWNLOADS_INTEGRATION = "disabled"
 
 Gateway 保留 method、body bytes、query、cookie、content type、binary response stream、status、redirect 与 downstream headers；direct route 会删除不可信的 incoming `x-forwarded-prefix`。Gateway 只在 path segment boundary 命中下载路由，并保留下游自己的 CSP；本 SPA 的 `style-src 'self'` 只应用于本站 assets/API response。
 
-状态 API 会分别报告 `configured`、`bound`、`active`、`healthy` 与 `live`。`configured`/`bound` 保留 Phase 1 的 binding present/callable 语义；只有 staging gate 与 callable binding 同时成立才有 `active=true`。Active binding 仍固定为 `healthy=null`、`live=false`、`phase=bound-unverified`，不得冒充 live verification。
+状态 API 会分别报告 `configured`、`bound`、`active`、`healthy` 与 `live`。`configured`/`bound` 保留 Phase 1 的 binding present/callable 语义；只有命名环境对应 gate 与 callable binding 同时成立才有 `active=true`。Active binding 仍固定为 `healthy=null`、`live=false`、`phase=bound-unverified`，不得冒充 live verification。
 
-完整 source snapshot、route/response contract 和本地测试范围见 [download-service-contract.md](docs/download-service-contract.md)。需要最小权限 Cloudflare auth 的实际 binding 验证留给 [Phase 2B read-only remote probe](docs/phase-2b-remote-probe.md)。本次 Phase 2A 没有执行 login、remote dev、Cloudflare/R2 mutation、push 或 deployment。
+完整 source snapshot、route/response contract 和本地测试范围见 [download-service-contract.md](docs/download-service-contract.md)。Staging temporary preview 可沿用 [Phase 2B read-only remote probe](docs/phase-2b-remote-probe.md)。Local tests、mock 与 dry-run 都不是实际 Cloudflare binding 或 deployment 证据。
+
+## Production deployment
+
+Production 只有一个 repository-owned 部署入口：
+
+```bash
+npm run deploy:production
+```
+
+脚本不接受 environment/config override，固定执行 `wrangler deploy --env production --strict`。执行前会要求 Node 22+、clean Git commit、当前 shell 中的 `CLOUDFLARE_ACCOUNT_ID` 与 `CLOUDFLARE_API_TOKEN`，并验证：
+
+- default 仍是 `disabled`；staging contract 未被破坏；
+- production 必须是 `CONTENT_ADAPTER=fixture`、`DOWNLOADS_INTEGRATION=production-service-binding`；
+- production 必须且只能有 `DOWNLOADS_SERVICE -> cloudflare-download-site`；
+- Docs/Pricing runtime metadata 必须是 `source=fixture`、`fixture=true`、`live=false`，价格上下文继续锁定 `default/default`；
+- 完整 tests 与 default/staging/production dry-run 全部通过。
+
+Credential 最小基线、same-account/deployed-target 前置条件、部署前版本记录、production verification 与 rollback 命令见 [production-deployment.md](docs/production-deployment.md)。该入口只部署本 repo 的调用方 Worker，不修改 sibling source 或直接写 R2；但部署后 `/admin/*` POST 会经 binding 原样作用于 downstream production state，必须由执行者自行控制访问与操作。此仓库没有保存 credential，也不得使用 local preflight/dry-run 冒充实际部署。
 
 ## NewAPI live integration 边界
 
@@ -113,7 +138,7 @@ Gateway 保留 method、body bytes、query、cookie、content type、binary resp
 - 不修改 NewAPI backend。
 - 不修改或部署现有 download Worker。
 - 不把 local mock、dry-run 或 config parsing 当成 actual Cloudflare Service Binding/R2/live 证据。
-- 不执行 Cloudflare deploy、R2 mutation、Tunnel/VPC 设置或 DNS mutation。
+- 本地验证不执行 Cloudflare deploy、R2 mutation、Tunnel/VPC 设置或 DNS mutation；实际 deploy 只能由授权 operator 使用 production entrypoint 另行执行。
 - 不保存 API token、Cloudflare credential、R2 credential 或 admin secret。
 - 不把 fixture、schema acceptance 或页面显示当成 live capability proof。
 

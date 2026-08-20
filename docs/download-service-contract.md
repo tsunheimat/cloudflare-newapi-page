@@ -2,7 +2,7 @@
 
 ## 只读 source provenance
 
-Phase 2A 只读核对了 sibling checkout `/mnt/vibe-coding-share/tokenrouter/cloudflare-download-site`，没有修改或生成其中任何 tracked/untracked bytes：
+Phase 2A 只读核对了 sibling checkout `/mnt/vibe-coding-share/tokenrouter/cloudflare-download-site`；本 deployment-ready follow-up 沿用该已提交 snapshot contract，仍不修改或生成 sibling 中任何 tracked/untracked bytes：
 
 - Git commit：`becb3e80dae6e66724b332ebadeb1522cd257d46`
 - Wrangler service name：`cloudflare-download-site`
@@ -53,9 +53,9 @@ Route matcher 使用完整 path segment。`/administrator`、`/assets-old/*`、`
 
 ## Status 与 fail-closed
 
-Runtime gate 只接受 `DOWNLOADS_INTEGRATION=staging-service-binding`。其他 mode、缺失 binding、非 callable binding 均返回 503。Default 与 production 的 config 都是 `disabled`；即使同名 binding 被意外注入，也不会转发。
+Runtime gate 只接受 `DOWNLOADS_INTEGRATION=staging-service-binding` 或 `production-service-binding`。其他 mode、缺失 binding、非 callable binding 均返回 503。Default config 是 `disabled` 且没有 binding；即使同名 binding 被意外注入，也不会转发。命名 staging/production 各自以独立 gate 绑定同一个 `cloudflare-download-site`。
 
-`configured=true` 表示 runtime 存在 binding property；`bound=true` 表示它具有 callable `fetch`，两者保留 Phase 1 语义。只有 staging gate 与 `bound=true` 同时成立才有 `active=true`。即使 active，状态仍是：
+`configured=true` 表示 runtime 存在 binding property；`bound=true` 表示它具有 callable `fetch`，两者保留 Phase 1 语义。只有允许的命名环境 gate 与 `bound=true` 同时成立才有 `active=true`。即使 active，状态仍是：
 
 ```json
 {
@@ -66,4 +66,4 @@ Runtime gate 只接受 `DOWNLOADS_INTEGRATION=staging-service-binding`。其他 
 }
 ```
 
-Repository evidence 位于 `test/download-service.test.js`、`test/worker.test.js` 和 `test/staging-config.test.js`。它验证 routing/transport/config contract，但不验证 actual Cloudflare binding、deployed sibling bytes、R2 objects、production route 或真实浏览器行为。
+Repository evidence 位于 `test/download-service.test.js`、`test/worker.test.js`、`test/staging-config.test.js` 和 `test/production-deployment.test.js`。它验证 routing/transport/config/deploy guard contract，但不验证 actual Cloudflare binding、deployed sibling bytes、R2 objects、production route 或真实浏览器行为。Production 操作见 [production-deployment.md](production-deployment.md)。

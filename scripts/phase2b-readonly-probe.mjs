@@ -79,7 +79,7 @@ const health = await probe({
   contentType: 'application/json',
   json: true,
 });
-assert.equal(health.phase, '2A');
+assert.equal(health.phase, '2');
 assert.equal(health.downloads.configured, true);
 assert.equal(health.downloads.bound, true);
 assert.equal(health.downloads.active, true);

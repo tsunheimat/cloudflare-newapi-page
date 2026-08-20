@@ -27,7 +27,7 @@ test('health reports phase and explicit non-live boundaries', async () => {
   const response = await fetchWorker('/api/health', fixtureEnv);
   const body = await response.json();
   assert.equal(response.status, 200);
-  assert.equal(body.phase, '2A');
+  assert.equal(body.phase, '2');
   assert.equal(body.live_newapi, false);
   assert.deepEqual(body.pricing_context, {
     user_group: 'default',
@@ -190,6 +190,17 @@ test('binding presence is not reported as healthy or live', async () => {
     DOWNLOADS_SERVICE: { fetch: async () => new Response('must not run') },
   });
   assert.equal(blocked.status, 503);
+
+  const production = await fetchWorker('/api/integrations/downloads', {
+    ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'production-service-binding',
+    DOWNLOADS_SERVICE: { fetch: async () => new Response('ok') },
+  });
+  const productionStatus = (await production.json()).data;
+  assert.equal(productionStatus.mode, 'production-service-binding');
+  assert.equal(productionStatus.active, true);
+  assert.equal(productionStatus.live, false);
+  assert.equal(productionStatus.phase, 'bound-unverified');
 });
 
 test('download service binding preserves request semantics and maps reserved prefix', async () => {

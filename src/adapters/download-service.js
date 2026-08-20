@@ -3,7 +3,13 @@ import { HttpError } from '../http.js';
 export const DOWNLOADS_INTEGRATION_MODES = Object.freeze({
   DISABLED: 'disabled',
   STAGING_SERVICE_BINDING: 'staging-service-binding',
+  PRODUCTION_SERVICE_BINDING: 'production-service-binding',
 });
+
+const ENABLED_DOWNLOADS_INTEGRATION_MODES = new Set([
+  DOWNLOADS_INTEGRATION_MODES.STAGING_SERVICE_BINDING,
+  DOWNLOADS_INTEGRATION_MODES.PRODUCTION_SERVICE_BINDING,
+]);
 
 const MOUNTED_ROUTE_PREFIX = '/downloads';
 
@@ -82,7 +88,7 @@ export function downloadServiceStatus(env = {}) {
   const mode = String(
     env.DOWNLOADS_INTEGRATION || DOWNLOADS_INTEGRATION_MODES.DISABLED,
   );
-  const enabled = mode === DOWNLOADS_INTEGRATION_MODES.STAGING_SERVICE_BINDING;
+  const enabled = ENABLED_DOWNLOADS_INTEGRATION_MODES.has(mode);
   const bindingPresent = Object.prototype.hasOwnProperty.call(
     env,
     'DOWNLOADS_SERVICE',

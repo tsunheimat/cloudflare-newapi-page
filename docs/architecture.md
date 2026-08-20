@@ -1,4 +1,4 @@
-# Phase 1 架构与 Phase 2A staging integration
+# Phase 1 架构与 Phase 2 deployment-ready integration
 
 ## 组件边界
 
@@ -8,9 +8,11 @@ Browser
   ├─ /api/content/* ─────> ContentAdapter
   │                          └─ FixtureAdapter (Phase 1 only)
   └─ download routes ─────> explicit runtime gate
-                               ├─ default/production: disabled -> 503
-                               └─ staging: DOWNLOADS_SERVICE
-                                    └─ cloudflare-download-site Worker
+                               ├─ default: disabled -> 503
+                               ├─ staging: staging-service-binding
+                               └─ production: production-service-binding
+                                    └─ DOWNLOADS_SERVICE
+                                         └─ cloudflare-download-site Worker
 
 Future:
   ContentAdapter
@@ -89,11 +91,11 @@ Future live adapter 还需要原样保留结构化 video pricing、capability、
 
 Gateway route matcher 要求完整 path segment，`/administrator`、`/api/latest-news` 不属于 download Worker。本站 SPA/API 使用严格的 `style-src 'self'` CSP；downstream response 保留自己的 CSP（或保持无 CSP），只补上缺少且与内容无关的安全 headers，避免破坏既有 inline-style HTML/admin response。状态中的 `configured`、`bound`、`active`、`healthy`、`live` 分开报告；binding 存在不等于 gate 已启用、downstream 已健康或已完成 production 验证。
 
-Phase 2A 在 `env.staging` 明确绑定 `DOWNLOADS_SERVICE -> cloudflare-download-site`，同时以 `DOWNLOADS_INTEGRATION=staging-service-binding` 启用 runtime gate。Default/top-level 与 `env.production` 都明确为 `disabled` 且没有 service binding。Repository tests 会验证配置隔离以及完整 forwarding contract；三条 Wrangler lane 只执行 dry-run。
+Phase 2 在 `env.staging` 与 `env.production` 都明确绑定 `DOWNLOADS_SERVICE -> cloudflare-download-site`，并分别以 `staging-service-binding`、`production-service-binding` gate 启用。Default/top-level 仍明确为 `disabled` 且没有 service binding。Repository tests 会验证配置隔离以及完整 forwarding contract；三条普通 Wrangler lane 都只执行 dry-run。
 
 `/downloads` 下游 HTML 使用 root-relative links/assets/forms，因此它们会落入本站保留的 direct boundary。Gateway 不做 HTML string rewrite。Service binding 本身也不等于浏览器侧 admin authorization；admin session 仍完全由 downstream Worker 持有。
 
-Actual remote closure 留给 Phase 2B：以临时 remote preview 执行 GET/HEAD-only probe，检查真实 Service Binding、public metadata、redirect 与 content type。不得执行 admin POST、带 admin cookie 的请求、production deploy 或任何 R2 mutation。详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md)。
+Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only probe，检查真实 Service Binding、public metadata、redirect 与 content type。Production 则只能经 fail-closed entrypoint 部署并按 runbook 做 GET verification。两者都不得把 mock/dry-run 当成 remote evidence；详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md) 与 [production-deployment.md](production-deployment.md)。
 
 ## NewAPI live adapter 后续门槛
 
@@ -108,4 +110,4 @@ Actual remote closure 留给 Phase 2B：以临时 remote preview 执行 GET/HEAD
 
 当前 artifact 不包含任何 hostname、credential、Tunnel ID、service token 或 live data mutation。
 
-Phase 2A 的 local/mock 与 Wrangler dry-run 不能证明实际 Cloudflare account 已存在该 binding、deployed target 与只读 source snapshot 相同、R2 objects 可用或 production routing 已完成。
+Phase 2 的 local/mock 与 Wrangler dry-run 不能证明实际 Cloudflare account 已存在该 binding、deployed target 与只读 source snapshot 相同、R2 objects 可用或 production routing 已完成。

@@ -31,29 +31,28 @@ function value(sections, section, key) {
   return JSON.parse(line.slice(prefix.length));
 }
 
-test('only staging config declares the download service binding', async () => {
+test('only staging and production declare the reviewed download service binding', async () => {
   const source = await readFile(CONFIG_URL, 'utf8');
   const sections = parseSections(source);
   const serviceSections = [...sections.keys()].filter((section) =>
     section.endsWith('services'),
   );
 
-  assert.deepEqual(serviceSections, ['env.staging.services']);
-  assert.equal(
-    value(sections, 'env.staging.services', 'binding'),
-    'DOWNLOADS_SERVICE',
-  );
-  assert.equal(
-    value(sections, 'env.staging.services', 'service'),
-    'cloudflare-download-site',
-  );
-  assert.doesNotMatch(
-    (sections.get('env.staging.services') || []).join('\n'),
-    /^remote\s*=/m,
-  );
+  assert.deepEqual(serviceSections, [
+    'env.staging.services',
+    'env.production.services',
+  ]);
+  for (const section of serviceSections) {
+    assert.equal(value(sections, section, 'binding'), 'DOWNLOADS_SERVICE');
+    assert.equal(value(sections, section, 'service'), 'cloudflare-download-site');
+    assert.doesNotMatch(
+      (sections.get(section) || []).join('\n'),
+      /^(?:remote|environment)\s*=/m,
+    );
+  }
 });
 
-test('default and production stay disabled while staging has the explicit runtime gate', async () => {
+test('default stays disabled while staging and production use distinct explicit runtime gates', async () => {
   const source = await readFile(CONFIG_URL, 'utf8');
   const sections = parseSections(source);
 
@@ -65,11 +64,15 @@ test('default and production stay disabled while staging has the explicit runtim
   );
   assert.equal(
     value(sections, 'env.production.vars', 'DOWNLOADS_INTEGRATION'),
-    'disabled',
+    'production-service-binding',
   );
   assert.equal(
     value(sections, 'env.staging.vars', 'DOWNLOADS_INTEGRATION'),
     'staging-service-binding',
+  );
+  assert.equal(
+    value(sections, 'env.staging.vars', 'CONTENT_ADAPTER'),
+    'fixture',
   );
 });
 

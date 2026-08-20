@@ -23,7 +23,7 @@ Credential 只通过当前 shell 的 `CLOUDFLARE_API_TOKEN` 与 `CLOUDFLARE_ACCO
 1. 核对 candidate commit、branch 与 clean worktree。
 2. 在 Node 22+ 环境执行 `npm ci` 与 `npm run validate`。
 3. 由 owner 在当前 shell 注入 short-lived credential，再执行 `npx wrangler whoami` 确认 account。不要走 interactive login。
-4. 确认 `wrangler.toml` 中只有 `env.staging.services` 指向 `cloudflare-download-site`，default/production 仍是 disabled。
+4. 确认 `wrangler.toml` 中 `env.staging.services` 与 `env.production.services` 都指向 `cloudflare-download-site`；default 仍 disabled，且本 preview command 固定选择 staging。
 
 本 Phase 2A 主机没有 credential，以上 remote 步骤均未执行。
 
@@ -61,4 +61,4 @@ Current reviewed downstream source 没有 HEAD handler，因此 public/download 
 3. 立即撤销 temporary token，并从 shell unset credential。
 4. 再次确认 repository clean；不得 commit probe output。
 
-Phase 2B PASS 可以证明“该 exact candidate 的 temporary remote preview 在该时刻通过 actual Service Binding 完成限定 GET/HEAD probe”。它不能证明 production/default 已启用 binding、production deploy 完成、deployed download Worker 与本地 sibling commit 相同、所有 R2 artifacts 完整，或 admin mutation flow 可用。
+Phase 2B PASS 可以证明“该 exact candidate 的 staging temporary remote preview 在该时刻通过 actual Service Binding 完成限定 GET/HEAD probe”。它不能证明 production config 已实际部署、default 已启用（default 本就应保持 disabled）、deployed download Worker 与本地 sibling commit 相同、所有 R2 artifacts 完整，或 admin mutation flow 可用。

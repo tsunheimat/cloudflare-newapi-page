@@ -17,7 +17,8 @@ CONTENT_ADAPTER = "fixture"
 DOWNLOADS_INTEGRATION = "disabled"
 
 # Service bindings and vars are non-inheritable Wrangler environment keys.
-# Only the staging environment opts into the existing download Worker.
+# Staging and the named production environment opt into the same already
+# deployed download Worker with environment-specific runtime gates.
 [env.staging]
 workers_dev = true
 
@@ -29,11 +30,13 @@ DOWNLOADS_INTEGRATION = "staging-service-binding"
 binding = "DOWNLOADS_SERVICE"
 service = "cloudflare-download-site"
 
-# Keep an explicit named production environment fail-closed as well as the
-# default/top-level environment above. Neither has a DOWNLOADS_SERVICE entry.
 [env.production]
 workers_dev = true
 
 [env.production.vars]
 CONTENT_ADAPTER = "fixture"
-DOWNLOADS_INTEGRATION = "disabled"
+DOWNLOADS_INTEGRATION = "production-service-binding"
+
+[[env.production.services]]
+binding = "DOWNLOADS_SERVICE"
+service = "cloudflare-download-site"

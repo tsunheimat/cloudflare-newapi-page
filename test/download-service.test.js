@@ -126,6 +126,27 @@ test('status publishes stable mounted/direct metadata without claiming health or
   assert.equal(status.routes.direct.forwarded_prefix, null);
 });
 
+test('staging and production gates activate only a callable binding', () => {
+  for (const mode of [
+    'staging-service-binding',
+    'production-service-binding',
+  ]) {
+    const active = downloadServiceStatus({
+      DOWNLOADS_INTEGRATION: mode,
+      DOWNLOADS_SERVICE: { fetch: async () => new Response('ok') },
+    });
+    assert.equal(active.mode, mode);
+    assert.equal(active.enabled, true);
+    assert.equal(active.active, true);
+    assert.equal(active.phase, 'bound-unverified');
+
+    const unbound = downloadServiceStatus({ DOWNLOADS_INTEGRATION: mode });
+    assert.equal(unbound.enabled, true);
+    assert.equal(unbound.active, false);
+    assert.equal(unbound.phase, 'unbound');
+  }
+});
+
 test('mounted forwarding preserves method, bytes, query, cookies, and content type', async () => {
   const payload = Uint8Array.from([0, 1, 2, 13, 10, 255]);
   let observed;
