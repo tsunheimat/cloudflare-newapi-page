@@ -1,0 +1,19 @@
+{
+  "name": "cloudflare-newapi-page",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "check": "node --check src/worker.js && node --check src/adapters/content-adapter.js && node --check src/adapters/download-service.js && node --check src/fixtures/docs.js && node --check src/fixtures/pricing.js && node --check public/static/app.js && node --check public/static/pricing.js",
+    "test": "node --test",
+    "validate": "npm run check && npm test && npm run build"
+  },
+  "devDependencies": {
+    "wrangler": "4.124.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

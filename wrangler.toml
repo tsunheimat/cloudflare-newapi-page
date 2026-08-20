@@ -1,0 +1,25 @@
+name = "cloudflare-newapi-page"
+main = "src/worker.js"
+compatibility_date = "2026-08-20"
+workers_dev = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+not_found_handling = "single-page-application"
+
+[vars]
+# Phase 1 deliberately serves explicit fixture data. The future NewAPI adapter
+# will be selected here only after its private connectivity and live contracts
+# have been verified.
+CONTENT_ADAPTER = "fixture"
+
+# A live service binding is intentionally NOT configured in this phase.
+# When the existing download Worker is ready to be attached, configure it in
+# the Cloudflare environment instead of copying its R2/admin logic here:
+#
+# [[services]]
+# binding = "DOWNLOADS_SERVICE"
+# service = "cloudflare-download-site"
+

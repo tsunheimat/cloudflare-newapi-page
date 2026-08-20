@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="独立的 NewAPI 公共文档与模型价格站点。"
+    />
+    <meta name="theme-color" content="#f4f1ea" />
+    <title>JuAPI 开发者中心</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script type="module" src="/static/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <header class="site-header">
+      <a class="brand" href="/" data-link aria-label="JuAPI 开发者中心首页">
+        <span class="brand-mark" aria-hidden="true">J</span>
+        <span class="brand-copy">
+          <strong>JuAPI</strong>
+          <small>开发者中心</small>
+        </span>
+      </a>
+      <nav class="primary-nav" aria-label="主导航">
+        <a href="/docs/quickstart" data-link data-nav="docs">文档</a>
+        <a href="/pricing" data-link data-nav="pricing">价格</a>
+        <span class="nav-divider" aria-hidden="true"></span>
+        <span class="nav-phase">Phase 01</span>
+      </nav>
+    </header>
+    <main id="main-content" tabindex="-1">
+      <div class="loading-shell" aria-live="polite">
+        <span class="loading-dot"></span>
+        正在载入开发者中心…
+      </div>
+    </main>
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  </body>
+</html>
+
