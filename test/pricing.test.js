@@ -152,6 +152,12 @@ test('tier parser preserves ternary tiers and the documented request-rule suffix
   assert.equal(parsed.tiers[1].condition, 'otherwise(len <= 32000)');
   assert.equal(parsed.requestRule.multiplier, 2);
   assert.match(parsed.requestRule.condition, /x-priority/);
+
+  const compoundCondition = parseBillingExpression(
+    'p < 32000 && c >= 200 ? tier("short", p * 3 + c * 15) : tier("long", p * 4 + c * 20)',
+  );
+  assert.equal(compoundCondition.complete, true);
+  assert.equal(compoundCondition.tiers[0].condition, 'p < 32000 && c >= 200');
 });
 
 test('one unknown field in any tier rejects the whole expression without partial tiers', () => {
@@ -176,6 +182,39 @@ test('unknown versions and malformed request suffixes fail closed', () => {
   assert.equal(malformedSuffix.complete, false);
   assert.equal(malformedSuffix.errorCode, 'invalid_request_rule');
   assert.deepEqual(malformedSuffix.tiers, []);
+});
+
+test('empty, unknown, or incomplete tier grammar fails closed without partial prices', () => {
+  const malformedExpressions = [
+    'tier("base", p * 3 +)',
+    'p <= 10 && ? tier("known", p * 3 + c * 15) : tier("other", p * 4 + c * 20)',
+    '|||when(header("x") unknown "y") * 2',
+    'tier("base", p * 3 + c * 15)|||when(header("x") unknown "y") * 2',
+  ];
+
+  for (const billingExpr of malformedExpressions) {
+    const parsed = parseBillingExpression(billingExpr);
+    assert.equal(parsed.complete, false, billingExpr);
+    assert.deepEqual(parsed.tiers, [], billingExpr);
+    assert.equal(parsed.requestRule, null, billingExpr);
+
+    const payload = cloneFixture();
+    const pricing = calculateModelPricing(
+      {
+        model_name: 'malformed-tier',
+        enable_groups: ['default'],
+        billing_mode: 'tiered_expr',
+        billing_expr: billingExpr,
+      },
+      payload,
+      { currency: 'USD' },
+    );
+    assert.equal(pricing.availability, 'unavailable', billingExpr);
+    assert.equal(pricing.parseComplete, false, billingExpr);
+    assert.deepEqual(pricing.tiers, [], billingExpr);
+    assert.deepEqual(pricing.items, [], billingExpr);
+    assert.equal('pricesUSD' in pricing, false, billingExpr);
+  }
 });
 
 test('tiered calculation never promotes the first tier to a complete model price', () => {
@@ -325,4 +364,30 @@ test('an incomplete video matrix fails closed instead of using the remaining row
   assert.equal(pricing.unavailableCode, 'invalid_video_profile');
   assert.deepEqual(pricing.rows, []);
   assert.equal('pricesUSD' in pricing, false);
+});
+
+test('video rate multiplier must be a finite number strictly greater than zero', () => {
+  const invalidMultipliers = [
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    '0.5',
+    'not-a-number',
+  ];
+
+  for (const rateMultiplier of invalidMultipliers) {
+    const payload = cloneFixture();
+    const model = payload.data.find(
+      (item) => item.model_name === 'demo-video-generation',
+    );
+    model.video_pricing.rate_multiplier = rateMultiplier;
+    const pricing = calculateModelPricing(model, payload, { currency: 'USD' });
+    assert.equal(pricing.kind, 'video', String(rateMultiplier));
+    assert.equal(pricing.availability, 'unavailable', String(rateMultiplier));
+    assert.equal(pricing.unavailableCode, 'invalid_video_profile');
+    assert.deepEqual(pricing.rows, []);
+    assert.deepEqual(pricing.items, []);
+    assert.equal('pricesUSD' in pricing, false);
+  }
 });

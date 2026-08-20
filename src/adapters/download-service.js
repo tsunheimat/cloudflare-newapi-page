@@ -75,9 +75,12 @@ export async function forwardToDownloadService(request, env = {}) {
   downstreamUrl.pathname = mapDownloadPath(incomingUrl.pathname);
 
   const downstreamRequest = new Request(downstreamUrl, request);
-  downstreamRequest.headers.set('x-forwarded-prefix', '/downloads');
-  const response = await env.DOWNLOADS_SERVICE.fetch(downstreamRequest);
-  return rewriteDownloadLocation(response, incomingUrl.origin);
+  if (isMountedDownloadPath(incomingUrl.pathname)) {
+    downstreamRequest.headers.set('x-forwarded-prefix', '/downloads');
+  } else {
+    downstreamRequest.headers.delete('x-forwarded-prefix');
+  }
+  return env.DOWNLOADS_SERVICE.fetch(downstreamRequest);
 }
 
 function hasSegmentPrefix(pathname, prefix) {
@@ -92,19 +95,6 @@ export function mapDownloadPath(pathname) {
   return pathname;
 }
 
-function rewriteDownloadLocation(response, incomingOrigin) {
-  const location = response.headers.get('location');
-  if (!location) return response;
-
-  let parsed;
-  try {
-    parsed = new URL(location, incomingOrigin);
-  } catch {
-    return response;
-  }
-
-  if (parsed.origin !== incomingOrigin) return response;
-  const headers = new Headers(response.headers);
-  headers.set('location', `${parsed.pathname}${parsed.search}${parsed.hash}`);
-  return new Response(response.body, { status: response.status, headers });
+function isMountedDownloadPath(pathname) {
+  return pathname === '/downloads' || pathname.startsWith('/downloads/');
 }

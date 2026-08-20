@@ -73,7 +73,7 @@ export async function route(request, env = {}) {
     );
   }
 
-  if (pathname.startsWith('/api/')) {
+  if (pathname === '/api' || pathname.startsWith('/api/')) {
     throw new HttpError(404, 'API route not found.');
   }
 

@@ -17,12 +17,26 @@ test('declared Node minimum matches the locked Wrangler engine floor', async () 
 
 test('lockfile artifacts use only the public HTTPS npm registry', async () => {
   const lock = await readJson(new URL('../package-lock.json', import.meta.url));
-  const resolvedEntries = Object.entries(lock.packages)
-    .filter(([, entry]) => entry.resolved)
-    .map(([name, entry]) => ({ name, resolved: entry.resolved }));
+  const packageEntries = Object.entries(lock.packages).filter(
+    ([name, entry]) => name !== '' && entry.link !== true,
+  );
 
-  assert.ok(resolvedEntries.length > 0);
-  for (const { name, resolved } of resolvedEntries) {
+  assert.ok(packageEntries.length > 0);
+  for (const [name, entry] of packageEntries) {
+    assert.equal(
+      typeof entry.resolved,
+      'string',
+      `${name} is missing a resolved artifact URL`,
+    );
+    assert.ok(entry.resolved.length > 0, `${name} has an empty resolved URL`);
+    assert.equal(
+      typeof entry.integrity,
+      'string',
+      `${name} is missing artifact integrity`,
+    );
+    assert.ok(entry.integrity.length > 0, `${name} has empty integrity`);
+
+    const { resolved } = entry;
     const url = new URL(resolved);
     assert.equal(url.protocol, 'https:', `${name} uses a non-HTTPS artifact`);
     assert.equal(

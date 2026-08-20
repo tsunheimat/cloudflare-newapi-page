@@ -31,6 +31,7 @@ const BILLING_VARIABLE_PATTERN = BILLING_VARIABLES
   .sort((left, right) => right.length - left.length)
   .join('|');
 const NUMBER_SOURCE = '(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?';
+const JSON_STRING_SOURCE = '"(?:[^"\\\\]|\\\\.)*"';
 const DISPLAY_CURRENCIES = new Set(['USD', 'CNY', 'CUSTOM']);
 
 export function assertOrdinaryPricingPayload(payload) {
@@ -206,9 +207,10 @@ export function parseBillingExpression(expression) {
     };
   }
   const baseExpression = suffixParts[0].trim();
-  const suffix = suffixParts.length === 2 ? suffixParts[1].trim() : '';
-  const requestRule = suffix ? parseRequestRuleSuffix(suffix) : null;
-  if (suffix && !requestRule) {
+  const hasRequestRule = suffixParts.length === 2;
+  const suffix = hasRequestRule ? suffixParts[1].trim() : '';
+  const requestRule = hasRequestRule ? parseRequestRuleSuffix(suffix) : null;
+  if (hasRequestRule && !requestRule) {
     return {
       ...failed('invalid_request_rule', '请求规则后缀无法完整解析。'),
       version,
@@ -253,7 +255,7 @@ export function getVideoResolutionRows({
   const profile = model.video_pricing;
   if (profile.version !== 1) return null;
 
-  const multiplier = nonNegativeNumber(profile.rate_multiplier);
+  const multiplier = strictPositiveNumber(profile.rate_multiplier);
   const ratio = nonNegativeNumber(groupRatio);
   const sourceCurrency = String(profile.currency).toUpperCase();
   const resolutionRates = profile.resolution_rates;
@@ -624,7 +626,7 @@ function parseTierCall(rawExpression) {
 function parseTierCost(rawCost) {
   const cost = stripFullOuterParentheses(rawCost.trim());
   const terms = splitTopLevelAdd(cost);
-  if (terms.length === 0) return null;
+  if (!terms || terms.length === 0) return null;
   const termPattern = new RegExp(
     `^(${BILLING_VARIABLE_PATTERN})\\s*\\*\\s*(${NUMBER_SOURCE})$`,
   );
@@ -647,6 +649,7 @@ function parseTierCost(rawCost) {
 function parseTierCondition(rawCondition) {
   const condition = stripFullOuterParentheses(rawCondition.trim());
   const parts = splitTopLevelOperator(condition, '&&');
+  if (!parts) return null;
   const conditionPattern = new RegExp(
     `^(p|c|len)\\s*(<=|>=|<|>)\\s*(${NUMBER_SOURCE})$`,
   );
@@ -665,7 +668,9 @@ function parseRequestRuleSuffix(rawSuffix) {
   const open = suffix.indexOf('(');
   const close = findMatchingParenthesis(suffix, open);
   if (close < 0) return null;
-  const condition = suffix.slice(open + 1, close).trim();
+  const condition = parseRequestRuleCondition(
+    suffix.slice(open + 1, close),
+  );
   const trailing = suffix.slice(close + 1).trim();
   const multiplierMatch = trailing.match(
     new RegExp(`^\\*\\s*(${NUMBER_SOURCE})$`),
@@ -675,6 +680,33 @@ function parseRequestRuleSuffix(rawSuffix) {
     : null;
   if (!condition || multiplier === null) return null;
   return { raw: suffix, condition, multiplier };
+}
+
+function parseRequestRuleCondition(rawCondition) {
+  const condition = stripFullOuterParentheses(rawCondition.trim());
+  const headerContainsPattern = new RegExp(
+    `^header\\s*\\(\\s*(${JSON_STRING_SOURCE})\\s*\\)\\s+has\\s+(${JSON_STRING_SOURCE})$`,
+  );
+  const match = condition.match(headerContainsPattern);
+  if (!match) return null;
+
+  let headerName;
+  let expectedValue;
+  try {
+    headerName = JSON.parse(match[1]);
+    expectedValue = JSON.parse(match[2]);
+  } catch {
+    return null;
+  }
+  if (
+    typeof headerName !== 'string' ||
+    headerName.trim() === '' ||
+    typeof expectedValue !== 'string' ||
+    expectedValue === ''
+  ) {
+    return null;
+  }
+  return condition;
 }
 
 function findTopLevelTernary(expression) {
@@ -770,12 +802,24 @@ function splitTopLevelAdd(expression) {
   let start = 0;
   let depth = 0;
   let inString = false;
+  let escaped = false;
   for (let index = 0; index < expression.length; index += 1) {
     const character = expression[index];
-    if (character === '"' && expression[index - 1] !== '\\') inString = !inString;
-    if (inString) continue;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
     if (character === '(') depth += 1;
-    else if (character === ')') depth -= 1;
+    else if (character === ')') {
+      depth -= 1;
+      if (depth < 0) return null;
+    }
     else if (
       depth === 0 &&
       character === '+' &&
@@ -785,8 +829,9 @@ function splitTopLevelAdd(expression) {
       start = index + 1;
     }
   }
+  if (inString || depth !== 0) return null;
   parts.push(expression.slice(start).trim());
-  return parts.filter(Boolean);
+  return parts;
 }
 
 function splitTopLevelOperator(expression, operator) {
@@ -795,15 +840,19 @@ function splitTopLevelOperator(expression, operator) {
   let depth = 0;
   for (let index = 0; index < expression.length; index += 1) {
     if (expression[index] === '(') depth += 1;
-    else if (expression[index] === ')') depth -= 1;
+    else if (expression[index] === ')') {
+      depth -= 1;
+      if (depth < 0) return null;
+    }
     else if (depth === 0 && expression.slice(index, index + operator.length) === operator) {
       parts.push(expression.slice(start, index).trim());
       start = index + operator.length;
       index += operator.length - 1;
     }
   }
+  if (depth !== 0) return null;
   parts.push(expression.slice(start).trim());
-  return parts.filter(Boolean);
+  return parts;
 }
 
 function splitOutsideStrings(text, separator) {
@@ -947,6 +996,12 @@ function nonNegativeNumber(value) {
 function positiveNumber(value) {
   const number = finiteNumber(value);
   return number !== null && number > 0 ? number : null;
+}
+
+function strictPositiveNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : null;
 }
 
 function finiteNumber(value) {

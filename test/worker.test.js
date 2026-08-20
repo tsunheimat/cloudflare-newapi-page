@@ -177,6 +177,7 @@ test('download service binding preserves request semantics and maps reserved pre
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
       cookie: 'tr_admin=session',
+      'x-forwarded-prefix': '/untrusted',
     },
     body: 'password=example',
     redirect: 'manual',
@@ -189,6 +190,60 @@ test('download service binding preserves request semantics and maps reserved pre
   assert.equal(observed.prefix, '/downloads');
   assert.equal(response.status, 303);
   assert.equal(response.headers.get('location'), '/admin?updated=1');
+});
+
+test('direct legacy download routes do not claim the mounted downloads prefix', async () => {
+  const observed = [];
+  const env = {
+    ...fixtureEnv,
+    DOWNLOADS_SERVICE: {
+      async fetch(request) {
+        observed.push({
+          pathname: new URL(request.url).pathname,
+          prefix: request.headers.get('x-forwarded-prefix'),
+        });
+        return new Response('ok');
+      },
+    },
+  };
+
+  await fetchWorker('/admin', env, {
+    headers: { 'x-forwarded-prefix': '/untrusted' },
+  });
+  await fetchWorker('/software/client', env);
+
+  assert.deepEqual(observed, [
+    { pathname: '/admin', prefix: null },
+    { pathname: '/software/client', prefix: null },
+  ]);
+});
+
+test('download binding preserves relative, root-relative, and external redirects', async () => {
+  const locations = [
+    'next?ok=1',
+    '/admin?updated=1',
+    'https://downloads.example/releases/latest',
+  ];
+
+  for (const path of ['/downloads/admin', '/admin']) {
+    for (const location of locations) {
+      const response = await fetchWorker(
+        path,
+        {
+          ...fixtureEnv,
+          DOWNLOADS_SERVICE: {
+            fetch: async () =>
+              new Response(null, {
+                status: 302,
+                headers: { location },
+              }),
+          },
+        },
+        { redirect: 'manual' },
+      );
+      assert.equal(response.headers.get('location'), location, path);
+    }
+  }
 });
 
 test('downstream inline-style HTML does not receive the SPA CSP', async () => {
@@ -229,6 +284,14 @@ test('downstream CSP is preserved instead of overwritten by the SPA policy', asy
 });
 
 test('unhandled API routes do not fall into the SPA', async () => {
+  const apiRoot = await fetchWorker('/api', fixtureEnv);
+  assert.equal(apiRoot.status, 404);
+  assert.equal((await apiRoot.json()).error.code, 'not_found');
+
+  const apiRootSlash = await fetchWorker('/api/', fixtureEnv);
+  assert.equal(apiRootSlash.status, 404);
+  assert.equal((await apiRootSlash.json()).error.code, 'not_found');
+
   const response = await fetchWorker('/api/not-real', fixtureEnv);
   assert.equal(response.status, 404);
   assert.equal((await response.json()).error.code, 'not_found');
