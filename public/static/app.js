@@ -11,6 +11,9 @@ import {
   getOrdinaryUserModels,
 } from './pricing.js';
 
+const PRICING_MOBILE_QUERY = '(max-width: 767px)';
+const pricingMobileMedia = window.matchMedia?.(PRICING_MOBILE_QUERY) || null;
+
 const state = {
   docsCatalog: null,
   pricing: null,
@@ -25,7 +28,7 @@ const state = {
   tokenUnit: 'M',
   showWithRecharge: true,
   pricingMode: 'group',
-  viewMode: window.matchMedia?.('(max-width: 767px)').matches ? 'card' : 'table',
+  viewMode: pricingMobileMedia?.matches ? 'card' : 'table',
   advancedFiltersOpen: false,
 };
 
@@ -33,8 +36,10 @@ const main = document.querySelector('#main-content');
 let activeDocsSearchButton = null;
 let activeDocsTocObserver = null;
 let surfaceReturnFocus = null;
+let activeSurfaceDismiss = null;
 
 window.addEventListener('popstate', () => renderRoute());
+pricingMobileMedia?.addEventListener('change', handlePricingViewportChange);
 document.addEventListener('keydown', (event) => {
   if (
     (event.metaKey || event.ctrlKey) &&
@@ -45,7 +50,7 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     activeDocsSearchButton.click();
   }
-  if (event.key === 'Escape') closeSurfaceOverlay();
+  if (event.key === 'Escape') dismissSurfaceOverlay();
 });
 document.addEventListener('click', (event) => {
   const link = event.target.closest('a[data-link]');
@@ -57,6 +62,12 @@ document.addEventListener('click', (event) => {
 });
 
 renderRoute();
+
+function handlePricingViewportChange() {
+  if (normalizePath(window.location.pathname) !== '/pricing' || !state.pricing) return;
+  closeSurfaceOverlay({ restoreFocus: false });
+  void renderPricing();
+}
 
 async function renderRoute() {
   let path = normalizePath(window.location.pathname);
@@ -852,25 +863,30 @@ function defaultPricingFilters(payload) {
 }
 
 function isNarrowPricingViewport() {
-  return window.matchMedia?.('(max-width: 768px)').matches === true;
+  return pricingMobileMedia?.matches === true;
 }
 
 function openPricingFilterModal(payload, trigger) {
   closeSurfaceOverlay();
   trigger.setAttribute('aria-expanded', 'true');
-  const dialog = createSurfaceDialog('筛选', 'pricing-filter-modal');
+  const dismiss = () => {
+    closeSurfaceOverlay({ restoreFocus: false });
+    void renderPricing().then(() => {
+      document.querySelector('[data-pricing-filter-trigger]')?.focus();
+    });
+  };
+  const dialog = createSurfaceDialog('筛选', 'pricing-filter-modal', false, dismiss);
   const body = node('div', { class: 'pricing-filter-modal-body' });
   const footer = node('footer', { class: 'pricing-filter-modal-footer' });
   const reset = surfaceButton('重置', 'surface-button');
   const confirm = surfaceButton('确定', 'surface-button is-primary');
-  let draft = currentPricingFilters();
 
   const draw = (focusKey, focusValue) => {
     body.replaceChildren(renderPricingFilterControls(
       payload,
-      draft,
+      currentPricingFilters(),
       (key, value) => {
-        draft[key] = value;
+        state[key] = value;
         draw(key, value);
       },
       true,
@@ -888,16 +904,10 @@ function openPricingFilterModal(payload, trigger) {
   };
 
   reset.addEventListener('click', () => {
-    draft = defaultPricingFilters(payload);
+    Object.assign(state, defaultPricingFilters(payload));
     draw();
   });
-  confirm.addEventListener('click', () => {
-    Object.assign(state, draft);
-    closeSurfaceOverlay({ restoreFocus: false });
-    void renderPricing().then(() => {
-      document.querySelector('[data-pricing-filter-trigger]')?.focus();
-    });
-  });
+  confirm.addEventListener('click', dismiss);
   footer.append(reset, confirm);
   draw();
   dialog.content.append(body, footer);
@@ -1305,10 +1315,11 @@ function surfaceButton(label, className = 'surface-button', leadingIcon = null) 
 
 let surfaceDialogId = 0;
 
-function createSurfaceDialog(title, className = '', sheet = false) {
+function createSurfaceDialog(title, className = '', sheet = false, onDismiss = closeSurfaceOverlay) {
   surfaceReturnFocus = document.activeElement instanceof HTMLElement
     ? document.activeElement
     : null;
+  activeSurfaceDismiss = onDismiss;
   const titleId = `surface-dialog-title-${++surfaceDialogId}`;
   const overlay = node('div', { class: `surface-overlay${sheet ? ' is-sheet' : ''}` });
   const backdrop = node('button', {
@@ -1329,16 +1340,25 @@ function createSurfaceDialog(title, className = '', sheet = false) {
   const content = node('div', { class: 'surface-dialog-content' });
   panel.append(header, content);
   overlay.append(backdrop, panel);
-  backdrop.addEventListener('click', closeSurfaceOverlay);
-  close.addEventListener('click', closeSurfaceOverlay);
+  backdrop.addEventListener('click', dismissSurfaceOverlay);
+  close.addEventListener('click', dismissSurfaceOverlay);
   panel.addEventListener('keydown', trapSurfaceDialogFocus);
   document.body.classList.add('surface-overlay-open');
   return { overlay, panel, content };
 }
 
+function dismissSurfaceOverlay() {
+  if (activeSurfaceDismiss) {
+    activeSurfaceDismiss();
+    return;
+  }
+  closeSurfaceOverlay();
+}
+
 function closeSurfaceOverlay({ restoreFocus = true } = {}) {
   const returnFocus = surfaceReturnFocus;
   surfaceReturnFocus = null;
+  activeSurfaceDismiss = null;
   document.querySelectorAll('.surface-overlay').forEach((overlay) => overlay.remove());
   document.querySelector('.docs-hub-sidebar-wrap.is-open')?.classList.remove('is-open');
   document.querySelectorAll('[data-pricing-filter-trigger][aria-expanded="true"]')

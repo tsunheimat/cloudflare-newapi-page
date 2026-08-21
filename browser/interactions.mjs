@@ -173,7 +173,7 @@ test('single-heading TOC occupies a column only at the desktop breakpoint', { ti
   await context.close();
 });
 
-test('phone Pricing uses a bounded modal with locked group, Reset, Confirm, and focus return', { timeout: 25_000 }, async () => {
+test('phone Pricing keeps live modal changes across Escape, backdrop, close, and Confirm', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await newPage(context);
   await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
@@ -210,7 +210,9 @@ test('phone Pricing uses a bounded modal with locked group, Reset, Confirm, and 
   assert.equal(await lockedGroups.first().isDisabled(), true);
 
   const allBilling = dialog.locator('[data-filter-key="billing"][data-filter-value="all"]');
+  const perToken = dialog.locator('[data-filter-key="billing"][data-filter-value="per_token"]');
   const perRequest = dialog.locator('[data-filter-key="billing"][data-filter-value="per_request"]');
+  const tiered = dialog.locator('[data-filter-key="billing"][data-filter-value="tiered_expr"]');
   await perRequest.click();
   assert.equal(await perRequest.getAttribute('aria-pressed'), 'true');
   await dialog.getByRole('button', { name: '重置', exact: true }).click();
@@ -218,7 +220,7 @@ test('phone Pricing uses a bounded modal with locked group, Reset, Confirm, and 
   assert.equal(await perRequest.getAttribute('aria-pressed'), 'false');
 
   await perRequest.click();
-  await dialog.getByRole('button', { name: '确定', exact: true }).click();
+  await page.keyboard.press('Escape');
   await dialog.waitFor({ state: 'detached' });
   await page.waitForFunction(() => document.activeElement?.hasAttribute('data-pricing-filter-trigger'));
   assert.match(await trigger.textContent(), /筛选 \(1\)/);
@@ -226,13 +228,32 @@ test('phone Pricing uses a bounded modal with locked group, Reset, Confirm, and 
 
   await trigger.click();
   await dialog.waitFor({ state: 'visible' });
-  await page.keyboard.press('Escape');
+  assert.equal(await perRequest.getAttribute('aria-pressed'), 'true');
+  await perToken.click();
+  await page.locator('.surface-overlay-backdrop').click({ position: { x: 2, y: 2 } });
   await dialog.waitFor({ state: 'detached' });
   await page.waitForFunction(() => document.activeElement?.hasAttribute('data-pricing-filter-trigger'));
+
+  await trigger.click();
+  await dialog.waitFor({ state: 'visible' });
+  assert.equal(await perToken.getAttribute('aria-pressed'), 'true');
+  await tiered.click();
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await dialog.waitFor({ state: 'detached' });
+  await page.waitForFunction(() => document.activeElement?.hasAttribute('data-pricing-filter-trigger'));
+
+  await trigger.click();
+  await dialog.waitFor({ state: 'visible' });
+  assert.equal(await tiered.getAttribute('aria-pressed'), 'true');
+  await perRequest.click();
+  await dialog.getByRole('button', { name: '确定', exact: true }).click();
+  await dialog.waitFor({ state: 'detached' });
+  await page.waitForFunction(() => document.activeElement?.hasAttribute('data-pricing-filter-trigger'));
+  assert.match(await trigger.textContent(), /筛选 \(1\)/);
   await context.close();
 });
 
-test('desktop Pricing keeps the canonical inline filter interaction', { timeout: 20_000 }, async () => {
+test('Pricing switches between desktop inline filters and the mobile modal at 768px', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await newPage(context);
   await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
@@ -248,6 +269,32 @@ test('desktop Pricing keeps the canonical inline filter interaction', { timeout:
   assert.match(await page.locator('[data-pricing-filter-trigger]').textContent(), /筛选 \(1\) · 收起/);
   assert.equal(await page.locator('[data-pricing-group]').count(), 1);
   assert.equal(await page.locator('[data-pricing-group="default"]').isDisabled(), true);
+
+  await page.setViewportSize({ width: 767, height: 844 });
+  await page.waitForFunction(() => (
+    window.matchMedia('(max-width: 767px)').matches &&
+    !document.querySelector('.pricing-advanced-filters')
+  ));
+  assert.equal(await page.locator('.pricing-advanced-filters').count(), 0);
+  assert.equal(await trigger.getAttribute('aria-haspopup'), 'dialog');
+  assert.equal(await trigger.getAttribute('aria-expanded'), 'false');
+
+  await trigger.click();
+  const dialog = page.locator('.pricing-filter-modal');
+  await dialog.waitFor({ state: 'visible' });
+  assert.equal(
+    await dialog.locator('[data-filter-key="billing"][data-filter-value="per_request"]').getAttribute('aria-pressed'),
+    'true',
+  );
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'detached' });
+  await page.waitForFunction(() => document.activeElement?.hasAttribute('data-pricing-filter-trigger'));
+
+  await page.setViewportSize({ width: 768, height: 1000 });
+  await page.locator('.pricing-advanced-filters').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('.pricing-filter-modal').count(), 0);
+  assert.equal(await trigger.getAttribute('aria-haspopup'), null);
+  assert.match(await trigger.textContent(), /筛选 \(1\) · 收起/);
   await context.close();
 });
 
