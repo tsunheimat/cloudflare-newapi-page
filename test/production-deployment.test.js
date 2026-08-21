@@ -187,6 +187,24 @@ test('production input gate rejects pinned Wrangler control-plane, proxy, log, o
   );
 });
 
+test('production validation independently rejects WRANGLER_WRITE_LOGS before spawning validation', async () => {
+  let validationSpawned = false;
+
+  await assert.rejects(
+    validateProductionCommit(
+      'a'.repeat(40),
+      { WRANGLER_WRITE_LOGS: 'false' },
+      {
+        async runCommand() {
+          validationSpawned = true;
+        },
+      },
+    ),
+    /WRANGLER_WRITE_LOGS/,
+  );
+  assert.equal(validationSpawned, false);
+});
+
 test('clean snapshot gate rejects tracked and untracked validation output', async (t) => {
   const repositoryRoot = await createTemporaryRepository(t);
   const commit = await assertCleanCommit(repositoryRoot);
@@ -278,14 +296,14 @@ test('real deploy rechecks ignored inputs immediately before the Wrangler child 
     runProductionDeploy(commit, mutatedEnvironment, {
       repositoryRoot,
       async resolveCleanCommit() {
-        mutatedEnvironment.WRANGLER_OUTPUT_FILE_PATH = 'synthetic-output.json';
+        mutatedEnvironment.WRANGLER_WRITE_LOGS = 'false';
         return commit;
       },
       async runCommand() {
         spawned = true;
       },
     }),
-    /WRANGLER_OUTPUT_FILE_PATH/,
+    /WRANGLER_WRITE_LOGS/,
   );
   assert.equal(spawned, false);
 });
