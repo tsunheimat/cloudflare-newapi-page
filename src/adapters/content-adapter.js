@@ -33,7 +33,11 @@ export function createFixtureAdapter() {
     live: false,
 
     async getDocsCatalog() {
-      return clone({ meta: docsFixture.meta, sections: docsFixture.sections });
+      return clone({
+        meta: docsFixture.meta,
+        sections: docsFixture.sections,
+        search_index: docsFixture.search_index,
+      });
     },
 
     async getDocPage(slug) {

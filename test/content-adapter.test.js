@@ -18,6 +18,19 @@ test('fixture adapter exposes a structured Docs catalog and pages', async () => 
   assert.equal(catalog.meta.live, false);
   assert.ok(catalog.sections.length >= 3);
 
+  const temperature = catalog.search_index.find((entry) =>
+    entry.text.includes('temperature'),
+  );
+  assert.equal(temperature.slug, 'chat-completions');
+  assert.equal(temperature.anchor, 'body');
+
+  const responsesEndpoint = catalog.search_index.find((entry) =>
+    entry.text.includes('/v1/responses'),
+  );
+  assert.equal(responsesEndpoint.slug, 'responses');
+  assert.equal(responsesEndpoint.anchor, 'responses-endpoint');
+  assert.match(responsesEndpoint.target_title, /POST \/v1\/responses/);
+
   const quickstart = await adapter.getDocPage('quickstart');
   assert.equal(quickstart.page.title, '快速开始');
   assert.ok(quickstart.page.blocks.some((block) => block.type === 'code'));

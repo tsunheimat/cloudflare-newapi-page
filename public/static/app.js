@@ -32,6 +32,7 @@ const state = {
 const main = document.querySelector('#main-content');
 let activeDocsSearchButton = null;
 let activeDocsTocObserver = null;
+let surfaceReturnFocus = null;
 
 window.addEventListener('popstate', () => renderRoute());
 document.addEventListener('keydown', (event) => {
@@ -58,7 +59,11 @@ document.addEventListener('click', (event) => {
 renderRoute();
 
 async function renderRoute() {
-  const path = normalizePath(window.location.pathname);
+  let path = normalizePath(window.location.pathname);
+  if (path === '/docs') {
+    window.history.replaceState(window.history.state, '', '/docs/quickstart');
+    path = '/docs/quickstart';
+  }
   activeDocsSearchButton = null;
   activeDocsTocObserver?.disconnect();
   activeDocsTocObserver = null;
@@ -69,8 +74,8 @@ async function renderRoute() {
   try {
     if (path === '/') {
       await renderHome();
-    } else if (path === '/docs' || path.startsWith('/docs/')) {
-      await renderDocs(path === '/docs' ? 'quickstart' : path.slice('/docs/'.length));
+    } else if (path.startsWith('/docs/')) {
+      await renderDocs(path.slice('/docs/'.length));
     } else if (path === '/pricing') {
       await renderPricing();
     } else {
@@ -190,7 +195,7 @@ async function renderDocs(slug) {
   );
   const mainColumn = node('div', { class: 'docs-hub-main' });
   mainColumn.append(article);
-  if (headings.length >= 2) mainColumn.append(renderDocsToc(headings));
+  if (headings.length > 0) mainColumn.append(renderDocsToc(headings));
 
   shell.append(mobileBar, sidebarWrap, mainColumn);
   replaceMain(shell);
@@ -272,7 +277,7 @@ function renderDocBlock(block) {
       return list;
     }
     case 'endpoint': {
-      const endpoint = node('div', { class: 'docs-api-endpoint' });
+      const endpoint = node('div', { class: 'docs-api-endpoint', id: block.id });
       const header = node('div', { class: 'docs-api-endpoint__header' });
       header.append(
         node('span', { class: 'docs-api-endpoint__method', 'data-method': block.method }, block.method),
@@ -375,19 +380,27 @@ function openDocsSearch(catalog) {
     results.replaceChildren();
     const query = state.docsQuery.trim().toLowerCase();
     if (!query) return;
-    const matches = flattenDocsCatalog(catalog).filter((item) =>
-      [item.title, item.summary, ...(item.keywords || [])].join(' ').toLowerCase().includes(query),
+    const matches = docsSearchEntries(catalog).filter((item) =>
+      item.text.toLowerCase().includes(query),
     );
     matches.forEach((item) => {
+      const href = docsSearchHref(item);
       const button = surfaceButton('', 'docs-hub-search-item');
+      button.setAttribute('data-search-target', href);
       const title = node('span', { class: 'docs-hub-search-item__title' });
-      appendHighlightedText(title, item.title, state.docsQuery);
+      appendHighlightedText(
+        title,
+        item.target_title === item.title
+          ? item.title
+          : `${item.title} · ${item.target_title}`,
+        state.docsQuery,
+      );
       const snippet = node('span', { class: 'docs-hub-search-item__snippet' });
-      appendHighlightedText(snippet, item.summary, state.docsQuery);
+      appendHighlightedText(snippet, item.text, state.docsQuery);
       button.append(title, snippet);
       button.addEventListener('click', () => {
         closeSurfaceOverlay();
-        navigate(`/docs/${item.slug}`);
+        navigate(href);
       });
       results.append(button);
     });
@@ -402,8 +415,20 @@ function openDocsSearch(catalog) {
   draw();
 }
 
-function flattenDocsCatalog(catalog) {
-  return catalog.sections.flatMap((section) => section.items);
+function docsSearchEntries(catalog) {
+  if (Array.isArray(catalog.search_index)) return catalog.search_index;
+  return catalog.sections.flatMap((section) => section.items).map((item) => ({
+    slug: item.slug,
+    anchor: null,
+    title: item.title,
+    target_title: item.title,
+    text: [item.title, item.summary, ...(item.keywords || [])].join(' '),
+  }));
+}
+
+function docsSearchHref(item) {
+  const anchor = item.anchor ? `#${encodeURIComponent(item.anchor)}` : '';
+  return `/docs/${encodeURIComponent(item.slug)}${anchor}`;
 }
 
 function appendHighlightedText(container, text, query) {
@@ -501,7 +526,9 @@ async function renderPricing() {
   const results = node('div', { class: 'pricing-view-container', 'aria-live': 'polite' });
   toolbar.append(renderPricingSearchActions(payload, results, countTag));
   listCard.append(toolbar);
-  if (state.advancedFiltersOpen) listCard.append(renderPricingAdvancedFilters(payload));
+  if (state.advancedFiltersOpen && !isNarrowPricingViewport()) {
+    listCard.append(renderPricingAdvancedFilters(payload));
+  }
   listCard.append(results);
   renderPricingResults(payload, results, countTag);
   content.append(listCard);
@@ -665,9 +692,16 @@ function renderPricingSearchActions(payload, results, countTag) {
 
   const actions = node('div', { class: 'pricing-toolbar-actions' });
   const activeCount = [state.billing !== 'all', state.endpoint !== 'all', state.tag !== 'all'].filter(Boolean).length;
-  const filter = surfaceButton(`筛选${activeCount ? ` (${activeCount})` : ''}${state.advancedFiltersOpen ? ' · 收起' : ''}`, 'surface-button', icon('sliders'));
-  filter.setAttribute('aria-expanded', String(state.advancedFiltersOpen));
+  const inlineOpen = state.advancedFiltersOpen && !isNarrowPricingViewport();
+  const filter = surfaceButton(`筛选${activeCount ? ` (${activeCount})` : ''}${inlineOpen ? ' · 收起' : ''}`, 'surface-button', icon('sliders'));
+  filter.setAttribute('data-pricing-filter-trigger', '');
+  if (isNarrowPricingViewport()) filter.setAttribute('aria-haspopup', 'dialog');
+  filter.setAttribute('aria-expanded', String(inlineOpen));
   filter.addEventListener('click', () => {
+    if (isNarrowPricingViewport()) {
+      openPricingFilterModal(payload, filter);
+      return;
+    }
     state.advancedFiltersOpen = !state.advancedFiltersOpen;
     void renderPricing();
   });
@@ -696,64 +730,181 @@ function renderPricingAdvancedFilters(payload) {
   const header = node('div', { class: 'pricing-advanced-header' });
   const reset = surfaceButton('重置', 'surface-button is-borderless');
   reset.addEventListener('click', () => {
-    state.billing = 'all';
-    state.endpoint = 'all';
-    state.tag = 'all';
-    state.currency = payload.display.default_currency || 'CNY';
-    state.tokenUnit = 'M';
-    state.showWithRecharge = payload.display.show_with_recharge === true;
+    Object.assign(state, defaultPricingFilters(payload));
     void renderPricing();
   });
   header.append(node('span', {}, '筛选'), reset);
   panel.append(header);
+  panel.append(renderPricingFilterControls(
+    payload,
+    currentPricingFilters(),
+    (key, value) => {
+      state[key] = value;
+      void renderPricing();
+    },
+  ));
+  return panel;
+}
+
+function renderPricingFilterControls(payload, values, onChange, includeLockedGroup = false) {
+  const fragment = document.createDocumentFragment();
+  if (includeLockedGroup) fragment.append(renderLockedPricingFilterGroup(payload));
   const vendorModels = getOrdinaryUserModels(payload).filter((model) => String(model.vendor_id) === state.vendor);
-  panel.append(
+  fragment.append(
     renderPricingFilterGroup('计费类型', [
       ['all', '全部类型'],
       ['per_token', '按量计费'],
       ['per_request', '按次计费'],
       ['tiered_expr', '动态计费'],
       ['video', '影片计费'],
-    ], state.billing, (value) => { state.billing = value; }),
+    ], values.billing, (value) => onChange('billing', value), 'billing'),
   );
   const endpoints = [...new Set(vendorModels.flatMap((model) => model.supported_endpoint_types || []))].sort();
-  panel.append(renderPricingFilterGroup('端点类型', [['all', '全部端点'], ...endpoints.map((value) => [value, value])], state.endpoint, (value) => { state.endpoint = value; }));
+  fragment.append(renderPricingFilterGroup(
+    '端点类型',
+    [['all', '全部端点'], ...endpoints.map((value) => [value, value])],
+    values.endpoint,
+    (value) => onChange('endpoint', value),
+    'endpoint',
+  ));
   const tags = [...new Set(vendorModels.flatMap((model) => String(model.tags || '').split(/[,;|]+/).map((tag) => tag.trim()).filter(Boolean)))].sort();
-  panel.append(renderPricingFilterGroup('标签', [['all', '全部标签'], ...tags.map((value) => [value.toLowerCase(), value])], state.tag, (value) => { state.tag = value; }));
-  panel.append(
+  fragment.append(renderPricingFilterGroup(
+    '标签',
+    [['all', '全部标签'], ...tags.map((value) => [value.toLowerCase(), value])],
+    values.tag,
+    (value) => onChange('tag', value),
+    'tag',
+  ));
+  fragment.append(
     renderPricingFilterGroup('货币单位', [
       ['CNY', 'CNY (¥)'],
       ['USD', 'USD ($)'],
       ['CUSTOM', `自定义货币 (${payload.display.custom_currency_symbol || '¤'})`],
-    ], state.currency, (value) => { state.currency = value; }),
+    ], values.currency, (value) => onChange('currency', value), 'currency'),
     renderPricingFilterGroup('显示设置', [
       ['M', '按 1M 显示'],
       ['K', '按 1K 显示'],
-    ], state.tokenUnit, (value) => { state.tokenUnit = value; }),
+    ], values.tokenUnit, (value) => onChange('tokenUnit', value), 'tokenUnit'),
     renderPricingFilterGroup('价格换算', [
       ['recharge', '充值价格显示'],
       ['base', '基础价格'],
-    ], state.showWithRecharge ? 'recharge' : 'base', (value) => { state.showWithRecharge = value === 'recharge'; }),
+    ], values.showWithRecharge ? 'recharge' : 'base', (value) => onChange('showWithRecharge', value === 'recharge'), 'showWithRecharge'),
   );
-  return panel;
+  return fragment;
 }
 
-function renderPricingFilterGroup(title, items, active, onChange) {
+function renderPricingFilterGroup(title, items, active, onChange, filterKey) {
   const group = node('section', { class: 'pricing-filter-group' });
   group.append(node('div', { class: 'pricing-filter-title' }, title));
   const options = node('div', { class: 'pricing-filter-options', role: 'group', 'aria-label': title });
   items.forEach(([value, label]) => {
     const selected = value === active;
     const button = surfaceButton(label, `pricing-filter-chip${selected ? ' is-active' : ''}`);
+    button.setAttribute('data-filter-key', filterKey);
+    button.setAttribute('data-filter-value', String(value));
     button.setAttribute('aria-pressed', String(selected));
     button.addEventListener('click', () => {
       onChange(value);
-      void renderPricing();
     });
     options.append(button);
   });
   group.append(options);
   return group;
+}
+
+function renderLockedPricingFilterGroup(payload) {
+  const group = node('section', { class: 'pricing-filter-group pricing-filter-group--locked' });
+  group.append(node('div', { class: 'pricing-filter-title' }, '用户分组'));
+  const options = node('div', { class: 'pricing-filter-options', role: 'group', 'aria-label': '用户分组' });
+  const locked = surfaceButton(
+    `default · 固定 · ${formatNumber(payload.group_ratio.default)}x`,
+    'pricing-filter-chip is-active is-locked',
+  );
+  locked.setAttribute('data-pricing-filter-group', 'default');
+  locked.setAttribute('aria-pressed', 'true');
+  locked.setAttribute('aria-disabled', 'true');
+  locked.disabled = true;
+  options.append(locked);
+  group.append(options);
+  return group;
+}
+
+function currentPricingFilters() {
+  return {
+    billing: state.billing,
+    endpoint: state.endpoint,
+    tag: state.tag,
+    currency: state.currency,
+    tokenUnit: state.tokenUnit,
+    showWithRecharge: state.showWithRecharge,
+  };
+}
+
+function defaultPricingFilters(payload) {
+  return {
+    billing: 'all',
+    endpoint: 'all',
+    tag: 'all',
+    currency: payload.display.default_currency || 'CNY',
+    tokenUnit: 'M',
+    showWithRecharge: payload.display.show_with_recharge === true,
+  };
+}
+
+function isNarrowPricingViewport() {
+  return window.matchMedia?.('(max-width: 768px)').matches === true;
+}
+
+function openPricingFilterModal(payload, trigger) {
+  closeSurfaceOverlay();
+  trigger.setAttribute('aria-expanded', 'true');
+  const dialog = createSurfaceDialog('筛选', 'pricing-filter-modal');
+  const body = node('div', { class: 'pricing-filter-modal-body' });
+  const footer = node('footer', { class: 'pricing-filter-modal-footer' });
+  const reset = surfaceButton('重置', 'surface-button');
+  const confirm = surfaceButton('确定', 'surface-button is-primary');
+  let draft = currentPricingFilters();
+
+  const draw = (focusKey, focusValue) => {
+    body.replaceChildren(renderPricingFilterControls(
+      payload,
+      draft,
+      (key, value) => {
+        draft[key] = value;
+        draw(key, value);
+      },
+      true,
+    ));
+    if (focusKey) {
+      requestAnimationFrame(() => {
+        [...body.querySelectorAll('[data-filter-key]')]
+          .find((button) => (
+            button.dataset.filterKey === focusKey &&
+            button.dataset.filterValue === String(focusValue)
+          ))
+          ?.focus();
+      });
+    }
+  };
+
+  reset.addEventListener('click', () => {
+    draft = defaultPricingFilters(payload);
+    draw();
+  });
+  confirm.addEventListener('click', () => {
+    Object.assign(state, draft);
+    closeSurfaceOverlay({ restoreFocus: false });
+    void renderPricing().then(() => {
+      document.querySelector('[data-pricing-filter-trigger]')?.focus();
+    });
+  });
+  footer.append(reset, confirm);
+  draw();
+  dialog.content.append(body, footer);
+  document.body.append(dialog.overlay);
+  requestAnimationFrame(() => {
+    body.querySelector('.pricing-filter-chip:not(:disabled)')?.focus();
+  });
 }
 
 function getFilteredPricing(payload) {
@@ -1155,6 +1306,9 @@ function surfaceButton(label, className = 'surface-button', leadingIcon = null) 
 let surfaceDialogId = 0;
 
 function createSurfaceDialog(title, className = '', sheet = false) {
+  surfaceReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
   const titleId = `surface-dialog-title-${++surfaceDialogId}`;
   const overlay = node('div', { class: `surface-overlay${sheet ? ' is-sheet' : ''}` });
   const backdrop = node('button', {
@@ -1177,14 +1331,41 @@ function createSurfaceDialog(title, className = '', sheet = false) {
   overlay.append(backdrop, panel);
   backdrop.addEventListener('click', closeSurfaceOverlay);
   close.addEventListener('click', closeSurfaceOverlay);
+  panel.addEventListener('keydown', trapSurfaceDialogFocus);
   document.body.classList.add('surface-overlay-open');
   return { overlay, panel, content };
 }
 
-function closeSurfaceOverlay() {
+function closeSurfaceOverlay({ restoreFocus = true } = {}) {
+  const returnFocus = surfaceReturnFocus;
+  surfaceReturnFocus = null;
   document.querySelectorAll('.surface-overlay').forEach((overlay) => overlay.remove());
   document.querySelector('.docs-hub-sidebar-wrap.is-open')?.classList.remove('is-open');
+  document.querySelectorAll('[data-pricing-filter-trigger][aria-expanded="true"]')
+    .forEach((trigger) => trigger.setAttribute('aria-expanded', 'false'));
   document.body.classList.remove('surface-overlay-open');
+  if (restoreFocus && returnFocus) {
+    requestAnimationFrame(() => {
+      if (returnFocus.isConnected) returnFocus.focus();
+    });
+  }
+}
+
+function trapSurfaceDialogFocus(event) {
+  if (event.key !== 'Tab') return;
+  const focusable = [...event.currentTarget.querySelectorAll(
+    'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => getComputedStyle(element).visibility !== 'hidden');
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function billingLabel(kind) {

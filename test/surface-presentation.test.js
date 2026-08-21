@@ -33,6 +33,9 @@ test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader state
   assert.match(app, /\(event\.metaKey \|\| event\.ctrlKey\)/);
   assert.match(app, /搜索标题、正文、接口路径…/);
   assert.match(app, /未找到匹配的文档/);
+  assert.match(app, /catalog\.search_index/);
+  assert.match(app, /if \(headings\.length > 0\)/);
+  assert.match(app, /window\.history\.replaceState\(window\.history\.state, '', '\/docs\/quickstart'\)/);
 
   assert.match(styles, /--docs-sidebar-width:\s*272px/);
   assert.match(styles, /--docs-gutter:\s*clamp\(32px, 4vw, 48px\)/);
@@ -69,10 +72,15 @@ test('Pricing presentation reuses the canonical hierarchy while exposing one loc
   assert.match(app, /\['official', '官方价格'\]/);
   assert.match(app, /\['table', '表格视图', 'table'\]/);
   assert.match(app, /\['card', '卡片视图', 'grid'\]/);
+  assert.match(app, /openPricingFilterModal\(payload, filter\)/);
+  assert.match(app, /class: 'pricing-filter-modal-body'/);
+  assert.match(app, /class: 'pricing-filter-modal-footer'/);
+  assert.match(app, /data-pricing-filter-group', 'default'/);
 
   assert.match(styles, /\.pricing-page-container\s*\{[\s\S]*?1500px/);
   assert.match(styles, /\.pricing-vendor-list\s*\{[\s\S]*?overflow-x:\s*auto/);
   assert.match(styles, /\.pricing-group-card\.is-locked/);
+  assert.match(styles, /\.pricing-filter-modal-body\s*\{[\s\S]*?overflow-y:\s*auto/);
   assert.match(styles, /\.pricing-card-grid\s*\{[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
   assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.pricing-card-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
 });

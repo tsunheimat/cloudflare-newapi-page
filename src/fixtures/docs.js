@@ -120,6 +120,7 @@ const docsPages = [
       },
       {
         type: 'endpoint',
+        id: 'chat-completions-endpoint',
         method: 'POST',
         path: '/v1/chat/completions',
         text: '创建聊天补全',
@@ -168,6 +169,7 @@ const docsPages = [
       },
       {
         type: 'endpoint',
+        id: 'responses-endpoint',
         method: 'POST',
         path: '/v1/responses',
         text: '创建模型响应',
@@ -234,6 +236,67 @@ const docsPages = [
   },
 ];
 
+function docsBlockSearchText(block) {
+  switch (block.type) {
+    case 'lead':
+    case 'paragraph':
+      return block.text;
+    case 'heading':
+      return block.text;
+    case 'callout':
+      return `${block.title} ${block.text}`;
+    case 'code':
+      return `${block.label || ''} ${block.language || ''} ${block.code}`;
+    case 'bullets':
+      return block.items.join(' ');
+    case 'endpoint':
+      return `${block.method} ${block.path} ${block.text}`;
+    case 'table':
+      return [...block.columns, ...block.rows.flat()].join(' ');
+    case 'link-cards':
+      return block.items
+        .map((item) => `${item.title} ${item.text} /docs/${item.slug}`)
+        .join(' ');
+    default:
+      return '';
+  }
+}
+
+function buildDocsSearchIndex(pages) {
+  return pages.flatMap((page) => {
+    const entries = new Map();
+    const append = (anchor, targetTitle, text) => {
+      const key = anchor || '';
+      const current = entries.get(key) || {
+        slug: page.slug,
+        anchor: anchor || null,
+        title: page.title,
+        target_title: targetTitle || page.title,
+        text: '',
+      };
+      current.text = `${current.text} ${text || ''}`.trim();
+      entries.set(key, current);
+    };
+
+    append(null, page.title, [page.title, page.summary, ...(page.keywords || [])].join(' '));
+    let currentHeading = null;
+    page.blocks.forEach((block) => {
+      if (block.type === 'heading') {
+        currentHeading = { id: block.id, text: block.text };
+      }
+      const endpointAnchor = block.type === 'endpoint' ? block.id : null;
+      append(
+        endpointAnchor || currentHeading?.id || null,
+        block.type === 'endpoint'
+          ? `${block.method} ${block.path}`
+          : currentHeading?.text || page.title,
+        docsBlockSearchText(block),
+      );
+    });
+    return [...entries.values()];
+  });
+}
+
 export const docsFixture = Object.freeze({
   meta: {
     source: 'fixture',
@@ -253,6 +316,6 @@ export const docsFixture = Object.freeze({
         keywords,
       })),
   })),
+  search_index: buildDocsSearchIndex(docsPages),
   pages: docsPages,
 });
-
