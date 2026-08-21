@@ -52,7 +52,7 @@ Page：
 }
 ```
 
-Phase 1 renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、`bullets`、`endpoint`、`table` 和 `link-cards`。Live adapter 接入前，需要确认 NewAPI Docs 的公开 page/revision/navigation/assets/search contract，再决定是逐块投影还是增加受版本控制的 renderer contract。不得从 private Admin response 直接透传内部字段。
+Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、`bullets`、`endpoint`、`table` 和 `link-cards`。Presentation 复用 pinned NewAPI commit `4d27865ce8342530f362595fdcd134eb83062a35` 的 Docs Hub shell、reader typography、导航/search/page states 与 responsive geometry，再把现有 flat fixture catalog 投影成一个 `开发文档` space 的 section groups；它不引入 NewAPI API client。Live adapter 接入前，需要确认 NewAPI Docs 的公开 page/revision/navigation/assets/search contract，再决定是逐块投影还是增加受版本控制的 renderer contract。不得从 private Admin response 直接透传内部字段。
 
 ## Pricing contract 与不变量
 
@@ -67,6 +67,8 @@ context.locked          = true
 group_ratio.default     exists and is finite/non-negative
 usable_group.default    exists
 ```
+
+Pricing presentation 同样复用 pinned NewAPI 的供应商 → 分组 → 价格清单、计价规则、table/card、filter 与 detail-sheet hierarchy。Public surface 只渲染一个 disabled `default` group card；供应商、计费类型、端点、标签、货币、单位与 recharge display 可以筛选或切换，但任何 control 都不能改变 `user_group=default`、`selected_group=default`、`locked=true`。
 
 模型可见性沿用 NewAPI group 规则：空 `enable_groups`、`all` 或包含 `default` 才可在普通用户页面显示。`billing_mode` 是 `tiered_expr` 与 `video` 的优先判别字段，不能被 legacy `quota_type` 覆盖。
 

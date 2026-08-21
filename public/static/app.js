@@ -1,3 +1,11 @@
+/*
+Copyright (C) 2025 QuantumNous
+
+The Docs and Pricing surface renderers in this file adapt the user-facing
+NewAPI SPA at commit 4d27865ce8342530f362595fdcd134eb83062a35. They remain
+licensed under GNU AGPL v3 or later; see LICENSE and THIRD_PARTY_NOTICES.md.
+The front-door home and header renderer are original to this Worker.
+*/
 import {
   calculateModelPricing,
   getOrdinaryUserModels,
@@ -9,26 +17,34 @@ const state = {
   integration: null,
   docsQuery: '',
   pricingQuery: '',
-  vendor: 'all',
+  vendor: '',
   billing: 'all',
+  endpoint: 'all',
+  tag: 'all',
   currency: 'CNY',
   tokenUnit: 'M',
   showWithRecharge: true,
+  pricingMode: 'group',
+  viewMode: window.matchMedia?.('(max-width: 767px)').matches ? 'card' : 'table',
+  advancedFiltersOpen: false,
 };
 
 const main = document.querySelector('#main-content');
-let activeDocsSearchInput = null;
+let activeDocsSearchButton = null;
+let activeDocsTocObserver = null;
 
 window.addEventListener('popstate', () => renderRoute());
 document.addEventListener('keydown', (event) => {
   if (
-    event.key === '/' &&
-    activeDocsSearchInput?.isConnected &&
+    (event.metaKey || event.ctrlKey) &&
+    event.key.toLowerCase() === 'k' &&
+    activeDocsSearchButton?.isConnected &&
     !isTypingTarget(event.target)
   ) {
     event.preventDefault();
-    activeDocsSearchInput.focus();
+    activeDocsSearchButton.click();
   }
+  if (event.key === 'Escape') closeSurfaceOverlay();
 });
 document.addEventListener('click', (event) => {
   const link = event.target.closest('a[data-link]');
@@ -43,7 +59,10 @@ renderRoute();
 
 async function renderRoute() {
   const path = normalizePath(window.location.pathname);
-  activeDocsSearchInput = null;
+  activeDocsSearchButton = null;
+  activeDocsTocObserver?.disconnect();
+  activeDocsTocObserver = null;
+  closeSurfaceOverlay();
   updateActiveNavigation(path);
   main.setAttribute('aria-busy', 'true');
 
@@ -118,83 +137,110 @@ async function renderDocs(slug) {
   const page = response.data.page;
   document.title = `${page.title} · JuAPI 文档`;
 
-  const shell = node('div', { class: 'docs-shell' });
-  const sidebar = renderDocsSidebar(catalog, slug);
-  const article = node('article', { class: 'docs-article' });
-  article.append(renderDataBadge(response.data.meta));
-  const headingWrap = node('header', { class: 'article-header' });
-  headingWrap.append(
-    node('div', { class: 'article-kicker' }, page.section),
-    node('h1', {}, page.title),
-    node('p', {}, page.summary),
-  );
-  article.append(headingWrap);
-  page.blocks.forEach((block) => article.append(renderDocBlock(block)));
-
-  const toc = node('aside', { class: 'toc', 'aria-label': '本页目录' });
-  toc.append(node('div', { class: 'toc-title' }, '本页目录'));
-  const headings = page.blocks.filter((block) => block.type === 'heading');
-  headings.forEach((heading) => {
-    const anchor = node('a', { href: `#${heading.id}` }, heading.text.replace(/^\d+\.\s*/, ''));
-    toc.append(anchor);
+  const shell = node('div', {
+    class: 'newapi-surface docs-hub-shell',
+    'data-docs-hub': '1',
+    'data-content-source': response.data.meta.source,
   });
-  shell.append(sidebar, article, toc);
+  const mobileBar = node('div', { class: 'docs-hub-mobile-bar' });
+  const menuButton = surfaceButton('菜单', 'docs-hub-mobile-nav-btn', icon('menu'));
+  menuButton.setAttribute('aria-label', '打开文档导航');
+  const mobileTitle = node('span', { class: 'docs-hub-mobile-bar__title' }, page.title);
+  const mobileSearch = surfaceButton('搜索', 'docs-hub-mobile-nav-btn', icon('search'));
+  mobileSearch.setAttribute('aria-label', '搜索文档');
+  mobileBar.append(menuButton, mobileTitle, mobileSearch);
+
+  const sidebarWrap = node('div', { class: 'docs-hub-sidebar-wrap' });
+  const backdrop = node('button', {
+    type: 'button',
+    class: 'docs-hub-sidebar-backdrop',
+    'aria-label': '关闭文档导航',
+  });
+  const sidebar = renderDocsSidebar(catalog, slug, () => {
+    sidebarWrap.classList.remove('is-open');
+  });
+  sidebarWrap.append(backdrop, sidebar);
+
+  const article = node('article', {
+    class: 'docs-hub-canvas',
+    id: 'docs-page-content',
+  });
+  const headingWrap = node('header', { class: 'docs-hub-page-header' });
+  const breadcrumbs = node('nav', {
+    class: 'docs-hub-breadcrumbs',
+    'aria-label': '面包屑导航',
+  });
+  breadcrumbs.append(
+    node('a', { href: '/docs/quickstart', 'data-link': '' }, '开发文档'),
+    node('span', { 'aria-hidden': 'true' }, '/'),
+    node('span', {}, page.section),
+    renderDataBadge(response.data.meta, 'Fixture · 非 live'),
+  );
+  headingWrap.append(
+    breadcrumbs,
+    node('h1', { class: 'docs-hub-page-title' }, page.title),
+    node('p', { class: 'docs-hub-page-summary' }, page.summary),
+  );
+  const blocks = node('div', { class: 'docs-block-renderer' });
+  page.blocks.forEach((block) => blocks.append(renderDocBlock(block)));
+  article.append(headingWrap, blocks, renderDocsPageNavigation(catalog, page));
+
+  const headings = page.blocks.filter(
+    (block) => block.type === 'heading' && [2, 3].includes(block.level || 2),
+  );
+  const mainColumn = node('div', { class: 'docs-hub-main' });
+  mainColumn.append(article);
+  if (headings.length >= 2) mainColumn.append(renderDocsToc(headings));
+
+  shell.append(mobileBar, sidebarWrap, mainColumn);
   replaceMain(shell);
+  menuButton.addEventListener('click', () => sidebarWrap.classList.add('is-open'));
+  backdrop.addEventListener('click', () => sidebarWrap.classList.remove('is-open'));
+  mobileSearch.addEventListener('click', () => openDocsSearch(catalog));
+  requestAnimationFrame(() => {
+    scrollToCurrentHash();
+    installDocsTocObserver();
+  });
 }
 
-function renderDocsSidebar(catalog, activeSlug) {
-  const aside = node('aside', { class: 'docs-sidebar', 'aria-label': '文档导航' });
-  const search = node('label', { class: 'search-field' });
-  search.append(icon('search'), node('span', { class: 'sr-only' }, '搜索文档'));
-  const input = node('input', {
-    type: 'search',
-    placeholder: '搜索文档',
-    value: state.docsQuery,
-    'aria-label': '搜索文档',
-  });
-  search.append(input, node('kbd', {}, '/'));
-  aside.append(search);
+function renderDocsSidebar(catalog, activeSlug, onPageNavigate) {
+  const aside = node('aside', { class: 'docs-hub-sidebar', 'aria-label': '文档导航' });
+  const search = surfaceButton('搜索文档', 'docs-hub-sidebar-search', icon('search'));
+  search.append(node('kbd', { 'aria-hidden': 'true' }, 'Ctrl K'));
+  search.addEventListener('click', () => openDocsSearch(catalog));
+  activeDocsSearchButton = search;
+  aside.append(search, node('span', { class: 'docs-hub-rail-label' }, '开发文档'));
 
-  const navigation = node('nav', { class: 'docs-navigation' });
-  const draw = () => {
-    navigation.replaceChildren();
-    const query = state.docsQuery.trim().toLowerCase();
-    let matches = 0;
-    catalog.sections.forEach((section) => {
-      const items = section.items.filter((item) => {
-        const haystack = [item.title, item.summary, ...(item.keywords || [])]
-          .join(' ')
-          .toLowerCase();
-        return !query || haystack.includes(query);
+  const navigation = node('nav', { class: 'docs-hub-tree-group' });
+  catalog.sections.forEach((section, sectionIndex) => {
+    const containsActive = section.items.some((item) => item.slug === activeSlug);
+    const group = node('div', { class: 'docs-hub-nav-group' });
+    const groupId = `docs-navigation-group-${sectionIndex}`;
+    const groupButton = surfaceButton(section.title, 'docs-hub-group-label', icon('chevron'));
+    groupButton.setAttribute('aria-expanded', String(containsActive));
+    groupButton.setAttribute('aria-controls', groupId);
+    groupButton.querySelector('svg')?.classList.toggle('is-open', containsActive);
+    const children = node('div', { id: groupId, role: 'group' });
+    children.hidden = !containsActive;
+    section.items.forEach((item) => {
+      const button = surfaceButton(item.title, `docs-hub-tree-item${item.slug === activeSlug ? ' is-active' : ''}`);
+      if (item.slug === activeSlug) button.setAttribute('aria-current', 'page');
+      button.addEventListener('click', () => {
+        onPageNavigate?.();
+        navigate(`/docs/${item.slug}`);
       });
-      if (items.length === 0) return;
-      matches += items.length;
-      const group = node('div', { class: 'docs-nav-group' });
-      group.append(node('div', { class: 'docs-nav-title' }, section.title));
-      items.forEach((item) => {
-        const link = node(
-          'a',
-          {
-            href: `/docs/${item.slug}`,
-            'data-link': '',
-            class: item.slug === activeSlug ? 'active' : '',
-          },
-          item.title,
-        );
-        group.append(link);
-      });
-      navigation.append(group);
+      children.append(button);
     });
-    if (matches === 0) {
-      navigation.append(node('p', { class: 'empty-small' }, '没有匹配的文档。'));
-    }
-  };
-  input.addEventListener('input', () => {
-    state.docsQuery = input.value;
-    draw();
+    groupButton.addEventListener('click', () => {
+      if (containsActive) return;
+      const nextOpen = children.hidden;
+      children.hidden = !nextOpen;
+      groupButton.setAttribute('aria-expanded', String(nextOpen));
+      groupButton.querySelector('svg')?.classList.toggle('is-open', nextOpen);
+    });
+    group.append(groupButton, children);
+    navigation.append(group);
   });
-  activeDocsSearchInput = input;
-  draw();
   aside.append(navigation);
   return aside;
 }
@@ -202,50 +248,212 @@ function renderDocsSidebar(catalog, activeSlug) {
 function renderDocBlock(block) {
   switch (block.type) {
     case 'lead':
-      return node('p', { class: 'doc-lead' }, block.text);
+      return node('p', { class: 'docs-page-lead' }, block.text);
     case 'paragraph':
       return node('p', {}, block.text);
     case 'heading':
       return node(`h${block.level || 2}`, { id: block.id }, block.text);
     case 'callout': {
-      const callout = node('aside', { class: `callout ${block.tone || 'info'}` });
-      callout.append(node('strong', {}, block.title), node('p', {}, block.text));
+      const tone = block.tone === 'fixture' ? 'warning' : block.tone || 'info';
+      const callout = node('aside', { class: `docs-callout docs-callout--${tone}` });
+      const body = node('div', { class: 'docs-callout__main' });
+      body.append(
+        node('div', { class: 'docs-callout__title' }, block.title),
+        node('div', { class: 'docs-callout__body' }, node('p', {}, block.text)),
+      );
+      callout.append(node('span', { class: 'docs-callout__icon', 'aria-hidden': 'true' }, '●'), body);
       return callout;
     }
     case 'code':
       return codeBlock(block);
     case 'bullets': {
-      const list = node('ul', { class: 'doc-list' });
+      const list = node('ul', { class: 'docs-list' });
       block.items.forEach((item) => list.append(node('li', {}, item)));
       return list;
     }
     case 'endpoint': {
-      const endpoint = node('div', { class: 'endpoint' });
+      const endpoint = node('div', { class: 'docs-api-endpoint' });
+      const header = node('div', { class: 'docs-api-endpoint__header' });
+      header.append(
+        node('span', { class: 'docs-api-endpoint__method', 'data-method': block.method }, block.method),
+        node('code', { class: 'docs-api-endpoint__path' }, block.path),
+      );
       endpoint.append(
-        node('span', { class: 'method' }, block.method),
-        node('code', {}, block.path),
-        node('span', {}, block.text),
+        header,
+        node('p', { class: 'docs-api-endpoint__summary' }, block.text),
       );
       return endpoint;
     }
     case 'table':
-      return dataTable(block.columns, block.rows);
+      return docsDataTable(block.columns, block.rows);
     case 'link-cards': {
-      const grid = node('div', { class: 'doc-link-grid' });
+      const list = node('div', { class: 'docs-related-inline' });
       block.items.forEach((item) => {
         const link = node('a', {
           href: `/docs/${item.slug}`,
           'data-link': '',
-          class: 'doc-link-card',
+          class: 'docs-doc-link',
         });
-        link.append(node('strong', {}, item.title), node('span', {}, item.text), node('b', {}, '→'));
-        grid.append(link);
+        link.append(
+          icon('file'),
+          node('span', { class: 'docs-doc-link__copy' },
+            node('strong', { class: 'docs-doc-link__title' }, item.title),
+            node('small', {}, item.text),
+          ),
+          node('span', { class: 'docs-doc-link__arrow', 'aria-hidden': 'true' }, '→'),
+        );
+        list.append(node('div', { class: 'docs-doc-link-row' }, link));
       });
-      return grid;
+      return list;
     }
     default:
       return node('div');
   }
+}
+
+function renderDocsToc(headings) {
+  const toc = node('nav', { class: 'docs-hub-toc', 'aria-label': '本页目录' });
+  toc.append(node('div', { class: 'docs-hub-toc-label' }, '本页目录'));
+  const list = node('ul', { class: 'docs-hub-toc-list' });
+  headings.forEach((heading, index) => {
+    const link = node('a', {
+      href: `#${encodeURIComponent(heading.id)}`,
+      class: `docs-hub-toc-link${index === 0 ? ' is-active' : ''}`,
+      ...(index === 0 ? { 'aria-current': 'true' } : {}),
+    }, heading.text);
+    list.append(node('li', { 'data-level': String(heading.level || 2) }, link));
+  });
+  toc.append(list);
+  return toc;
+}
+
+function renderDocsPageNavigation(catalog, page) {
+  const section = catalog.sections.find((item) => item.title === page.section);
+  const index = section?.items.findIndex((item) => item.slug === page.slug) ?? -1;
+  const previous = index > 0 ? section.items[index - 1] : null;
+  const next = index >= 0 && index < section.items.length - 1 ? section.items[index + 1] : null;
+  if (!previous && !next) return node('span');
+  const nav = node('nav', { class: 'docs-hub-page-nav', 'aria-label': '文档翻页导航' });
+  nav.append(
+    previous
+      ? docsPageNavLink(previous, '上一页', false)
+      : node('span'),
+    next
+      ? docsPageNavLink(next, '下一页', true)
+      : node('span'),
+  );
+  return nav;
+}
+
+function docsPageNavLink(item, direction, isNext) {
+  const link = node('a', {
+    href: `/docs/${item.slug}`,
+    'data-link': '',
+    class: isNext ? 'is-next' : '',
+  });
+  link.append(
+    node('span', { class: 'docs-hub-page-nav__dir' }, isNext ? `${direction} →` : `← ${direction}`),
+    node('span', { class: 'docs-hub-page-nav__title' }, item.title),
+  );
+  return link;
+}
+
+function openDocsSearch(catalog) {
+  closeSurfaceOverlay();
+  const dialog = createSurfaceDialog('搜索文档', 'docs-search-dialog');
+  const inputWrap = node('label', { class: 'surface-input docs-search-input' });
+  const input = node('input', {
+    type: 'search',
+    value: state.docsQuery,
+    placeholder: '搜索标题、正文、接口路径…',
+    'aria-label': '搜索文档',
+  });
+  inputWrap.append(icon('search'), input);
+  const results = node('div', { class: 'docs-hub-search-results', 'aria-live': 'polite' });
+  const draw = () => {
+    state.docsQuery = input.value;
+    results.replaceChildren();
+    const query = state.docsQuery.trim().toLowerCase();
+    if (!query) return;
+    const matches = flattenDocsCatalog(catalog).filter((item) =>
+      [item.title, item.summary, ...(item.keywords || [])].join(' ').toLowerCase().includes(query),
+    );
+    matches.forEach((item) => {
+      const button = surfaceButton('', 'docs-hub-search-item');
+      const title = node('span', { class: 'docs-hub-search-item__title' });
+      appendHighlightedText(title, item.title, state.docsQuery);
+      const snippet = node('span', { class: 'docs-hub-search-item__snippet' });
+      appendHighlightedText(snippet, item.summary, state.docsQuery);
+      button.append(title, snippet);
+      button.addEventListener('click', () => {
+        closeSurfaceOverlay();
+        navigate(`/docs/${item.slug}`);
+      });
+      results.append(button);
+    });
+    if (matches.length === 0) {
+      results.append(node('p', { class: 'docs-hub-search-empty' }, '未找到匹配的文档'));
+    }
+  };
+  input.addEventListener('input', draw);
+  dialog.content.append(inputWrap, results);
+  document.body.append(dialog.overlay);
+  input.focus();
+  draw();
+}
+
+function flattenDocsCatalog(catalog) {
+  return catalog.sections.flatMap((section) => section.items);
+}
+
+function appendHighlightedText(container, text, query) {
+  const source = String(text || '');
+  const needle = String(query || '').trim();
+  if (!needle) {
+    container.append(source);
+    return;
+  }
+  const lowerSource = source.toLowerCase();
+  const lowerNeedle = needle.toLowerCase();
+  let cursor = 0;
+  let matchIndex = lowerSource.indexOf(lowerNeedle);
+  while (matchIndex >= 0) {
+    container.append(source.slice(cursor, matchIndex));
+    container.append(node('mark', {}, source.slice(matchIndex, matchIndex + needle.length)));
+    cursor = matchIndex + needle.length;
+    matchIndex = lowerSource.indexOf(lowerNeedle, cursor);
+  }
+  container.append(source.slice(cursor));
+}
+
+function scrollToCurrentHash() {
+  const raw = window.location.hash.replace(/^#/, '');
+  if (!raw) return;
+  let id = raw;
+  try { id = decodeURIComponent(raw); } catch { /* Preserve malformed hash text. */ }
+  const target = document.getElementById(id);
+  if (!target) return;
+  target.classList.add('docs-hub-anchor-target');
+  target.setAttribute('tabindex', '-1');
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: 'start', behavior: 'auto' });
+}
+
+function installDocsTocObserver() {
+  if (!window.IntersectionObserver) return;
+  const links = [...document.querySelectorAll('.docs-hub-toc-link')];
+  const targets = links.map((link) => document.getElementById(decodeURIComponent(link.hash.slice(1))));
+  activeDocsTocObserver = new IntersectionObserver((entries) => {
+    const visible = entries.find((entry) => entry.isIntersecting);
+    if (!visible) return;
+    links.forEach((link) => {
+      const active = decodeURIComponent(link.hash.slice(1)) === visible.target.id;
+      link.classList.toggle('is-active', active);
+      if (active) link.setAttribute('aria-current', 'true');
+      else link.removeAttribute('aria-current');
+    });
+  }, { rootMargin: '-88px 0px -70% 0px' });
+  targets.filter(Boolean).forEach((target) => activeDocsTocObserver.observe(target));
 }
 
 async function renderPricing() {
@@ -255,232 +463,500 @@ async function renderPricing() {
     state.showWithRecharge = state.pricing.display?.show_with_recharge === true;
   }
   const payload = state.pricing;
+  const models = getOrdinaryUserModels(payload);
+  const vendorIds = new Set(models.map((model) => String(model.vendor_id || 'unknown')));
+  const vendors = payload.vendors.filter((vendor) => vendorIds.has(String(vendor.id)));
+  if (!vendors.some((vendor) => String(vendor.id) === state.vendor)) {
+    state.vendor = String(vendors[0]?.id || 'unknown');
+  }
   document.title = '模型价格 · JuAPI 开发者中心';
-  const fragment = document.createDocumentFragment();
-
-  const intro = node('header', { class: 'pricing-intro' });
-  const titleGroup = node('div');
-  titleGroup.append(
-    renderDataBadge(payload.meta),
+  const shell = node('div', {
+    class: 'newapi-surface pricing-page-shell',
+    'data-pricing-surface': '1',
+    'data-user-group': payload.context.user_group,
+    'data-selected-group': payload.context.selected_group,
+    'data-group-locked': String(payload.context.locked),
+  });
+  const container = node('div', { class: 'pricing-page-container' });
+  const content = node('div', { class: 'pricing-top-section' });
+  const intro = node('header', { class: 'pricing-page-intro' });
+  intro.append(
     node('h1', {}, '模型价格'),
-    node('p', {}, '在普通用户上下文中比较模型的输入、输出与原生计费方式。'),
+    node('p', {}, '比较模型价格，按供应商、分组和能力快速找到适合你的模型。'),
   );
-  const context = node('div', { class: 'context-lock' });
-  context.append(
-    node('span', { class: 'lock-icon', 'aria-hidden': 'true' }, '⌁'),
-    node('div', {},
-      node('small', {}, '固定价格上下文'),
-      node('strong', {}, 'default / default'),
-    ),
-  );
-  intro.append(titleGroup, context);
-  fragment.append(intro);
+  content.append(intro, renderPricingProviders(payload, vendors), renderPricingRule(payload));
 
-  const notice = node('section', { class: 'pricing-notice' });
-  notice.append(
-    node('strong', {}, 'Fixture／非 live'),
-    node('span', {}, payload.meta.notice),
-    node('span', { class: 'formula' }, '按量输入价 = model_ratio × 2 × default group ratio'),
-  );
-  fragment.append(notice);
+  const calculated = getFilteredPricing(payload);
+  const listCard = node('section', { class: 'pricing-price-list-card' });
+  const listHeader = node('div', { class: 'pricing-price-list-header' });
+  const listTitle = node('div');
+  const titleRow = node('div', { class: 'pricing-price-list-title-row' });
+  const countTag = node('span', { class: 'surface-tag surface-tag-blue' }, `共 ${calculated.length} 个模型`);
+  titleRow.append(node('h2', {}, '模型价格'), countTag);
+  listTitle.append(node('div', { class: 'pricing-section-label' }, '价格清单'), titleRow);
+  listHeader.append(listTitle, renderPricingModeSwitch());
+  listCard.append(listHeader, renderLockedPricingGroup(payload, calculated.length));
 
-  const workspace = node('section', { class: 'pricing-workspace' });
-  const toolbar = renderPricingToolbar(payload, () => redrawPricingResults(payload, results));
-  const results = node('div', { class: 'pricing-results', 'aria-live': 'polite' });
-  workspace.append(toolbar, results);
-  fragment.append(workspace);
-  replaceMain(fragment);
-  redrawPricingResults(payload, results);
+  const toolbar = node('div', { class: 'pricing-comparison-toolbar' });
+  const results = node('div', { class: 'pricing-view-container', 'aria-live': 'polite' });
+  toolbar.append(renderPricingSearchActions(payload, results, countTag));
+  listCard.append(toolbar);
+  if (state.advancedFiltersOpen) listCard.append(renderPricingAdvancedFilters(payload));
+  listCard.append(results);
+  renderPricingResults(payload, results, countTag);
+  content.append(listCard);
+  container.append(content);
+  shell.append(container);
+  replaceMain(shell);
 }
 
-function renderPricingToolbar(payload, onChange) {
-  const toolbar = node('div', { class: 'pricing-toolbar' });
-  const search = node('label', { class: 'search-field pricing-search' });
-  search.append(icon('search'), node('span', { class: 'sr-only' }, '搜索模型'));
+function renderPricingProviders(payload, vendors) {
+  const section = node('section', { class: 'pricing-provider-section' });
+  section.append(node('div', { class: 'pricing-section-label' }, '供应商'));
+  const list = node('div', { class: 'pricing-vendor-list', role: 'group', 'aria-label': '供应商' });
+  const models = getOrdinaryUserModels(payload);
+  vendors.forEach((vendor) => {
+    const vendorId = String(vendor.id);
+    const active = vendorId === state.vendor;
+    const count = models.filter((model) => String(model.vendor_id) === vendorId).length;
+    const button = surfaceButton('', `pricing-vendor-chip${active ? ' is-active' : ''}`);
+    button.setAttribute('data-vendor-id', vendorId);
+    button.setAttribute('aria-pressed', String(active));
+    button.append(
+      node('span', { class: 'pricing-vendor-icon', 'aria-hidden': 'true' }, vendor.name.slice(0, 1).toUpperCase()),
+      node('span', {}, vendor.name),
+      node('span', { class: 'pricing-chip-count' }, String(count)),
+    );
+    button.addEventListener('click', () => {
+      state.vendor = vendorId;
+      state.billing = 'all';
+      state.endpoint = 'all';
+      state.tag = 'all';
+      void renderPricing();
+    });
+    list.append(button);
+  });
+  section.append(list);
+  const selected = vendors.find((vendor) => String(vendor.id) === state.vendor);
+  if (selected?.description) {
+    section.append(node('p', { class: 'pricing-provider-description' }, selected.description));
+  }
+  return section;
+}
+
+function renderPricingRule(payload) {
+  const section = node('section', { class: 'pricing-rule-inline' });
+  const copy = node('div');
+  const title = node('div', { class: 'pricing-rule-title' });
+  title.append('计价规则', renderDataBadge(payload.meta, 'Fixture · 非 live'));
+  const summary = node('div', { class: 'pricing-rule-summary' });
+  if (state.pricingMode === 'official') {
+    summary.append(
+      node('div', {}, '官方价格为 fixture 中配置的原始美元基础价。'),
+      node('div', {}, '官方价格模式不应用分组倍率、充值换算或展示货币换算。'),
+    );
+  } else {
+    const ratio = Number(payload.group_ratio.default);
+    const conversion = pricingConversion(payload);
+    const official = 10;
+    const payable = official * ratio * conversion.rate;
+    summary.append(
+      node('div', {}, '官方价格为 fixture 中配置的原始美元基础价。'),
+      node('div', {}, `实付金额（${conversion.currency}） = 官方价格（USD） × 分组倍率 × 当前换算（${formatNumber(conversion.rate)} ${conversion.currency}/USD）`),
+      node('div', {}, `示例：官方 $${official.toFixed(2)} × ${formatNumber(ratio)}x × ${formatNumber(conversion.rate)} ${conversion.currency}/USD = ${conversion.symbol}${payable.toFixed(2)}（加价 ${formatNumber((ratio - 1) * 100)}%）`),
+    );
+  }
+  summary.append(node('div', { class: 'pricing-fixture-notice' }, payload.meta.notice));
+  copy.append(title, summary);
+  section.append(copy);
+  return section;
+}
+
+function pricingConversion(payload) {
+  const display = payload.display || {};
+  if (state.currency === 'USD') {
+    return {
+      currency: 'USD',
+      symbol: '$',
+      rate: state.showWithRecharge
+        ? Number(display.price) / Number(display.usd_exchange_rate)
+        : 1,
+    };
+  }
+  if (state.currency === 'CUSTOM') {
+    const recharge = state.showWithRecharge
+      ? Number(display.price) / Number(display.usd_exchange_rate)
+      : 1;
+    return {
+      currency: 'CUSTOM',
+      symbol: display.custom_currency_symbol || '¤',
+      rate: recharge * (Number(display.custom_currency_exchange_rate) || 1),
+    };
+  }
+  return {
+    currency: 'CNY',
+    symbol: '¥',
+    rate: state.showWithRecharge
+      ? Number(display.price)
+      : Number(display.usd_exchange_rate),
+  };
+}
+
+function renderPricingModeSwitch() {
+  const group = node('div', { class: 'pricing-mode-switch', role: 'group', 'aria-label': '分组价格 / 官方价格' });
+  [
+    ['group', '分组价格'],
+    ['official', '官方价格'],
+  ].forEach(([value, label]) => {
+    const active = state.pricingMode === value;
+    const button = surfaceButton(label, `surface-button${active ? ' is-primary' : ''}`);
+    button.setAttribute('data-pricing-mode', value);
+    button.setAttribute('aria-pressed', String(active));
+    button.addEventListener('click', () => {
+      state.pricingMode = value;
+      void renderPricing();
+    });
+    group.append(button);
+  });
+  return group;
+}
+
+function renderLockedPricingGroup(payload, count) {
+  const list = node('div', { class: 'pricing-group-list', 'aria-label': '可用令牌分组' });
+  const card = surfaceButton('', 'pricing-group-card is-active is-locked');
+  card.setAttribute('data-pricing-group', 'default');
+  card.setAttribute('aria-pressed', 'true');
+  card.setAttribute('aria-disabled', 'true');
+  card.disabled = true;
+  card.append(
+    node('span', { class: 'pricing-group-name' }, 'default'),
+    node('span', { class: 'pricing-group-rate' }, '当前普通用户分组（固定）'),
+    node('span', { class: 'pricing-group-formula' }, `官方价 × ${formatNumber(payload.group_ratio.default)}x`),
+    node('span', { class: 'pricing-group-meter', 'aria-hidden': 'true' },
+      node('span', { class: 'pricing-group-meter-fill pricing-group-meter-fill-locked' }),
+    ),
+    node('span', { class: 'pricing-group-count' }, `共 ${count} 个模型`),
+  );
+  list.append(card);
+  const description = node('div', { class: 'pricing-group-description' });
+  description.append(
+    node('strong', {}, 'default'),
+    node('span', {}, `${payload.usable_group.default} · user_group=default · selected_group=default · locked=true`),
+  );
+  const fragment = document.createDocumentFragment();
+  fragment.append(list, description);
+  return fragment;
+}
+
+function renderPricingSearchActions(payload, results, countTag) {
+  const wrapper = node('div', { class: 'pricing-search-actions' });
+  const search = node('label', { class: 'surface-input pricing-search-input' });
   const input = node('input', {
     type: 'search',
-    placeholder: '搜索模型、标签或能力',
     value: state.pricingQuery,
-    'aria-label': '搜索模型',
+    placeholder: '模糊搜索模型名称',
+    'aria-label': '模糊搜索模型名称',
   });
   input.addEventListener('input', () => {
     state.pricingQuery = input.value;
-    onChange();
+    renderPricingResults(payload, results, countTag);
   });
-  search.append(input);
+  search.append(icon('search'), input);
 
-  const models = getOrdinaryUserModels(payload);
-  const vendorSelect = node('select', { 'aria-label': '供应商筛选' });
-  vendorSelect.append(node('option', { value: 'all' }, '全部供应商'));
-  const vendorIds = new Set(models.map((model) => String(model.vendor_id || 'unknown')));
-  payload.vendors
-    .filter((vendor) => vendorIds.has(String(vendor.id)))
-    .forEach((vendor) => vendorSelect.append(node('option', { value: String(vendor.id) }, vendor.name)));
-  vendorSelect.value = state.vendor;
-  vendorSelect.addEventListener('change', () => {
-    state.vendor = vendorSelect.value;
-    onChange();
+  const actions = node('div', { class: 'pricing-toolbar-actions' });
+  const activeCount = [state.billing !== 'all', state.endpoint !== 'all', state.tag !== 'all'].filter(Boolean).length;
+  const filter = surfaceButton(`筛选${activeCount ? ` (${activeCount})` : ''}${state.advancedFiltersOpen ? ' · 收起' : ''}`, 'surface-button', icon('sliders'));
+  filter.setAttribute('aria-expanded', String(state.advancedFiltersOpen));
+  filter.addEventListener('click', () => {
+    state.advancedFiltersOpen = !state.advancedFiltersOpen;
+    void renderPricing();
   });
-
-  const billingSelect = node('select', { 'aria-label': '计费类型筛选' });
+  const switcher = node('div', { class: 'pricing-view-switch', role: 'group', 'aria-label': '表格视图 / 卡片视图' });
   [
-    ['all', '全部计费'],
-    ['per_token', '按量计费'],
-    ['per_request', '按次计费'],
-    ['tiered_expr', '动态计费'],
-    ['video', '影片计费'],
-  ].forEach(([value, label]) => billingSelect.append(node('option', { value }, label)));
-  billingSelect.value = state.billing;
-  billingSelect.addEventListener('change', () => {
-    state.billing = billingSelect.value;
-    onChange();
+    ['table', '表格视图', 'table'],
+    ['card', '卡片视图', 'grid'],
+  ].forEach(([value, label, iconName]) => {
+    const active = state.viewMode === value;
+    const button = surfaceButton(label, `surface-button${active ? ' is-primary' : ''}`, icon(iconName));
+    button.setAttribute('aria-label', label);
+    button.setAttribute('aria-pressed', String(active));
+    button.addEventListener('click', () => {
+      state.viewMode = value;
+      renderPricingResults(payload, results, countTag);
+    });
+    switcher.append(button);
   });
-
-  const toggles = node('div', { class: 'pricing-toggles' });
-  toggles.append(
-    segmentedControl('currency', [
-      ['CNY', 'CNY'],
-      ['USD', 'USD'],
-      ['CUSTOM', payload.display?.custom_currency_symbol || 'CUSTOM'],
-    ], state.currency, (value) => {
-      state.currency = value;
-      onChange();
-    }),
-    segmentedControl('unit', [
-      ['M', '/ 1M'],
-      ['K', '/ 1K'],
-    ], state.tokenUnit, (value) => {
-      state.tokenUnit = value;
-      onChange();
-    }),
-    segmentedControl('recharge', [
-      [true, '含充值换算'],
-      [false, '基础价格'],
-    ], state.showWithRecharge, (value) => {
-      state.showWithRecharge = value;
-      onChange();
-    }),
-  );
-  toolbar.append(search, vendorSelect, billingSelect, toggles);
-  return toolbar;
+  actions.append(filter, switcher);
+  wrapper.append(search, actions);
+  return wrapper;
 }
 
-function redrawPricingResults(payload, container) {
+function renderPricingAdvancedFilters(payload) {
+  const panel = node('div', { class: 'pricing-advanced-filters' });
+  const header = node('div', { class: 'pricing-advanced-header' });
+  const reset = surfaceButton('重置', 'surface-button is-borderless');
+  reset.addEventListener('click', () => {
+    state.billing = 'all';
+    state.endpoint = 'all';
+    state.tag = 'all';
+    state.currency = payload.display.default_currency || 'CNY';
+    state.tokenUnit = 'M';
+    state.showWithRecharge = payload.display.show_with_recharge === true;
+    void renderPricing();
+  });
+  header.append(node('span', {}, '筛选'), reset);
+  panel.append(header);
+  const vendorModels = getOrdinaryUserModels(payload).filter((model) => String(model.vendor_id) === state.vendor);
+  panel.append(
+    renderPricingFilterGroup('计费类型', [
+      ['all', '全部类型'],
+      ['per_token', '按量计费'],
+      ['per_request', '按次计费'],
+      ['tiered_expr', '动态计费'],
+      ['video', '影片计费'],
+    ], state.billing, (value) => { state.billing = value; }),
+  );
+  const endpoints = [...new Set(vendorModels.flatMap((model) => model.supported_endpoint_types || []))].sort();
+  panel.append(renderPricingFilterGroup('端点类型', [['all', '全部端点'], ...endpoints.map((value) => [value, value])], state.endpoint, (value) => { state.endpoint = value; }));
+  const tags = [...new Set(vendorModels.flatMap((model) => String(model.tags || '').split(/[,;|]+/).map((tag) => tag.trim()).filter(Boolean)))].sort();
+  panel.append(renderPricingFilterGroup('标签', [['all', '全部标签'], ...tags.map((value) => [value.toLowerCase(), value])], state.tag, (value) => { state.tag = value; }));
+  panel.append(
+    renderPricingFilterGroup('货币单位', [
+      ['CNY', 'CNY (¥)'],
+      ['USD', 'USD ($)'],
+      ['CUSTOM', `自定义货币 (${payload.display.custom_currency_symbol || '¤'})`],
+    ], state.currency, (value) => { state.currency = value; }),
+    renderPricingFilterGroup('显示设置', [
+      ['M', '按 1M 显示'],
+      ['K', '按 1K 显示'],
+    ], state.tokenUnit, (value) => { state.tokenUnit = value; }),
+    renderPricingFilterGroup('价格换算', [
+      ['recharge', '充值价格显示'],
+      ['base', '基础价格'],
+    ], state.showWithRecharge ? 'recharge' : 'base', (value) => { state.showWithRecharge = value === 'recharge'; }),
+  );
+  return panel;
+}
+
+function renderPricingFilterGroup(title, items, active, onChange) {
+  const group = node('section', { class: 'pricing-filter-group' });
+  group.append(node('div', { class: 'pricing-filter-title' }, title));
+  const options = node('div', { class: 'pricing-filter-options', role: 'group', 'aria-label': title });
+  items.forEach(([value, label]) => {
+    const selected = value === active;
+    const button = surfaceButton(label, `pricing-filter-chip${selected ? ' is-active' : ''}`);
+    button.setAttribute('aria-pressed', String(selected));
+    button.addEventListener('click', () => {
+      onChange(value);
+      void renderPricing();
+    });
+    options.append(button);
+  });
+  group.append(options);
+  return group;
+}
+
+function getFilteredPricing(payload) {
   const vendorMap = new Map(payload.vendors.map((vendor) => [String(vendor.id), vendor]));
   const query = state.pricingQuery.trim().toLowerCase();
-  const calculated = getOrdinaryUserModels(payload)
+  return getOrdinaryUserModels(payload)
+    .filter((model) => String(model.vendor_id || 'unknown') === state.vendor)
     .map((model) => ({
       model,
-      price: calculateModelPricing(model, payload, {
-        currency: state.currency,
-        tokenUnit: state.tokenUnit,
-        show_with_recharge: state.showWithRecharge,
-      }),
+      vendor: vendorMap.get(String(model.vendor_id)),
+      price: calculatePricingView(model, payload),
     }))
-    .filter(({ model, price }) => {
-      const matchesQuery = !query || [model.model_name, model.description, model.tags]
+    .filter(({ model, vendor, price }) => {
+      const matchesQuery = !query || [model.model_name, model.description, model.tags, vendor?.name]
         .join(' ')
         .toLowerCase()
         .includes(query);
-      const matchesVendor = state.vendor === 'all' || String(model.vendor_id) === state.vendor;
       const matchesBilling = state.billing === 'all' || price.kind === state.billing;
-      return matchesQuery && matchesVendor && matchesBilling;
+      const matchesEndpoint = state.endpoint === 'all' || (model.supported_endpoint_types || []).includes(state.endpoint);
+      const modelTags = String(model.tags || '').toLowerCase().split(/[,;|]+/).map((tag) => tag.trim());
+      const matchesTag = state.tag === 'all' || modelTags.includes(state.tag);
+      return matchesQuery && matchesBilling && matchesEndpoint && matchesTag;
     });
+}
 
+function calculatePricingView(model, payload) {
+  if (state.pricingMode === 'official') {
+    const officialPayload = {
+      ...payload,
+      group_ratio: { ...payload.group_ratio, default: 1 },
+    };
+    return calculateModelPricing(model, officialPayload, {
+      currency: 'USD',
+      tokenUnit: state.tokenUnit,
+      show_with_recharge: false,
+    });
+  }
+  return calculateModelPricing(model, payload, {
+    currency: state.currency,
+    tokenUnit: state.tokenUnit,
+    show_with_recharge: state.showWithRecharge,
+  });
+}
+
+function renderPricingResults(payload, container, countTag) {
+  const calculated = getFilteredPricing(payload);
+  countTag.textContent = `共 ${calculated.length} 个模型`;
+  const groupCount = document.querySelector('.pricing-group-count');
+  if (groupCount) groupCount.textContent = `共 ${calculated.length} 个模型`;
   container.replaceChildren();
-  const summary = node('div', { class: 'results-summary' });
-  summary.append(
-    node('span', {}, `显示 ${calculated.length} 个模型`),
-    node(
-      'span',
-      {},
-      `普通用户 · default group ratio ${payload.group_ratio.default}x · ${state.showWithRecharge ? '含充值换算' : '基础价格'}`,
-    ),
-  );
-  container.append(summary);
-
   if (calculated.length === 0) {
-    container.append(node('div', { class: 'empty-state' },
-      node('strong', {}, '没有匹配的模型'),
+    container.append(node('div', { class: 'pricing-empty-state' },
+      node('strong', {}, '搜索无结果'),
       node('p', {}, '尝试清除搜索文字或更换筛选条件。'),
     ));
     return;
   }
-
-  const list = node('div', { class: 'pricing-list' });
-  calculated.forEach(({ model, price }) => {
-    list.append(pricingCard(model, price, vendorMap.get(String(model.vendor_id))));
-  });
-  container.append(list);
+  if (state.viewMode === 'card') container.append(renderPricingCards(calculated, payload));
+  else container.append(renderPricingTable(calculated, payload));
 }
 
-function pricingCard(model, price, vendor) {
-  const card = node('article', { class: 'pricing-card' });
-  const identity = node('div', { class: 'model-identity' });
-  const monogram = node('span', { class: `model-monogram kind-${price.kind}` }, model.model_name.slice(0, 1).toUpperCase());
-  const text = node('div');
-  text.append(
-    node('h2', {}, model.model_name),
-    node('p', { class: 'model-vendor' }, vendor?.name || '未知供应商'),
-  );
-  identity.append(monogram, text);
-
-  const tags = node('div', { class: 'model-tags' });
-  tags.append(node('span', { class: 'billing-tag' }, billingLabel(price.kind)));
-  String(model.tags || '')
-    .split(',')
-    .map((tag) => tag.trim())
-    .filter((tag) => tag && tag.toLowerCase() !== 'fixture')
-    .slice(0, 2)
-    .forEach((tag) => tags.append(node('span', {}, tag)));
-
-  const heading = node('header', { class: 'pricing-card-header' });
-  heading.append(identity, tags);
-  card.append(heading, node('p', { class: 'model-description' }, model.description || ''));
-
-  const priceGrid = node('div', { class: 'price-grid' });
-  const items = price.items.slice(0, 4);
-  if (price.availability === 'unavailable') {
-    priceGrid.append(
-      node(
-        'div',
-        { class: 'price-placeholder price-unavailable' },
-        price.unavailableReason || '价格不可计算。',
-      ),
+function renderPricingTable(calculated, payload) {
+  const wrap = node('div', { class: 'pricing-table-scroll' });
+  const table = node('table', { class: 'pricing-model-table' });
+  const head = node('thead');
+  const headRow = node('tr');
+  ['模型 ID', '档位', '输入价格', '输出价格', '缓存创建', '缓存读取', '倍率与优惠'].forEach((label) => {
+    headRow.append(node('th', { scope: 'col' }, label));
+  });
+  head.append(headRow);
+  const body = node('tbody');
+  calculated.forEach(({ model, price, vendor }) => {
+    const row = node('tr');
+    const identity = node('td');
+    const open = surfaceButton(model.model_name, 'pricing-model-link');
+    open.addEventListener('click', () => openPricingDetail(model, price, vendor, payload));
+    identity.append(open, node('small', {}, vendor?.name || '未知供应商'));
+    row.append(
+      identity,
+      node('td', {}, renderPricingTierCell(price)),
+      node('td', {}, renderPricingPriceCell(price, ['input', 'request'])),
+      node('td', {}, renderPricingPriceCell(price, ['output', 'starting'])),
+      node('td', {}, renderPricingPriceCell(price, ['cacheCreate', 'cacheCreate1h'])),
+      node('td', {}, renderPricingPriceCell(price, ['cacheRead'])),
+      node('td', {}, renderPricingComparison(payload)),
     );
-  } else if (price.kind === 'tiered_expr') {
-    priceGrid.append(
-      node(
-        'div',
-        { class: 'price-placeholder' },
-        '需按完整档位与请求上下文计算，未选择上下文时不显示单一价格。',
-      ),
-    );
-  } else if (items.length === 0) {
-    priceGrid.append(node('div', { class: 'price-placeholder' }, '价格不可计算。'));
-  } else {
-    items.forEach((item) => {
-      const entry = node('div', { class: 'price-item' });
-      entry.append(
-        node('span', {}, item.label),
-        node('strong', {}, item.formatted),
-        node('small', {}, `/ ${price.unit}`),
-      );
-      priceGrid.append(entry);
-    });
+    body.append(row);
+  });
+  table.append(head, body);
+  wrap.append(table);
+  return wrap;
+}
+
+function renderPricingTierCell(price) {
+  const cell = node('div', { class: 'pricing-native-tier-cell' });
+  cell.append(node('span', { class: `surface-tag billing-${price.kind}` }, billingLabel(price.kind)));
+  if (price.kind === 'tiered_expr') {
+    cell.append(node('span', { class: 'pricing-native-tier-condition' }, price.parseComplete ? `${price.tiers.length} 个原生档位 · 需请求上下文` : '动态价格不可计算'));
+  } else if (price.kind === 'video') {
+    cell.append(node('span', { class: 'pricing-native-tier-condition' }, price.availability === 'available' ? `${price.rows.length} 个分辨率档位` : '影片价格不可计算'));
   }
-  card.append(priceGrid);
+  return cell;
+}
 
-  if (price.kind === 'tiered_expr') card.append(renderTierDetails(price));
-  if (price.kind === 'video') card.append(renderVideoDetails(price));
-
-  const footer = node('footer', { class: 'pricing-card-footer' });
-  footer.append(
-    node('span', {}, `selected group: ${price.group}`),
-    node('span', {}, `倍率 ${price.groupRatio}x`),
+function renderPricingPriceCell(price, keys) {
+  const item = price.items.find((candidate) => keys.includes(candidate.key));
+  if (!item) {
+    if (price.kind === 'tiered_expr' && price.parseComplete) {
+      return node('span', { class: 'pricing-context-required' }, '需请求上下文');
+    }
+    return node('span', { class: 'pricing-empty-price' }, '—');
+  }
+  const cell = node('div', { class: `pricing-price-cell${state.pricingMode === 'official' ? ' is-official' : ''}` });
+  cell.append(
+    node('strong', {}, item.formatted),
+    node('span', { class: 'pricing-price-unit' }, `/ ${price.unit}`),
+    node('span', {}, state.pricingMode === 'official' ? '基础价格' : '实付金额'),
   );
-  card.append(footer);
-  return card;
+  return cell;
+}
+
+function renderPricingComparison(payload) {
+  const cell = node('div', { class: 'pricing-comparison-cell' });
+  if (state.pricingMode === 'official') {
+    cell.append(node('strong', {}, '官方价格'), node('span', {}, '不应用分组换算'));
+  } else {
+    cell.append(
+      node('strong', {}, 'default'),
+      node('span', {}, `${formatNumber(payload.group_ratio.default)}x · 已锁定`),
+      node('span', { class: 'pricing-comparison-formula' }, state.showWithRecharge ? '含充值换算' : '基础价格换算'),
+    );
+  }
+  return cell;
+}
+
+function renderPricingCards(calculated, payload) {
+  const view = node('div', { class: 'pricing-card-view' });
+  const grid = node('div', { class: 'pricing-card-grid' });
+  calculated.forEach(({ model, price, vendor }) => {
+    const card = node('article', { class: 'pricing-model-card' });
+    const header = node('header', { class: 'pricing-model-card-header' });
+    const avatar = node('span', { class: 'pricing-model-avatar', 'aria-hidden': 'true' }, model.model_name.slice(0, 2).toUpperCase());
+    const identity = node('div', { class: 'pricing-model-card-identity' });
+    identity.append(
+      node('h3', { class: 'pricing-model-name' }, model.model_name),
+      node('div', { class: 'pricing-model-vendor' }, vendor?.name || '未知供应商'),
+    );
+    header.append(avatar, identity, node('span', { class: `surface-tag billing-${price.kind}` }, billingLabel(price.kind)));
+    const priceBlock = node('div', { class: 'pricing-card-price-block' });
+    priceBlock.append(renderPricingCardPriceLines(price));
+    const description = node('div', { class: 'pricing-card-description' }, node('p', {}, model.description || ''));
+    const tags = node('div', { class: 'pricing-card-tags' });
+    String(model.tags || '').split(/[,;|]+/).map((tag) => tag.trim()).filter(Boolean).slice(0, 3).forEach((tag) => {
+      tags.append(node('span', { class: 'surface-tag' }, tag));
+    });
+    const detail = surfaceButton('查看详情', 'surface-button pricing-detail-button');
+    detail.addEventListener('click', () => openPricingDetail(model, price, vendor, payload));
+    card.append(header, priceBlock, description, tags, renderPricingComparison(payload), detail);
+    grid.append(card);
+  });
+  view.append(grid);
+  return view;
+}
+
+function renderPricingCardPriceLines(price) {
+  const lines = node('div', { class: 'pricing-card-price-lines' });
+  if (price.availability === 'unavailable') {
+    lines.append(node('p', { class: 'pricing-unavailable' }, price.unavailableReason || '价格不可计算。'));
+    return lines;
+  }
+  if (price.kind === 'tiered_expr') {
+    lines.append(node('p', { class: 'pricing-context-required' }, '需按完整档位与请求上下文计算，不显示单一价格。'));
+    return lines;
+  }
+  price.items.slice(0, 4).forEach((item) => {
+    lines.append(node('div', { class: 'pricing-card-price-row' },
+      node('span', {}, item.label),
+      node('strong', {}, `${item.formatted} / ${price.unit}`),
+    ));
+  });
+  if (price.items.length === 0) lines.append(node('span', { class: 'pricing-empty-price' }, '—'));
+  return lines;
+}
+
+function openPricingDetail(model, price, vendor, payload) {
+  closeSurfaceOverlay();
+  const dialog = createSurfaceDialog(model.model_name, 'pricing-detail-sheet', true);
+  dialog.content.append(
+    node('p', { class: 'pricing-detail-vendor' }, vendor?.name || '未知供应商'),
+    node('p', { class: 'pricing-detail-description' }, model.description || ''),
+    node('div', { class: 'pricing-detail-context' },
+      node('strong', {}, '价格上下文'),
+      node('span', {}, `user_group=default · selected_group=default · locked=true · group_ratio=${formatNumber(payload.group_ratio.default)}`),
+    ),
+    renderPricingCardPriceLines(price),
+  );
+  if (price.kind === 'tiered_expr') dialog.content.append(renderTierDetails(price));
+  if (price.kind === 'video') dialog.content.append(renderVideoDetails(price));
+  const endpoints = node('div', { class: 'pricing-detail-endpoints' });
+  (model.supported_endpoint_types || []).forEach((endpoint) => endpoints.append(node('span', { class: 'surface-tag' }, endpoint)));
+  dialog.content.append(endpoints);
+  document.body.append(dialog.overlay);
+  requestAnimationFrame(() => dialog.panel.querySelector('button')?.focus());
 }
 
 function renderTierDetails(price) {
@@ -572,60 +1048,65 @@ function dataTable(columns, rows) {
   return wrap;
 }
 
+function docsDataTable(columns, rows) {
+  const wrap = node('div', { class: 'docs-table-wrap' });
+  const table = node('table', { class: 'docs-table' });
+  const head = node('thead');
+  const headerRow = node('tr');
+  columns.forEach((column) => headerRow.append(node('th', { scope: 'col' }, column)));
+  head.append(headerRow);
+  const body = node('tbody');
+  rows.forEach((row) => {
+    const tr = node('tr');
+    row.forEach((cell) => tr.append(node('td', {}, String(cell))));
+    body.append(tr);
+  });
+  table.append(head, body);
+  wrap.append(table);
+  return wrap;
+}
+
 function codeBlock(block) {
-  const figure = node('figure', { class: 'code-block' });
-  const caption = node('figcaption');
+  const figure = node('figure', { class: 'docs-code-group' });
+  const caption = node('figcaption', { class: 'docs-code-group__header' });
   caption.append(
-    node('span', {}, block.label || block.language || 'Code'),
+    node('span', { class: 'docs-code-group__title' },
+      icon('code'),
+      node('span', { class: 'docs-code-group__title-text' }, block.label || block.language || 'Code'),
+    ),
+    node('span', { class: 'docs-code-group__badge docs-code-group__badge--lang' }, block.language || 'text'),
     copyButton(block.code),
   );
-  const pre = node('pre');
+  const pre = node('pre', { class: 'docs-code-group__pre', tabindex: '0' });
   pre.append(node('code', { class: `language-${block.language || 'text'}` }, block.code));
   figure.append(caption, pre);
   return figure;
 }
 
 function copyButton(text) {
-  const button = node('button', { type: 'button', class: 'copy-button' }, '复制');
+  const button = node('button', { type: 'button', class: 'docs-code-group__copy', 'aria-label': '复制代码' }, '复制');
   button.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(text);
       button.textContent = '已复制';
+      button.dataset.state = 'copied';
       toast('代码已复制');
-      setTimeout(() => { button.textContent = '复制'; }, 1600);
+      setTimeout(() => {
+        button.textContent = '复制';
+        delete button.dataset.state;
+      }, 1600);
     } catch {
+      button.dataset.state = 'failed';
       toast('复制失败，请手动选择代码');
     }
   });
   return button;
 }
 
-function renderDataBadge(meta) {
+function renderDataBadge(meta, label) {
   const badge = node('span', { class: `data-badge ${meta.live ? 'live' : 'fixture'}` });
-  badge.append(node('i', { 'aria-hidden': 'true' }), document.createTextNode(meta.label || meta.source));
+  badge.append(node('i', { 'aria-hidden': 'true' }), document.createTextNode(label || meta.label || meta.source));
   return badge;
-}
-
-function segmentedControl(name, options, active, onChange) {
-  const group = node('div', { class: 'segmented', role: 'group', 'aria-label': name });
-  options.forEach(([value, label]) => {
-    const button = node('button', {
-      type: 'button',
-      class: active === value ? 'active' : '',
-      'aria-pressed': active === value ? 'true' : 'false',
-    }, label);
-    button.addEventListener('click', () => {
-      [...group.children].forEach((child) => {
-        child.classList.remove('active');
-        child.setAttribute('aria-pressed', 'false');
-      });
-      button.classList.add('active');
-      button.setAttribute('aria-pressed', 'true');
-      onChange(value);
-    });
-    group.append(button);
-  });
-  return group;
 }
 
 function featureCard(number, title, description, href, action) {
@@ -664,6 +1145,48 @@ function linkButton(href, label, style) {
   return node('a', { href, 'data-link': '', class: `button ${style}` }, label);
 }
 
+function surfaceButton(label, className = 'surface-button', leadingIcon = null) {
+  const button = node('button', { type: 'button', class: className });
+  if (leadingIcon) button.append(leadingIcon);
+  if (label) button.append(node('span', { class: 'surface-button-label' }, label));
+  return button;
+}
+
+let surfaceDialogId = 0;
+
+function createSurfaceDialog(title, className = '', sheet = false) {
+  const titleId = `surface-dialog-title-${++surfaceDialogId}`;
+  const overlay = node('div', { class: `surface-overlay${sheet ? ' is-sheet' : ''}` });
+  const backdrop = node('button', {
+    type: 'button',
+    class: 'surface-overlay-backdrop',
+    'aria-label': '关闭',
+  });
+  const panel = node('section', {
+    class: `surface-dialog ${className}`.trim(),
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-labelledby': titleId,
+  });
+  const header = node('header', { class: 'surface-dialog-header' });
+  const close = surfaceButton('', 'surface-dialog-close', icon('close'));
+  close.setAttribute('aria-label', '关闭');
+  header.append(node('h2', { id: titleId }, title), close);
+  const content = node('div', { class: 'surface-dialog-content' });
+  panel.append(header, content);
+  overlay.append(backdrop, panel);
+  backdrop.addEventListener('click', closeSurfaceOverlay);
+  close.addEventListener('click', closeSurfaceOverlay);
+  document.body.classList.add('surface-overlay-open');
+  return { overlay, panel, content };
+}
+
+function closeSurfaceOverlay() {
+  document.querySelectorAll('.surface-overlay').forEach((overlay) => overlay.remove());
+  document.querySelector('.docs-hub-sidebar-wrap.is-open')?.classList.remove('is-open');
+  document.body.classList.remove('surface-overlay-open');
+}
+
 function billingLabel(kind) {
   return {
     per_token: '按量计费',
@@ -689,15 +1212,35 @@ function node(tagName, attributes = {}, ...children) {
 }
 
 function icon(name) {
-  if (name === 'search') {
-    const svg = node('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true' });
-    svg.append(
-      node('circle', { cx: '11', cy: '11', r: '6.5', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8' }),
-      node('path', { d: 'M16 16l4 4', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round' }),
-    );
-    return svg;
-  }
-  return node('span');
+  const svg = node('svg', {
+    viewBox: '0 0 24 24',
+    'aria-hidden': 'true',
+    fill: 'none',
+    stroke: 'currentColor',
+    'stroke-width': '1.8',
+    'stroke-linecap': 'round',
+    'stroke-linejoin': 'round',
+  });
+  const paths = {
+    search: ['circle|11|11|6.5', 'M16 16l4 4'],
+    menu: ['M4 7h16', 'M4 12h16', 'M4 17h16'],
+    chevron: ['M9 18l6-6-6-6'],
+    close: ['M6 6l12 12', 'M18 6L6 18'],
+    sliders: ['M4 6h10', 'M18 6h2', 'M4 18h2', 'M10 18h10', 'M14 3v6', 'M6 15v6'],
+    table: ['M4 5h16v14H4z', 'M4 10h16', 'M10 5v14'],
+    grid: ['M4 4h6v6H4z', 'M14 4h6v6h-6z', 'M4 14h6v6H4z', 'M14 14h6v6h-6z'],
+    file: ['M6 3h8l4 4v14H6z', 'M14 3v5h5'],
+    code: ['M8 9l-3 3 3 3', 'M16 9l3 3-3 3', 'M14 6l-4 12'],
+  };
+  (paths[name] || []).forEach((definition) => {
+    if (definition.startsWith('circle|')) {
+      const [, cx, cy, r] = definition.split('|');
+      svg.append(node('circle', { cx, cy, r }));
+    } else {
+      svg.append(node('path', { d: definition }));
+    }
+  });
+  return svg;
 }
 
 function navigate(path) {
@@ -760,6 +1303,12 @@ function normalizePath(path) {
 
 function isTypingTarget(target) {
   return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable;
+}
+
+function formatNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return '—';
+  return String(Number(numeric.toFixed(6)));
 }
 
 function toast(message) {

@@ -5,14 +5,16 @@
 ## 已包含
 
 - `/`：公共站点与 integration boundary 概览。
-- `/docs/*`：结构化导航、搜索、页内目录、表格、callout 和可复制代码示例。
-- `/pricing`：模型筛选、USD/CNY/CUSTOM、充值换算开关与 1M/1K 展示；价格上下文固定为普通用户 `user_group=default`、`selected_group=default`。
+- `/docs/*`：复用 pinned NewAPI Docs Hub 2.0 的信息层级与 reader chrome，包括分组侧栏、Ctrl/Cmd+K 搜索、页内目录、移动端 drawer、翻页、表格、callout 和可复制代码示例。
+- `/pricing`：复用 pinned NewAPI 模型价格页的供应商 → 分组 → 价格清单层级、table/card view、筛选与详情；保留 USD/CNY/CUSTOM、充值换算与 1M/1K 展示，价格上下文固定为普通用户 `user_group=default`、`selected_group=default`。
 - `/api/content/docs`、`/api/content/docs/:slug`：可替换 Docs adapter contract。
 - `/api/content/pricing`：保留 NewAPI pricing fields 的 fixture contract。
 - `/api/integrations/downloads`：既有下载 Worker Service Binding 的状态、route mode 与能力边界。
 - Worker security headers、API fail-closed 行为与 SPA asset fallback。
 
 所有 fixture 内容在 API 和 UI 都明确标记为演示数据，不代表 live NewAPI、provider 能力或生产报价。
+
+Docs/Pricing presentation 的 canonical source 是 NewAPI commit `4d27865ce8342530f362595fdcd134eb83062a35`。本仓库保留 QuantumNous copyright 与 GNU AGPL v3-or-later license；完整 provenance 见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，license text 见 [LICENSE](LICENSE)。`/` 首页、现有 header、Worker adapter、download boundary 与 deployment contract 不属于该 presentation port。
 
 ## 本地运行
 
@@ -50,7 +52,7 @@ npm run deploy:production -- --dry-run
 
 ## Pricing 产品语义
 
-第一阶段不提供 group selector。`src/adapters/content-adapter.js` 和浏览器端 `public/static/pricing.js` 都会检查：
+页面只呈现一个 disabled/locked `default` 分组卡片，不提供可切换 group selector。`src/adapters/content-adapter.js` 和浏览器端 `public/static/pricing.js` 都会检查：
 
 ```json
 {

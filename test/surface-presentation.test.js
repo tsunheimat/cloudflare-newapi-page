@@ -1,0 +1,110 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+
+const APP_URL = new URL('../public/static/app.js', import.meta.url);
+const STYLES_URL = new URL('../public/static/styles.css', import.meta.url);
+const INDEX_URL = new URL('../public/index.html', import.meta.url);
+const LICENSE_URL = new URL('../LICENSE', import.meta.url);
+const NOTICE_URL = new URL('../THIRD_PARTY_NOTICES.md', import.meta.url);
+const PACKAGE_URL = new URL('../package.json', import.meta.url);
+
+const sources = Promise.all([
+  readFile(APP_URL, 'utf8'),
+  readFile(STYLES_URL, 'utf8'),
+  readFile(INDEX_URL, 'utf8'),
+]);
+
+test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader states', async () => {
+  const [app, styles] = await sources;
+
+  assert.match(app, /NewAPI SPA at commit 4d27865ce8342530f362595fdcd134eb83062a35/);
+  for (const contract of [
+    "class: 'newapi-surface docs-hub-shell'",
+    "class: 'docs-hub-sidebar'",
+    "class: 'docs-hub-canvas'",
+    "class: 'docs-block-renderer'",
+    "class: 'docs-hub-page-nav'",
+    "class: 'docs-hub-search-results'",
+    "class: 'docs-hub-mobile-bar'",
+  ]) {
+    assert.ok(app.includes(contract), contract);
+  }
+  assert.match(app, /\(event\.metaKey \|\| event\.ctrlKey\)/);
+  assert.match(app, /搜索标题、正文、接口路径…/);
+  assert.match(app, /未找到匹配的文档/);
+
+  assert.match(styles, /--docs-sidebar-width:\s*272px/);
+  assert.match(styles, /--docs-gutter:\s*clamp\(32px, 4vw, 48px\)/);
+  assert.match(styles, /--docs-canvas-max:\s*1000px/);
+  assert.match(styles, /@media \(min-width: 1560px\)[\s\S]*?\.docs-hub-toc/);
+  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.docs-hub-sidebar-wrap\.is-open/);
+  assert.match(styles, /\.docs-code-group\s*\{[\s\S]*?--docs-code-bg:\s*#0f1218/);
+});
+
+test('Pricing presentation reuses the canonical hierarchy while exposing one locked default group', async () => {
+  const [app, styles] = await sources;
+
+  for (const contract of [
+    "class: 'newapi-surface pricing-page-shell'",
+    "class: 'pricing-page-intro'",
+    "class: 'pricing-provider-section'",
+    "class: 'pricing-rule-inline'",
+    "class: 'pricing-price-list-card'",
+    "class: 'pricing-comparison-toolbar'",
+    "class: 'pricing-model-table'",
+    "class: 'pricing-card-grid'",
+  ]) {
+    assert.ok(app.includes(contract), contract);
+  }
+
+  assert.equal((app.match(/'data-pricing-group'/g) || []).length, 1);
+  assert.match(app, /card\.setAttribute\('data-pricing-group', 'default'\)/);
+  assert.match(app, /card\.disabled = true/);
+  assert.match(app, /data-user-group/);
+  assert.match(app, /data-selected-group/);
+  assert.match(app, /data-group-locked/);
+  assert.match(app, /user_group=default · selected_group=default · locked=true/);
+  assert.match(app, /\['group', '分组价格'\]/);
+  assert.match(app, /\['official', '官方价格'\]/);
+  assert.match(app, /\['table', '表格视图', 'table'\]/);
+  assert.match(app, /\['card', '卡片视图', 'grid'\]/);
+
+  assert.match(styles, /\.pricing-page-container\s*\{[\s\S]*?1500px/);
+  assert.match(styles, /\.pricing-vendor-list\s*\{[\s\S]*?overflow-x:\s*auto/);
+  assert.match(styles, /\.pricing-group-card\.is-locked/);
+  assert.match(styles, /\.pricing-card-grid\s*\{[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.pricing-card-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
+});
+
+test('front-door home/header remain present and content calls stay fixture API-relative', async () => {
+  const [app, _styles, index] = await sources;
+
+  assert.match(index, /<header class="site-header">/);
+  assert.match(index, /<span class="brand-mark" aria-hidden="true">J<\/span>/);
+  assert.match(index, /<span class="nav-phase">Phase 2<\/span>/);
+  assert.match(app, /把接口能力，变成清晰的开发体验。/);
+  assert.match(app, /PHASE 2 DEPLOYMENT BOUNDARY/);
+  assert.doesNotMatch(app, /node\('main'/, 'route renderers must not nest a second main landmark');
+
+  assert.match(app, /api\('\/api\/content\/docs'\)/);
+  assert.match(app, /api\('\/api\/content\/pricing'\)/);
+  assert.doesNotMatch(app, /fetch\(['"]https?:\/\//);
+  assert.doesNotMatch(app, /newapi\.(?:internal|local)|tunnel|vpc/i);
+});
+
+test('adapted surfaces retain QuantumNous attribution and the complete AGPL license', async () => {
+  const [license, notice, packageSource] = await Promise.all([
+    readFile(LICENSE_URL, 'utf8'),
+    readFile(NOTICE_URL, 'utf8'),
+    readFile(PACKAGE_URL, 'utf8'),
+  ]);
+  const packageJson = JSON.parse(packageSource);
+
+  assert.match(license, /GNU AFFERO GENERAL PUBLIC LICENSE/);
+  assert.match(license, /Version 3, 19 November 2007/);
+  assert.match(license, /END OF TERMS AND CONDITIONS/);
+  assert.match(notice, /copyright \(C\) 2025 QuantumNous/i);
+  assert.match(notice, /4d27865ce8342530f362595fdcd134eb83062a35/);
+  assert.equal(packageJson.license, 'AGPL-3.0-or-later');
+});
