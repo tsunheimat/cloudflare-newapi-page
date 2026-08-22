@@ -8,7 +8,7 @@
 
 - Account / Workers Scripts / Edit。
 
-Cloudflare 的 Worker upload API 把 `Workers Scripts Write` 列为所需权限；Dashboard custom token 中对应 `Workers Scripts / Edit`。本配置没有 zone route、KV、D1、R2、DNS、Tunnel/VPC 或 Secrets Store binding，因此不要授予 Account Settings Edit、Workers Routes Edit、Workers KV/R2 Storage Edit、DNS Edit、Tunnel/VPC 或 account-wide unrestricted 权限。若当前 Wrangler/组织策略返回明确的缺权错误，停止并由 account owner 审核；不要自行扩大 token scope。参考 [Worker upload API permission](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/content/methods/update/)。
+Cloudflare 的 Worker upload API 把 `Workers Scripts Write` 列为所需权限；Dashboard custom token 中对应 `Workers Scripts / Edit`。本配置声明一个既有 VPC Service 的 binding，但不创建或管理 VPC/Tunnel、DNS、Secrets Store、zone route、KV、D1 或 R2 resource，因此不要授予 Account Settings Edit、Workers Routes Edit、Workers KV/R2 Storage Edit、DNS Edit、Tunnel/VPC 或 account-wide unrestricted 权限。若当前 Wrangler/组织策略返回明确的缺权错误，停止并由 account owner 审核；不要自行扩大 token scope。参考 [Worker upload API permission](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/content/methods/update/)。
 
 Production entrypoint 要求 `CLOUDFLARE_ACCOUNT_ID` 与 `CLOUDFLARE_API_TOKEN` 只存在于当前 process environment。不要写入 repository、`.env*`、`.dev.vars*`、shell history、构建日志或 commit。官方 credential 与 CI 说明：
 
@@ -42,7 +42,7 @@ npm ci
 npm run deploy:production -- --dry-run
 ```
 
-该命令只允许 `--dry-run` 这个可选参数。它会在 validation 前取得 clean full commit，检查 production config、fixture/non-live runtime metadata、download production gate，并运行完整 tests 与 default/staging/production Wrangler dry-run。Validation 后会再次要求同一 HEAD 与 clean tracked/untracked worktree；成功结尾必须包含同一个 40 位 commit：
+该命令只允许 `--dry-run` 这个可选参数。它会在 validation 前取得 clean full commit，检查 production config、fixture/non-live runtime metadata、download production gate，以及已核对但尚未启用内容 cutover 的 `NEWAPI_VPC_SERVICE` binding，并运行完整 tests 与 default/staging/production Wrangler dry-run。Validation 后会再次要求同一 HEAD 与 clean tracked/untracked worktree；成功结尾必须包含同一个 40 位 commit：
 
 ```text
 [production validation] PASS: clean commit <40_HEX_COMMIT>; HEAD and tracked/untracked worktree are unchanged.

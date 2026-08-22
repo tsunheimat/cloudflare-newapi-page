@@ -22,6 +22,8 @@ export const PRODUCTION_CONTRACT = Object.freeze({
   productionDownloadsMode: 'production-service-binding',
   downloadsBinding: 'DOWNLOADS_SERVICE',
   downloadsService: 'cloudflare-download-site',
+  newApiVpcBinding: 'NEWAPI_VPC_SERVICE',
+  newApiVpcServiceId: '01a027bb-280d-7630-b837-7afd6a0ca196',
 });
 
 // Wrangler 4.124.0 loads these files, in this order, for `--env production`.
@@ -106,6 +108,18 @@ export function assertProductionConfig(source) {
     expectedServiceSections,
     'only staging and production may declare service bindings',
   );
+  const expectedVpcSections = [
+    'env.production.vpc_services',
+    'env.staging.vpc_services',
+  ];
+  const actualVpcSections = [...sections.keys()]
+    .filter((name) => name === 'vpc_services' || name.endsWith('.vpc_services'))
+    .sort();
+  assert.deepEqual(
+    actualVpcSections,
+    expectedVpcSections,
+    'only staging and production may declare the reviewed NewAPI VPC Service',
+  );
 
   assert.equal(value(sections, '<root>', 'name'), PRODUCTION_CONTRACT.workerName);
   assert.equal(
@@ -126,6 +140,7 @@ export function assertProductionConfig(source) {
     PRODUCTION_CONTRACT.stagingDownloadsMode,
   );
   assertServiceBinding(sections, 'env.staging.services');
+  assertVpcServiceBinding(sections, 'env.staging.vpc_services');
 
   assert.equal(value(sections, 'env.production', 'workers_dev'), true);
   assert.equal(
@@ -137,6 +152,7 @@ export function assertProductionConfig(source) {
     PRODUCTION_CONTRACT.productionDownloadsMode,
   );
   assertServiceBinding(sections, 'env.production.services');
+  assertVpcServiceBinding(sections, 'env.production.vpc_services');
 }
 
 export async function assertProductionRuntimeContract() {
@@ -304,6 +320,25 @@ function assertServiceBinding(sections, sectionName) {
   assert.equal(
     occurrences[0].values.get('service'),
     PRODUCTION_CONTRACT.downloadsService,
+  );
+}
+
+function assertVpcServiceBinding(sections, sectionName) {
+  const occurrences = sections.get(sectionName);
+  assert.equal(occurrences?.length, 1, `expected one [[${sectionName}]]`);
+  assert.equal(occurrences[0].array, true, `${sectionName} must be an array table`);
+  assert.deepEqual(
+    [...occurrences[0].values.keys()].sort(),
+    ['binding', 'service_id'],
+    `${sectionName} may only select the reviewed NewAPI VPC Service`,
+  );
+  assert.equal(
+    occurrences[0].values.get('binding'),
+    PRODUCTION_CONTRACT.newApiVpcBinding,
+  );
+  assert.equal(
+    occurrences[0].values.get('service_id'),
+    PRODUCTION_CONTRACT.newApiVpcServiceId,
   );
 }
 

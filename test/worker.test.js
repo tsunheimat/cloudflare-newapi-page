@@ -78,12 +78,58 @@ test('invalid or missing content paths return bounded JSON errors', async () => 
 test('non-fixture content mode fails closed and never claims live integration', async () => {
   const response = await fetchWorker('/api/content/pricing', {
     ...fixtureEnv,
-    CONTENT_ADAPTER: 'newapi',
+    CONTENT_ADAPTER: 'unconfigured',
   });
   const body = await response.json();
   assert.equal(response.status, 503);
-  assert.equal(body.error.details.configured_adapter, 'newapi');
+  assert.equal(body.error.details.configured_adapter, 'unconfigured');
   assert.equal(body.error.details.live_integration, false);
+});
+
+test('live content mode fails closed when token or VPC binding is absent', async () => {
+  for (const env of [
+    { ...fixtureEnv, CONTENT_ADAPTER: 'newapi' },
+    { ...fixtureEnv, CONTENT_ADAPTER: 'newapi', LIVE_CONTENT_ADAPTER_TOKEN: 'too-short' },
+  ]) {
+    const response = await fetchWorker('/api/content/docs', env);
+    const body = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(body.error.code, 'integration_unavailable');
+    assert.equal(body.error.details.live_integration, true);
+    assert.equal(body.error.details.configured_adapter, 'newapi');
+  }
+});
+
+test('live content mode preserves public route envelopes and pricing lock', async () => {
+  const token = 'worker-live-content-token-' + 'x'.repeat(32);
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname;
+        if (path.endsWith('/pricing')) {
+          return new Response(JSON.stringify({
+            success: true,
+            meta: { source: 'newapi', fixture: false, live: true, label: 'NewAPI live content', updated_at: null, contract_version: 'v1' },
+            context: { user_group: 'default', selected_group: 'default', locked: true },
+            display: { quota_display_type: 'USD', default_currency: 'CNY', price: 7.2, usd_exchange_rate: 7.2, custom_currency_exchange_rate: 1, custom_currency_symbol: '¤', show_with_recharge: true },
+            data: [], vendors: [], group_ratio: { default: 1.25 }, usable_group: { default: '普通用户' }, supported_endpoint: {}, auto_groups: [], video_resolution_dimensions: {}, pricing_version: 'live-v1',
+          }), { headers: { 'content-type': 'application/json', 'x-newapi-content-contract': 'v1' } });
+        }
+        return new Response(JSON.stringify({ success: true, data: { meta: { source: 'newapi', fixture: false, live: true, label: 'NewAPI live content', updated_at: null, contract_version: 'v1', schema_version: 1, renderer_version: 1 }, sections: [], search_index: [] } }), { headers: { 'content-type': 'application/json', 'x-newapi-content-contract': 'v1' } });
+      },
+    },
+  };
+  const docs = await fetchWorker('/api/content/docs', env);
+  assert.equal(docs.status, 200);
+  assert.equal((await docs.json()).data.meta.live, true);
+  const pricing = await fetchWorker('/api/content/pricing', env);
+  const payload = await pricing.json();
+  assert.equal(pricing.status, 200);
+  assert.deepEqual(payload.context, { user_group: 'default', selected_group: 'default', locked: true });
+  assert.equal(payload.group_ratio.default, 1.25);
 });
 
 test('SPA routes pass through the asset binding with security headers', async () => {

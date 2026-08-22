@@ -9,11 +9,12 @@
 - `/pricing`：复用 pinned NewAPI 模型价格页的供应商 → 分组 → 价格清单层级、table/card view、筛选与详情；保留 USD/CNY/CUSTOM、充值换算与 1M/1K 展示，价格上下文固定为普通用户 `user_group=default`、`selected_group=default`。
 - `/api/content/docs`、`/api/content/docs/:slug`：可替换 Docs adapter contract。
 - `/api/content/pricing`：保留 NewAPI pricing fields 的 fixture contract。
+- `CONTENT_ADAPTER="newapi"`：通过 `NEWAPI_VPC_SERVICE` 读取私有 NewAPI live Docs/Pricing；当前配置仍在 fixture safety mode。
 - `/api/integrations/downloads`：既有下载 Worker Service Binding 的状态、route mode 与能力边界。
 - Worker security headers、API fail-closed 行为与 SPA asset fallback。
 - 统一的 JuAPI 界面：三个页面共用同一套 logo、色板、排版与组件，支持浅色 / 深色主题（跟随系统，可在 header 手动切换）。
 
-所有 fixture 内容在 API 和 UI 都明确标记为演示数据，不代表 live NewAPI、provider 能力或生产报价。
+Fixture 内容在 API 和 UI 都明确标记为演示数据；live badge 只会在经过 v1 response/schema 验证的 live payload 上出现，不代表尚未执行的生产部署或 provider 能力。
 
 Docs/Pricing presentation 的 canonical source 是 NewAPI commit `4d27865ce8342530f362595fdcd134eb83062a35`。本仓库保留 QuantumNous copyright 与 GNU AGPL v3-or-later license；完整 provenance 见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，license text 见 [LICENSE](LICENSE)。`/` 首页、header/footer、视觉设计系统、Worker adapter、download boundary 与 deployment contract 不属于该 presentation port。
 
@@ -93,6 +94,10 @@ DOWNLOADS_INTEGRATION = "staging-service-binding"
 binding = "DOWNLOADS_SERVICE"
 service = "cloudflare-download-site"
 
+[[env.staging.vpc_services]]
+binding = "NEWAPI_VPC_SERVICE"
+service_id = "01a027bb-280d-7630-b837-7afd6a0ca196"
+
 [env.production.vars]
 CONTENT_ADAPTER = "fixture"
 DOWNLOADS_INTEGRATION = "production-service-binding"
@@ -100,6 +105,10 @@ DOWNLOADS_INTEGRATION = "production-service-binding"
 [[env.production.services]]
 binding = "DOWNLOADS_SERVICE"
 service = "cloudflare-download-site"
+
+[[env.production.vpc_services]]
+binding = "NEWAPI_VPC_SERVICE"
+service_id = "01a027bb-280d-7630-b837-7afd6a0ca196"
 ```
 
 Default/top-level 不声明 `DOWNLOADS_SERVICE` 且 gate 为 `disabled`，继续供 local/dev fail closed。命名 staging 与 production 都显式绑定同一个已部署的 `cloudflare-download-site`，但使用不同 runtime gate；只有当前 gate 与 callable binding 同时存在才会转发。未知 mode、缺失或无效 binding 全部返回 503。
@@ -137,7 +146,7 @@ Credential 最小基线、same-account/deployed-target 前置条件、部署前�
 
 ## NewAPI live integration 边界
 
-`CONTENT_ADAPTER` 在所有环境仍是 `fixture`。把它改成未知值（包括 `newapi`）会返回 503；本阶段没有 NewAPI URL、Tunnel hostname 或 VPC endpoint，也不会假装已经接通。
+`CONTENT_ADAPTER` 在所有环境仍是 `fixture`。显式的 `newapi` mode 已实现并 fail closed：它只使用 `NEWAPI_VPC_SERVICE`、`LIVE_CONTENT_ADAPTER_TOKEN` 和固定的 `newapi-api.newapi:3000` 私有 origin，进行 GET-only、超时/大小限制和 v1 schema 校验；缺少 secret/binding、上游失败或 schema drift 都返回通用 503，绝不回退 fixture。详细 contract、secret hygiene 与未执行的 staging/production steps 见 [docs/live-content-adapter.md](docs/live-content-adapter.md)。
 
 ## 明确排除
 

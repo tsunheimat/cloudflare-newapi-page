@@ -14,12 +14,14 @@ Browser
                                     └─ DOWNLOADS_SERVICE
                                          └─ cloudflare-download-site Worker
 
-Future:
+Future/live:
   ContentAdapter
-    └─ verified NewAPI service-binding/private connectivity adapter
+    ├─ FixtureAdapter (default safety mode)
+    └─ NewAPI live adapter (explicit `CONTENT_ADAPTER="newapi"`)
+         └─ NEWAPI_VPC_SERVICE -> newapi-api.newapi:3000
 ```
 
-`ContentAdapter` 是唯一可替换资料边界。UI 不读取硬编码的 NewAPI hostname，也不直接访问 private/VPC/Tunnel。Fixture 和 future live adapter 必须返回同一个 public display contract。
+`ContentAdapter` 是唯一可替换资料边界。UI 不读取硬编码的 NewAPI hostname，也不直接访问 private/VPC/Tunnel。Fixture 和 live adapter 必须返回同一个 public display contract。Live adapter 的 secret、schema、failure 和 cutover contract 见 [live-content-adapter.md](live-content-adapter.md)。
 
 ## Docs contract
 
@@ -52,7 +54,7 @@ Page：
 }
 ```
 
-Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、`bullets`、`endpoint`、`table` 和 `link-cards`。Presentation 复用 pinned NewAPI commit `4d27865ce8342530f362595fdcd134eb83062a35` 的 Docs Hub shell、reader typography、导航/search/page states 与 responsive geometry，再把现有 flat fixture catalog 投影成一个 `开发文档` space 的 section groups；它不引入 NewAPI API client。Live adapter 接入前，需要确认 NewAPI Docs 的公开 page/revision/navigation/assets/search contract，再决定是逐块投影还是增加受版本控制的 renderer contract。不得从 private Admin response 直接透传内部字段。
+Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、`bullets`、`endpoint`、`table` 和 `link-cards`。Presentation 复用 pinned NewAPI commit `4d27865ce8342530f362595fdcd134eb83062a35` 的 Docs Hub shell、reader typography、导航/search/page states 与 responsive geometry，再把现有 flat fixture catalog 投影成一个 `开发文档` space 的 section groups；live adapter 对 NewAPI v1 renderer 做同样的受控 projection，未知 block/schema 会 fail closed，不从 private Admin response 直接透传内部字段。
 
 ## Pricing contract 与不变量
 
@@ -76,7 +78,7 @@ Versioned tiered display contract 目前只接受 NewAPI v1 的完整静态单�
 
 Video display contract 会保存 `video_pricing.currency` 来源币种，先将 CNY/USD rate 正规化为 USD，再应用真实的 `group_ratio.default`，最后与所有其他 pricing card 共用充值与 USD/CNY/CUSTOM conversion。一个 resolution row 缺少必要字段会使整份 video profile 不可计算，不会用剩余 row 产生起价。
 
-Future live adapter 还需要原样保留结构化 video pricing、capability、route contract、input-duration policy 和 billing expression；不支持的新版 contract 必须 fail closed 或明确显示不可计算，不能取第一项、最低价或 legacy 字段自行猜测。
+Live adapter 保留结构化 video pricing、capability、route contract、input-duration policy 和 billing expression；Worker 只验证/转发公开 payload，不执行 billing expression。新版或不支持的 contract 必须 fail closed 或由现有页面明确显示不可计算，不能取第一项、最低价或 legacy 字段自行猜测。
 
 ## Download service binding
 
@@ -99,17 +101,17 @@ Phase 2 在 `env.staging` 与 `env.production` 都明确绑定 `DOWNLOADS_SERVIC
 
 Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only probe，检查真实 Service Binding、public metadata、redirect 与 content type。Production 则只能经 fail-closed entrypoint 部署并按 runbook 做 GET verification。两者都不得把 mock/dry-run 当成 remote evidence；详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md) 与 [production-deployment.md](production-deployment.md)。
 
-## NewAPI live adapter 后续门槛
+## NewAPI live adapter cutover gates
 
-在切换 `CONTENT_ADAPTER` 前至少需要：
+在把任一命名环境从 fixture 切到 `newapi` 前至少需要：
 
 1. 明确 Cloudflare Worker 到 private NewAPI 的授权 transport（service binding、Tunnel/private network 等）与 owner。
-2. 当前部署的 NewAPI public Docs/Pricing response 样本和版本标识。
+2. 当前部署的 NewAPI private live Docs/Pricing response 样本和 v1 版本标识。
 3. 普通匿名/普通用户身份如何稳定解析为 `user_group=default`，以及 `selected_group=default` 如何传递。
-4. Docs navigation/page/assets/search 与 Pricing/status/exchange-rate 的完整字段映射和数据最小化审查。
-5. timeout、cache/stale、schema drift、partial failure 和 rollback policy。
+4. Docs navigation/page/search 与 Pricing/status/exchange-rate 的完整字段映射和数据最小化审查。
+5. Worker timeout/body/schema failure 和 rollback policy 已由 focused tests 覆盖；任何 stale-cache policy 需由 operator 单独批准。
 6. staging 端到端验收；页面上的 live badge 只能由已验证 adapter 明确产生。
 
-当前 artifact 不包含任何 hostname、credential、Tunnel ID、service token 或 live data mutation。
+当前 artifact 只包含已核对的 private service host/port 与 VPC service ID，不包含任何 secret value、Tunnel mutation、credential 或 live data mutation。命名环境仍保持 fixture，具体 operator steps 见 [live-content-adapter.md](live-content-adapter.md)。
 
 Phase 2 的 local/mock 与 Wrangler dry-run 不能证明实际 Cloudflare account 已存在该 binding、deployed target 与只读 source snapshot 相同、R2 objects 可用或 production routing 已完成。

@@ -35,7 +35,7 @@ test('only staging and production declare the reviewed download service binding'
   const source = await readFile(CONFIG_URL, 'utf8');
   const sections = parseSections(source);
   const serviceSections = [...sections.keys()].filter((section) =>
-    section.endsWith('services'),
+    section === 'services' || section.endsWith('.services'),
   );
 
   assert.deepEqual(serviceSections, [
@@ -50,6 +50,42 @@ test('only staging and production declare the reviewed download service binding'
       /^(?:remote|environment)\s*=/m,
     );
   }
+});
+
+test('staging and production declare the reviewed NewAPI VPC Service without changing content mode', async () => {
+  const source = await readFile(CONFIG_URL, 'utf8');
+  const sections = parseSections(source);
+  const vpcSections = [...sections.keys()].filter((section) =>
+    section === 'vpc_services' || section.endsWith('.vpc_services'),
+  );
+
+  assert.deepEqual(vpcSections, [
+    'env.staging.vpc_services',
+    'env.production.vpc_services',
+  ]);
+  for (const section of vpcSections) {
+    assert.equal(value(sections, section, 'binding'), 'NEWAPI_VPC_SERVICE');
+    assert.equal(
+      value(sections, section, 'service_id'),
+      '01a027bb-280d-7630-b837-7afd6a0ca196',
+    );
+    assert.doesNotMatch((sections.get(section) || []).join('\n'), /\bremote\s*=/);
+  }
+  assert.equal(value(sections, 'env.staging.vars', 'CONTENT_ADAPTER'), 'fixture');
+  assert.equal(value(sections, 'env.production.vars', 'CONTENT_ADAPTER'), 'fixture');
+  assert.doesNotMatch(source, /www\.tokenrouter\.tech/i);
+});
+
+test('live adapter documentation names the secret without embedding a value', async () => {
+  const source = await readFile(
+    new URL('../docs/live-content-adapter.md', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /LIVE_CONTENT_ADAPTER_TOKEN/);
+  assert.match(source, /NEWAPI_VPC_SERVICE/);
+  assert.match(source, /newapi-api\.newapi:3000/);
+  assert.match(source, /not use the public `www\.tokenrouter\.tech` origin/);
+  assert.doesNotMatch(source, /(?:sk|Bearer)[-_a-zA-Z0-9]{20,}/);
 });
 
 test('default stays disabled while staging and production use distinct explicit runtime gates', async () => {

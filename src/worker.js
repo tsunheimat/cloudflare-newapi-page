@@ -1,5 +1,6 @@
 import {
   createContentAdapter,
+  CONTENT_ADAPTER_LIVE,
   LOCKED_PRICING_CONTEXT,
 } from './adapters/content-adapter.js';
 import {
@@ -38,7 +39,7 @@ export async function route(request, env = {}) {
       phase: PHASE,
       content_adapter: String(env.CONTENT_ADAPTER || 'fixture'),
       pricing_context: LOCKED_PRICING_CONTEXT,
-      live_newapi: false,
+      live_newapi: isLiveContentMode(env),
       downloads: downloadServiceStatus(env),
     });
   }
@@ -86,6 +87,11 @@ export async function route(request, env = {}) {
   }
 
   return withSecurityHeaders(await env.ASSETS.fetch(request));
+}
+
+function isLiveContentMode(env) {
+  const mode = String(env.CONTENT_ADAPTER || 'fixture').trim().toLowerCase();
+  return mode === CONTENT_ADAPTER_LIVE;
 }
 
 function normalizePath(pathname) {

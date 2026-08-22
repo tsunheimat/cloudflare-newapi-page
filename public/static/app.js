@@ -284,7 +284,7 @@ async function renderDocs(slug) {
     node('a', { href: '/docs/quickstart', 'data-link': '' }, '开发文档'),
     node('span', { 'aria-hidden': 'true' }, '/'),
     node('span', {}, page.section),
-    renderDataBadge(response.data.meta, 'Fixture · 非 live'),
+    renderDataBadge(response.data.meta),
   );
   headingWrap.append(
     breadcrumbs,
@@ -680,7 +680,7 @@ function renderPricingRule(payload) {
   const section = node('section', { class: 'pricing-rule-inline' });
   const copy = node('div');
   const title = node('div', { class: 'pricing-rule-title' });
-  title.append('计价规则', renderDataBadge(payload.meta, 'Fixture · 非 live'));
+  title.append('计价规则', renderDataBadge(payload.meta));
   const summary = node('div', { class: 'pricing-rule-summary' });
   if (state.pricingMode === 'official') {
     summary.append(
@@ -1370,9 +1370,11 @@ function copyButton(text) {
   return button;
 }
 
-function renderDataBadge(meta, label) {
+function renderDataBadge(meta, label = undefined) {
   const badge = node('span', { class: `data-badge ${meta.live ? 'live' : 'fixture'}` });
-  badge.append(node('i', { 'aria-hidden': 'true' }), document.createTextNode(label || meta.label || meta.source));
+  const defaultLabel = meta.live ? 'NewAPI · Live' : 'Fixture · 非 live';
+  const displayLabel = label || (meta.live ? meta.label || defaultLabel : defaultLabel);
+  badge.append(node('i', { 'aria-hidden': 'true' }), document.createTextNode(displayLabel));
   return badge;
 }
 

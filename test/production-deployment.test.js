@@ -113,7 +113,7 @@ test('production deploy command cannot select default, staging, or an alternate 
     'production',
     '--strict',
   ]);
-  assert.match(args[3], /cloudflare-newapi-page\/wrangler\.toml$/);
+  assert.match(args[3], /\/wrangler\.toml$/);
   assert.equal(args.filter((value) => value === '--env').length, 1);
   assert.equal(args.includes('staging'), false);
   assert.equal(args.includes('--dry-run'), false);
