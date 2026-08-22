@@ -271,7 +271,10 @@ function fetchLivePayload(
       if (response.status === 404 && kind === 'docs_page') {
         throw new HttpError(404, 'Document page not found.');
       }
-      if (![200, 304].includes(response.status)) {
+      if (kind === 'health' && response.status !== 200) {
+        throw liveUnavailable('upstream_status');
+      }
+      if (kind !== 'health' && ![200, 304].includes(response.status)) {
         throw liveUnavailable('upstream_status');
       }
       if (response.headers.get('x-newapi-content-contract') !== LIVE_CONTENT_CONTRACT_VERSION) {
@@ -483,7 +486,15 @@ function assertLivePricing(payload) {
 }
 
 function assertLiveHealth(payload) {
-  if (!isRecord(payload) || payload.success !== true) schemaFailure();
+  if (
+    !isRecord(payload) ||
+    payload.success !== true ||
+    payload.service !== 'newapi-live-content' ||
+    payload.contract_version !== LIVE_CONTENT_CONTRACT_VERSION ||
+    payload.read_only !== true
+  ) {
+    schemaFailure();
+  }
   return payload;
 }
 

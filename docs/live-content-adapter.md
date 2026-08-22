@@ -42,8 +42,11 @@ The adapter sends only `GET` requests with `Authorization: Bearer <secret>` to:
 ```
 
 It requires `X-NewAPI-Content-Contract: v1` and `application/json`, aborts
-after five seconds, and limits each upstream body to 2 MiB. Non-2xx responses
-(other than a verified Docs page 404 or a validated conditional `304`), transport/timeouts, invalid JSON,
+after five seconds, and limits each upstream body to 2 MiB. Health verification
+requires upstream HTTP `200` and the complete `{ success: true,
+service: "newapi-live-content", contract_version: "v1", read_only: true }`
+response contract; a health `304` is unhealthy. Non-2xx responses (other than a
+verified Docs page 404 or a validated conditional `304` for Docs/Pricing), transport/timeouts, invalid JSON,
 oversized bodies, contract mismatches, and schema violations fail closed with
 a generic 503. Backend response bodies and messages are never exposed to the
 browser. There is no session-cookie, user API-key, public-origin, or fixture

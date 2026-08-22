@@ -157,27 +157,49 @@ test('live health separates selected mode from verified private health', async (
   assert.equal(invalidBody.live_newapi, false);
   assert.equal(invalidBody.live_newapi_healthy, false);
 
-  const successful = await fetchWorker('/api/health', {
-    ...base,
-    NEWAPI_VPC_SERVICE: {
-      fetch: async (request) => {
-        assert.equal(new URL(request.url).pathname, '/api/internal/live-content/v1/health');
-        assert.equal(request.method, 'GET');
-        assert.equal(request.headers.get('cookie'), null);
-        return new Response(JSON.stringify({ success: true, data: { status: 'ok' }, secret: 'private' }), {
-          headers: {
-            'content-type': 'application/json',
-            'x-newapi-content-contract': 'v1',
-          },
-        });
+  for (const [name, upstream] of [
+    ['incomplete 200', new Response(JSON.stringify({ success: true }), {
+      headers: {
+        'content-type': 'application/json',
+        'x-newapi-content-contract': 'v1',
       },
-    },
-  });
-  const successfulBody = await successful.json();
-  assert.equal(successfulBody.content_adapter_configured, true);
-  assert.equal(successfulBody.live_newapi, true);
-  assert.equal(successfulBody.live_newapi_healthy, true);
-  assert.doesNotMatch(JSON.stringify(successfulBody), /private|worker-live-content-token/);
+    })],
+    ['304 health', new Response(null, {
+      status: 304,
+      headers: {
+        etag: '"health-v1"',
+        'x-newapi-content-contract': 'v1',
+      },
+    })],
+    ['valid 200', new Response(JSON.stringify({
+      success: true,
+      service: 'newapi-live-content',
+      contract_version: 'v1',
+      read_only: true,
+    }), {
+      headers: {
+        'content-type': 'application/json',
+        'x-newapi-content-contract': 'v1',
+      },
+    })],
+  ]) {
+    const response = await fetchWorker('/api/health', {
+      ...base,
+      NEWAPI_VPC_SERVICE: {
+        fetch: async (request) => {
+          assert.equal(new URL(request.url).pathname, '/api/internal/live-content/v1/health');
+          assert.equal(request.method, 'GET');
+          assert.equal(request.headers.get('cookie'), null);
+          return upstream;
+        },
+      },
+    });
+    const body = await response.json();
+    assert.equal(body.content_adapter_configured, true, name);
+    assert.equal(body.live_newapi, name === 'valid 200', name);
+    assert.equal(body.live_newapi_healthy, name === 'valid 200', name);
+    assert.doesNotMatch(JSON.stringify(body), /worker-live-content-token/);
+  }
 });
 
 test('live content mode preserves public route envelopes and pricing lock', async () => {
