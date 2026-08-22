@@ -66,7 +66,7 @@ Public adapter 必须强制：
 context.user_group      = default
 context.selected_group  = default
 context.locked          = true
-group_ratio.default     exists and is finite/non-negative
+group_ratio.default     = 1.25
 usable_group.default    exists
 ```
 

@@ -100,6 +100,86 @@ test('live content mode fails closed when token or VPC binding is absent', async
   }
 });
 
+test('live health separates selected mode from verified private health', async () => {
+  const token = 'worker-live-content-token-' + 'x'.repeat(32);
+  const base = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+  };
+
+  for (const env of [
+    { ...base, LIVE_CONTENT_ADAPTER_TOKEN: undefined, NEWAPI_VPC_SERVICE: { fetch: async () => { throw new Error('must not run'); } } },
+    base,
+    { ...base, NEWAPI_VPC_SERVICE: {} },
+  ]) {
+    const response = await fetchWorker('/api/health', env);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.status, 'degraded');
+    assert.equal(body.content_adapter_selected, 'newapi');
+    assert.equal(body.live_newapi, false);
+    assert.equal(body.live_newapi_healthy, false);
+    assert.equal(body.content_adapter_configured, false);
+  }
+
+  const failed = await fetchWorker('/api/health', {
+    ...base,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => new Response(JSON.stringify({ success: false, secret: 'redacted' }), {
+        status: 503,
+        headers: {
+          'content-type': 'application/json',
+          'x-newapi-content-contract': 'v1',
+        },
+      }),
+    },
+  });
+  const failedBody = await failed.json();
+  assert.equal(failedBody.content_adapter_configured, true);
+  assert.equal(failedBody.live_newapi, false);
+  assert.equal(failedBody.live_newapi_healthy, false);
+  assert.doesNotMatch(JSON.stringify(failedBody), /redacted|worker-live-content-token/);
+
+  const invalid = await fetchWorker('/api/health', {
+    ...base,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => new Response('{bad', {
+        headers: {
+          'content-type': 'application/json',
+          'x-newapi-content-contract': 'v1',
+        },
+      }),
+    },
+  });
+  const invalidBody = await invalid.json();
+  assert.equal(invalidBody.content_adapter_configured, true);
+  assert.equal(invalidBody.live_newapi, false);
+  assert.equal(invalidBody.live_newapi_healthy, false);
+
+  const successful = await fetchWorker('/api/health', {
+    ...base,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        assert.equal(new URL(request.url).pathname, '/api/internal/live-content/v1/health');
+        assert.equal(request.method, 'GET');
+        assert.equal(request.headers.get('cookie'), null);
+        return new Response(JSON.stringify({ success: true, data: { status: 'ok' }, secret: 'private' }), {
+          headers: {
+            'content-type': 'application/json',
+            'x-newapi-content-contract': 'v1',
+          },
+        });
+      },
+    },
+  });
+  const successfulBody = await successful.json();
+  assert.equal(successfulBody.content_adapter_configured, true);
+  assert.equal(successfulBody.live_newapi, true);
+  assert.equal(successfulBody.live_newapi_healthy, true);
+  assert.doesNotMatch(JSON.stringify(successfulBody), /private|worker-live-content-token/);
+});
+
 test('live content mode preserves public route envelopes and pricing lock', async () => {
   const token = 'worker-live-content-token-' + 'x'.repeat(32);
   const env = {
@@ -130,6 +210,63 @@ test('live content mode preserves public route envelopes and pricing lock', asyn
   assert.equal(pricing.status, 200);
   assert.deepEqual(payload.context, { user_group: 'default', selected_group: 'default', locked: true });
   assert.equal(payload.group_ratio.default, 1.25);
+});
+
+test('live Docs and Pricing preserve ETags and upstream conditional 304 responses', async () => {
+  const token = 'worker-live-content-token-' + 'x'.repeat(32);
+  const calls = [];
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname;
+        calls.push({ path, ifNoneMatch: request.headers.get('if-none-match'), cookie: request.headers.get('cookie') });
+        if (request.headers.get('if-none-match') === '"pricing-v1"' || request.headers.get('if-none-match') === '"docs-v1"') {
+          return new Response(null, {
+            status: 304,
+            headers: { 'x-newapi-content-contract': 'v1', etag: request.headers.get('if-none-match') },
+          });
+        }
+        if (path.endsWith('/pricing')) {
+          return new Response(JSON.stringify({
+            success: true,
+            meta: { source: 'newapi', fixture: false, live: true, label: 'NewAPI live content', updated_at: null, contract_version: 'v1' },
+            context: { user_group: 'default', selected_group: 'default', locked: true },
+            display: { quota_display_type: 'USD', default_currency: 'CNY', price: 7.2, usd_exchange_rate: 7.2, custom_currency_exchange_rate: 1, custom_currency_symbol: '¤', show_with_recharge: true },
+            data: [], vendors: [], group_ratio: { default: 1.25 }, usable_group: { default: '普通用户' }, supported_endpoint: {}, auto_groups: [], video_resolution_dimensions: {}, pricing_version: 'live-v1',
+          }), { headers: { 'content-type': 'application/json', 'x-newapi-content-contract': 'v1', etag: '"pricing-v1"' } });
+        }
+        return new Response(JSON.stringify({ success: true, data: { meta: { source: 'newapi', fixture: false, live: true, label: 'NewAPI live content', updated_at: null, contract_version: 'v1', schema_version: 1, renderer_version: 1 }, sections: [], search_index: [] } }), { headers: { 'content-type': 'application/json', 'x-newapi-content-contract': 'v1', etag: '"docs-v1"' } });
+      },
+    },
+  };
+
+  for (const [path, etag] of [['/api/content/docs', '"docs-v1"'], ['/api/content/pricing', '"pricing-v1"']]) {
+    const fresh = await fetchWorker(path, env);
+    assert.equal(fresh.status, 200);
+    assert.equal(fresh.headers.get('etag'), etag);
+    assert.equal(fresh.headers.get('cache-control'), 'no-cache');
+    assert.equal((await fresh.json()).success, true);
+
+    const conditional = await fetchWorker(path, env, {
+      headers: {
+        'if-none-match': etag,
+        cookie: 'session=must-not-forward',
+        authorization: 'Bearer user-key-must-not-forward',
+      },
+    });
+    assert.equal(conditional.status, 304);
+    assert.equal(conditional.headers.get('etag'), etag);
+    assert.equal(await conditional.text(), '');
+  }
+  assert.deepEqual(calls.map(({ path, ifNoneMatch, cookie }) => ({ path, ifNoneMatch, cookie })), [
+    { path: '/api/internal/live-content/v1/docs', ifNoneMatch: null, cookie: null },
+    { path: '/api/internal/live-content/v1/docs', ifNoneMatch: '"docs-v1"', cookie: null },
+    { path: '/api/internal/live-content/v1/pricing', ifNoneMatch: null, cookie: null },
+    { path: '/api/internal/live-content/v1/pricing', ifNoneMatch: '"pricing-v1"', cookie: null },
+  ]);
 });
 
 test('SPA routes pass through the asset binding with security headers', async () => {

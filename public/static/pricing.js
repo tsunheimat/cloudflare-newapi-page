@@ -146,6 +146,19 @@ export function calculateModelPricing(model, payload, options = {}) {
     return calculateTieredPricing(model, display, common);
   }
 
+  if (
+    model.billing_mode !== undefined &&
+    model.billing_mode !== null &&
+    (typeof model.billing_mode !== 'string' || model.billing_mode.trim() !== '')
+  ) {
+    return unavailablePricing(
+      common,
+      'unknown',
+      'unsupported_billing_mode',
+      '未知计费模式，无法计算。',
+    );
+  }
+
   if (!display) {
     return unavailablePricing(
       common,

@@ -38,6 +38,7 @@ let activeDocsSearchButton = null;
 let activeDocsTocObserver = null;
 let surfaceReturnFocus = null;
 let activeSurfaceDismiss = null;
+const contentApiCache = new Map();
 
 window.addEventListener('popstate', () => renderRoute());
 pricingMobileMedia?.addEventListener('change', handlePricingViewportChange);
@@ -1589,7 +1590,14 @@ function renderError(error) {
 }
 
 async function api(path) {
-  const response = await fetch(path, { headers: { accept: 'application/json' } });
+  const cached = contentApiCache.get(path);
+  const headers = new Headers({ accept: 'application/json' });
+  if (cached?.etag) headers.set('if-none-match', cached.etag);
+  const response = await fetch(path, {
+    headers,
+    ...(path.startsWith('/api/content/') ? { cache: 'no-cache' } : {}),
+  });
+  if (response.status === 304 && cached) return cached.body;
   let body;
   try {
     body = await response.json();
@@ -1598,6 +1606,12 @@ async function api(path) {
   }
   if (!response.ok || body.success === false) {
     throw new Error(body?.error?.message || body?.message || `请求失败（${response.status}）。`);
+  }
+  if (path.startsWith('/api/content/')) {
+    contentApiCache.set(path, {
+      body,
+      etag: response.headers.get('etag'),
+    });
   }
   return body;
 }

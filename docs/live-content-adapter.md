@@ -43,13 +43,23 @@ The adapter sends only `GET` requests with `Authorization: Bearer <secret>` to:
 
 It requires `X-NewAPI-Content-Contract: v1` and `application/json`, aborts
 after five seconds, and limits each upstream body to 2 MiB. Non-2xx responses
-(other than a verified Docs page 404), transport/timeouts, invalid JSON,
+(other than a verified Docs page 404 or a validated conditional `304`), transport/timeouts, invalid JSON,
 oversized bodies, contract mismatches, and schema violations fail closed with
 a generic 503. Backend response bodies and messages are never exposed to the
 browser. There is no session-cookie, user API-key, public-origin, or fixture
 fallback path in live mode.
 
+For Docs and Pricing, the Worker forwards only the browser's `If-None-Match`
+validator in addition to its fixed `Accept` and private adapter authorization.
+It preserves a syntactically valid upstream `ETag` on public `200` responses
+and returns an empty public `304` when the verified upstream does. Cookies,
+sessions, browser authorization, user API keys, and unrelated headers are not
+forwarded. The five-second deadline covers binding fetch, body streaming,
+UTF-8 decoding, JSON parsing, validation, and projection.
+
 The live Docs projection must provide the existing catalog/page block contract.
+Both `schema_version` and `renderer_version` must equal the currently supported
+value `1`; future or unknown versions fail closed until explicitly reviewed.
 Pricing remains identity-independent and is accepted only when:
 
 ```text

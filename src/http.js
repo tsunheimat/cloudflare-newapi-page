@@ -10,7 +10,7 @@ export class HttpError extends Error {
 export function json(data, status = 200, extraHeaders = undefined) {
   const headers = new Headers(extraHeaders);
   headers.set('content-type', 'application/json; charset=utf-8');
-  headers.set('cache-control', 'no-store');
+  if (!headers.has('cache-control')) headers.set('cache-control', 'no-store');
   applySecurityHeaders(headers);
   return new Response(JSON.stringify(data), { status, headers });
 }

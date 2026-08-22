@@ -7,6 +7,8 @@ export const CONTENT_ADAPTER_LIVE = 'newapi';
 export const LIVE_CONTENT_VPC_BINDING = 'NEWAPI_VPC_SERVICE';
 export const LIVE_CONTENT_ADAPTER_TOKEN = 'LIVE_CONTENT_ADAPTER_TOKEN';
 export const LIVE_CONTENT_CONTRACT_VERSION = 'v1';
+export const LIVE_CONTENT_DOCS_SCHEMA_VERSION = 1;
+export const LIVE_CONTENT_DOCS_RENDERER_VERSION = 1;
 export const LIVE_CONTENT_ORIGIN = 'http://newapi-api.newapi:3000';
 export const LIVE_CONTENT_TIMEOUT_MS = 5_000;
 export const LIVE_CONTENT_MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -40,29 +42,48 @@ export function createContentAdapter(env = {}) {
 }
 
 export function createFixtureAdapter() {
+  const docsCatalog = () => clone({
+    meta: docsFixture.meta,
+    sections: docsFixture.sections,
+    search_index: docsFixture.search_index,
+  });
+  const docPage = (slug) => {
+    const page = docsFixture.pages.find((candidate) => candidate.slug === slug);
+    if (!page) {
+      throw new HttpError(404, 'Document page not found.');
+    }
+    return clone({ meta: docsFixture.meta, page });
+  };
+  const pricing = () => {
+    assertOrdinaryUserPricingContext(pricingFixture);
+    return clone(pricingFixture);
+  };
   return {
     name: CONTENT_ADAPTER_FIXTURE,
     live: false,
 
     async getDocsCatalog() {
-      return clone({
-        meta: docsFixture.meta,
-        sections: docsFixture.sections,
-        search_index: docsFixture.search_index,
-      });
+      return docsCatalog();
+    },
+
+    async getDocsCatalogResponse() {
+      return { status: 200, payload: docsCatalog(), etag: null };
     },
 
     async getDocPage(slug) {
-      const page = docsFixture.pages.find((candidate) => candidate.slug === slug);
-      if (!page) {
-        throw new HttpError(404, 'Document page not found.');
-      }
-      return clone({ meta: docsFixture.meta, page });
+      return docPage(slug);
+    },
+
+    async getDocPageResponse(slug) {
+      return { status: 200, payload: docPage(slug), etag: null };
     },
 
     async getPricing() {
-      assertOrdinaryUserPricingContext(pricingFixture);
-      return clone(pricingFixture);
+      return pricing();
+    },
+
+    async getPricingResponse() {
+      return { status: 200, payload: pricing(), etag: null };
     },
   };
 }
@@ -92,29 +113,77 @@ export function createLiveContentAdapter(
     throw liveUnavailable('missing_vpc_binding');
   }
 
-  const fetchPayload = (path, kind) =>
-    fetchLivePayload(env, token, path, kind, { timeoutMs, maxBodyBytes });
+  const fetchPayload = (path, kind, options = {}) =>
+    fetchLivePayload(env, token, path, kind, {
+      timeoutMs,
+      maxBodyBytes,
+      ifNoneMatch: options.ifNoneMatch,
+      transform: options.transform,
+    });
+  const getDocsCatalogResponse = (options = {}) => fetchAndValidate(
+    '/api/internal/live-content/v1/docs?locale=zh',
+    'docs_catalog',
+    options,
+    assertLiveDocsCatalog,
+  );
+  const getDocPageResponse = (slug, options = {}) => {
+    if (!isSafeSlug(slug)) throw new HttpError(400, 'Invalid document slug.');
+    return fetchAndValidate(
+      `/api/internal/live-content/v1/docs/${encodeURIComponent(slug)}?locale=zh`,
+      'docs_page',
+      options,
+      assertLiveDocsPage,
+    );
+  };
+  const getPricingResponse = (options = {}) => fetchAndValidate(
+    '/api/internal/live-content/v1/pricing',
+    'pricing',
+    options,
+    assertLivePricing,
+  );
   return {
     name: CONTENT_ADAPTER_LIVE,
     live: true,
 
     async getDocsCatalog() {
-      return clone(assertLiveDocsCatalog(await fetchPayload('/api/internal/live-content/v1/docs?locale=zh', 'docs_catalog')));
+      return (await getDocsCatalogResponse()).payload;
     },
+
+    getDocsCatalogResponse,
 
     async getDocPage(slug) {
-      if (!isSafeSlug(slug)) throw new HttpError(400, 'Invalid document slug.');
-      const result = await fetchPayload(
-        `/api/internal/live-content/v1/docs/${encodeURIComponent(slug)}?locale=zh`,
-        'docs_page',
-      );
-      return clone(assertLiveDocsPage(result));
+      return (await getDocPageResponse(slug)).payload;
     },
 
+    getDocPageResponse,
+
     async getPricing() {
-      return clone(assertLivePricing(await fetchPayload('/api/internal/live-content/v1/pricing', 'pricing')));
+      return (await getPricingResponse()).payload;
+    },
+
+    getPricingResponse,
+
+    async checkHealth() {
+      try {
+        await fetchAndValidate(
+          '/api/internal/live-content/v1/health',
+          'health',
+          {},
+          assertLiveHealth,
+        );
+        return true;
+      } catch {
+        return false;
+      }
     },
   };
+
+  async function fetchAndValidate(path, kind, options, validator) {
+    return fetchPayload(path, kind, {
+      ...options,
+      transform: (payload) => clone(validator(payload)),
+    });
+  }
 }
 
 export function assertOrdinaryUserPricingContext(payload) {
@@ -147,9 +216,17 @@ export function assertOrdinaryUserPricingContext(payload) {
   return payload;
 }
 
-function fetchLivePayload(env, token, path, kind, { timeoutMs, maxBodyBytes }) {
+function fetchLivePayload(
+  env,
+  token,
+  path,
+  kind,
+  { timeoutMs, maxBodyBytes, ifNoneMatch = undefined, transform = (value) => value },
+) {
   const binding = env[LIVE_CONTENT_VPC_BINDING];
   const controller = new AbortController();
+  const deadline = Date.now() + timeoutMs;
+  let upstreamResponse;
   let timedOut = false;
   let rejectTimeout;
   const timeout = new Promise((_, reject) => {
@@ -158,24 +235,31 @@ function fetchLivePayload(env, token, path, kind, { timeoutMs, maxBodyBytes }) {
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
+    void Promise.resolve(upstreamResponse?.body?.cancel?.('deadline exceeded')).catch(() => {});
     rejectTimeout(liveUnavailable('upstream_timeout'));
   }, timeoutMs);
 
+  const headers = {
+    Accept: 'application/json',
+    Authorization: `Bearer ${token}`,
+  };
+  if (typeof ifNoneMatch === 'string' && ifNoneMatch.trim() !== '') {
+    headers['If-None-Match'] = ifNoneMatch;
+  }
   const request = new Request(`${LIVE_CONTENT_ORIGIN}${path}`, {
     method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
+    headers,
     signal: controller.signal,
   });
 
-  const upstream = Promise.resolve().then(() => binding.fetch(request));
-  return Promise.race([upstream, timeout])
-    .catch(() => {
-      throw liveUnavailable(timedOut ? 'upstream_timeout' : 'upstream_transport');
-    })
-    .then(async (response) => {
+  const operation = (async () => {
+      assertBeforeDeadline(deadline, controller);
+      const response = await binding.fetch(request);
+      upstreamResponse = response;
+      if (Date.now() >= deadline) {
+        await Promise.resolve(response?.body?.cancel?.('deadline exceeded')).catch(() => {});
+      }
+      assertBeforeDeadline(deadline, controller);
       if (
         !response ||
         typeof response.status !== 'number' ||
@@ -187,11 +271,20 @@ function fetchLivePayload(env, token, path, kind, { timeoutMs, maxBodyBytes }) {
       if (response.status === 404 && kind === 'docs_page') {
         throw new HttpError(404, 'Document page not found.');
       }
-      if (!response.ok) {
+      if (![200, 304].includes(response.status)) {
         throw liveUnavailable('upstream_status');
       }
       if (response.headers.get('x-newapi-content-contract') !== LIVE_CONTENT_CONTRACT_VERSION) {
         throw liveUnavailable('invalid_upstream_contract');
+      }
+      const rawEtag = response.headers.get('etag');
+      const etag = verifiedEtag(rawEtag);
+      if (rawEtag !== null && !etag) {
+        throw liveUnavailable('invalid_upstream_etag');
+      }
+      if (response.status === 304) {
+        if (!etag) throw liveUnavailable('invalid_upstream_etag');
+        return { status: 304, payload: null, etag };
       }
       const contentType = response.headers.get('content-type') || '';
       if (!/^application\/json(?:\s*;|$)/i.test(contentType)) {
@@ -199,20 +292,53 @@ function fetchLivePayload(env, token, path, kind, { timeoutMs, maxBodyBytes }) {
       }
       let raw;
       try {
-        raw = await readBoundedBody(response, maxBodyBytes);
+        raw = await readBoundedBody(
+          response,
+          maxBodyBytes,
+          controller.signal,
+          deadline,
+        );
       } catch {
+        if (controller.signal.aborted || Date.now() >= deadline) {
+          throw liveUnavailable('upstream_timeout');
+        }
         throw liveUnavailable('invalid_upstream_body');
       }
+      let payload;
       try {
-        return JSON.parse(raw);
+        assertBeforeDeadline(deadline, controller);
+        payload = JSON.parse(raw);
+        assertBeforeDeadline(deadline, controller);
       } catch {
+        if (controller.signal.aborted || Date.now() >= deadline) {
+          throw liveUnavailable('upstream_timeout');
+        }
         throw liveUnavailable('invalid_upstream_json');
       }
+      let validated;
+      try {
+        assertBeforeDeadline(deadline, controller);
+        validated = transform(payload);
+      } catch (error) {
+        if (controller.signal.aborted || Date.now() >= deadline) {
+          throw liveUnavailable('upstream_timeout');
+        }
+        throw error;
+      }
+      assertBeforeDeadline(deadline, controller);
+      return { status: 200, payload: validated, etag };
+    })();
+  return Promise.race([operation, timeout])
+    .catch((error) => {
+      if (error instanceof HttpError) throw error;
+      throw liveUnavailable(timedOut ? 'upstream_timeout' : 'upstream_transport');
     })
-    .finally(() => clearTimeout(timer));
+    .finally(() => {
+      clearTimeout(timer);
+    });
 }
 
-async function readBoundedBody(response, maxBytes) {
+async function readBoundedBody(response, maxBytes, signal, deadline) {
   const contentLength = Number(response.headers.get('content-length'));
   if (Number.isFinite(contentLength) && contentLength > maxBytes) {
     throw new Error('upstream response too large');
@@ -221,18 +347,35 @@ async function readBoundedBody(response, maxBytes) {
   const reader = response.body.getReader();
   const chunks = [];
   let total = 0;
+  let cancelled = false;
+  let completed = false;
+  let cancelPromise = null;
+  const abortReader = () => {
+    cancelled = true;
+    cancelPromise = reader.cancel('deadline exceeded').catch(() => {});
+  };
+  signal.addEventListener('abort', abortReader, { once: true });
   try {
     for (;;) {
+      assertBeforeDeadline(deadline);
       const { done, value } = await reader.read();
-      if (done) break;
+      assertBeforeDeadline(deadline);
+      if (done) {
+        completed = true;
+        break;
+      }
       total += value.byteLength;
       if (total > maxBytes) {
         await reader.cancel();
+        cancelled = true;
         throw new Error('upstream response too large');
       }
       chunks.push(value);
     }
   } finally {
+    signal.removeEventListener('abort', abortReader);
+    if (cancelPromise) await cancelPromise;
+    else if (!completed && !cancelled) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
   const bytes = new Uint8Array(total);
@@ -241,7 +384,25 @@ async function readBoundedBody(response, maxBytes) {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  assertBeforeDeadline(deadline);
+  const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  assertBeforeDeadline(deadline);
+  return decoded;
+}
+
+function assertBeforeDeadline(deadline, controller = undefined) {
+  if (Date.now() < deadline) return;
+  controller?.abort();
+  throw liveUnavailable('upstream_timeout');
+}
+
+function verifiedEtag(value) {
+  if (value === null) return null;
+  // Only forward a single RFC 9110 entity-tag; never reflect arbitrary
+  // upstream header text into the public response.
+  return /^(?:W\/)?"(?:[\x21\x23-\x7e\x80-\xff])*"$/.test(value)
+    ? value
+    : null;
 }
 
 function liveUnavailable(reason) {
@@ -321,6 +482,11 @@ function assertLivePricing(payload) {
   return payload;
 }
 
+function assertLiveHealth(payload) {
+  if (!isRecord(payload) || payload.success !== true) schemaFailure();
+  return payload;
+}
+
 function assertVideoResolutionDimensions(value) {
   if (!isRecord(value)) schemaFailure();
   Object.values(value).forEach((resolutionSet) => {
@@ -343,7 +509,11 @@ function assertLiveMeta(meta, docs) {
   if (!isRecord(meta) || meta.source !== 'newapi' || meta.fixture !== false || meta.live !== true || meta.contract_version !== LIVE_CONTENT_CONTRACT_VERSION) schemaFailure();
   assertString(meta.label, 200);
   if (meta.updated_at !== null && (!Number.isInteger(meta.updated_at) || meta.updated_at < 0)) schemaFailure();
-  if (docs && (!Number.isInteger(meta.schema_version) || !Number.isInteger(meta.renderer_version) || meta.schema_version < 1 || meta.renderer_version < 1)) schemaFailure();
+  if (
+    docs &&
+    (meta.schema_version !== LIVE_CONTENT_DOCS_SCHEMA_VERSION ||
+      meta.renderer_version !== LIVE_CONTENT_DOCS_RENDERER_VERSION)
+  ) schemaFailure();
 }
 
 function assertDocsItem(item) {

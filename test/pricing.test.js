@@ -111,6 +111,23 @@ test('invalid ordinary model fields are explicitly unavailable instead of partia
   assert.deepEqual(pricing.items, []);
 });
 
+test('unknown non-empty billing modes never fall through to legacy quota pricing', () => {
+  const payload = cloneFixture();
+  const legacy = payload.data.find((item) => item.quota_type === 1);
+  const model = {
+    ...legacy,
+    billing_mode: 'future_native_mode',
+    model_price: 0.08,
+  };
+
+  const pricing = calculateModelPricing(model, payload, { currency: 'USD' });
+  assert.equal(pricing.kind, 'unknown');
+  assert.equal(pricing.availability, 'unavailable');
+  assert.equal(pricing.unavailableCode, 'unsupported_billing_mode');
+  assert.deepEqual(pricing.items, []);
+  assert.equal('pricesUSD' in pricing, false);
+});
+
 test('billing variable registry matches the NewAPI v1 pricing variables', () => {
   assert.deepEqual(
     BILLING_VARIABLES.map(({ key }) => key),

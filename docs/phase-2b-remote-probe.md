@@ -14,7 +14,7 @@ Cloudflare 官方说明：Wrangler environment 的 vars/bindings 不继承；rem
 
 Remote preview 需要上传 temporary Worker code，所以严格的 read-only Cloudflare token 不足以启动它。这里的“read-only”指 probe 的 downstream HTTP/R2 behavior，不代表 token 权限是 read-only。
 
-由 Cloudflare owner 创建短时、单 account、可选 IP-restricted token，只授予 Wrangler remote preview 所需的 Workers script edit 与不可避免的 identity/account read 权限。不要授予 R2 Storage Edit、DNS Edit、Workers Routes Edit、Tunnel/VPC 或其他资源 mutation 权限。Token 仍可能具备修改 Worker script 的能力，因此必须短 TTL、运行后立即撤销，并由 operator 严格只执行本 runbook 中的 `wrangler dev --remote`；不得执行 `wrangler deploy`。
+由 Cloudflare owner 创建短时、单 account、可选 IP-restricted token，只授予 Wrangler remote preview 所需的 Workers script edit、`Connectivity Directory Bind`（读取、列出并绑定既有 VPC Service）与不可避免的 identity/account read 权限。不要授予 Connectivity Directory Admin、R2 Storage Edit、DNS Edit、Workers Routes Edit、Tunnel/VPC Admin 或其他资源 mutation 权限。Token 仍可能具备修改 Worker script 的能力，因此必须短 TTL、运行后立即撤销，并由 operator 严格只执行本 runbook 中的 `wrangler dev --remote`；不得执行 `wrangler deploy`。
 
 Credential 只通过当前 shell 的 `CLOUDFLARE_API_TOKEN` 与 `CLOUDFLARE_ACCOUNT_ID` 提供，不写入 repository、`.env`、`.dev.vars`、shell history、日志或 probe output。若 Wrangler 报告缺少权限，停止并由 owner 审核；不要自行扩大 scope。
 

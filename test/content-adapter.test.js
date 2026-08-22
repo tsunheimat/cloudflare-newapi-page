@@ -8,6 +8,8 @@ import {
   createFixtureAdapter,
   createLiveContentAdapter,
   LIVE_CONTENT_MAX_BODY_BYTES,
+  LIVE_CONTENT_DOCS_RENDERER_VERSION,
+  LIVE_CONTENT_DOCS_SCHEMA_VERSION,
   LIVE_CONTENT_TIMEOUT_MS,
   LIVE_CONTENT_VPC_BINDING,
 } from '../src/adapters/content-adapter.js';
@@ -104,6 +106,16 @@ function liveResponse(payload, status = 200, headers = {}) {
   });
 }
 
+function liveNotModified(etag = '"docs-v1"') {
+  return new Response(null, {
+    status: 304,
+    headers: {
+      'x-newapi-content-contract': 'v1',
+      etag,
+    },
+  });
+}
+
 function liveEnv(fetch) {
   return {
     CONTENT_ADAPTER: CONTENT_ADAPTER_LIVE,
@@ -168,6 +180,48 @@ test('live adapter uses only the VPC binding and private GET contract', async ()
   assert.equal(new URL(calls[0].url).port, '3000');
   assert.equal(calls[0].headers.get('authorization'), `Bearer ${liveToken}`);
   assert.equal(calls[0].headers.get('cookie'), null);
+  assert.equal(calls[0].headers.get('if-none-match'), null);
+});
+
+test('live adapter forwards only a browser validator and preserves verified ETags', async () => {
+  let observed;
+  const adapter = createLiveContentAdapter(liveEnv(async (request) => {
+    observed = request;
+    return liveResponse({
+      success: true,
+      data: {
+        meta: liveMeta(true),
+        sections: [],
+        search_index: [],
+      },
+    }, 200, { etag: '"catalog-v1"' });
+  }));
+  const result = await adapter.getDocsCatalogResponse({
+    ifNoneMatch: '"catalog-old"',
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.etag, '"catalog-v1"');
+  assert.equal(observed.headers.get('if-none-match'), '"catalog-old"');
+  assert.equal(observed.headers.get('cookie'), null);
+  assert.equal(observed.headers.get('x-api-key'), null);
+  assert.equal(observed.headers.get('x-forwarded-authorization'), null);
+});
+
+test('matching live conditional responses preserve verified 304 semantics', async () => {
+  let observed;
+  const adapter = createLiveContentAdapter(liveEnv(async (request) => {
+    observed = request;
+    return liveNotModified('W/"catalog-v1"');
+  }));
+  const result = await adapter.getDocsCatalogResponse({
+    ifNoneMatch: 'W/"catalog-v1"',
+  });
+  assert.deepEqual(result, {
+    status: 304,
+    payload: null,
+    etag: 'W/"catalog-v1"',
+  });
+  assert.equal(observed.headers.get('if-none-match'), 'W/"catalog-v1"');
 });
 
 test('live adapter validates pricing invariants and does not fall back to fixtures', async () => {
@@ -232,6 +286,68 @@ test('live adapter aborts slow upstreams and rejects oversized bodies', async ()
   );
   assert.equal(LIVE_CONTENT_TIMEOUT_MS, 5_000);
   assert.equal(LIVE_CONTENT_MAX_BODY_BYTES, 2 * 1024 * 1024);
+});
+
+test('live adapter deadline covers a stalled response body and cancels its reader', async () => {
+  let cancelled = false;
+  const stalled = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"success":true'));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const adapter = createLiveContentAdapter(liveEnv(async () =>
+    new Response(stalled, {
+      headers: {
+        'content-type': 'application/json',
+        'x-newapi-content-contract': 'v1',
+      },
+    }),
+  ), { timeoutMs: 15 });
+  await assert.rejects(
+    () => adapter.getPricing(),
+    (error) => error instanceof HttpError && error.status === 503 && error.details.reason === 'upstream_timeout',
+  );
+  assert.equal(cancelled, true);
+});
+
+test('live Docs require the exact supported schema and renderer versions', async () => {
+  assert.equal(LIVE_CONTENT_DOCS_SCHEMA_VERSION, 1);
+  assert.equal(LIVE_CONTENT_DOCS_RENDERER_VERSION, 1);
+  for (const kind of ['catalog', 'page']) {
+    for (const field of ['schema_version', 'renderer_version']) {
+      const data = kind === 'catalog'
+        ? {
+            meta: { ...liveMeta(true), [field]: 99 },
+            sections: [],
+            search_index: [],
+          }
+        : {
+            meta: { ...liveMeta(true), [field]: 99 },
+            page: {
+              slug: 'quickstart',
+              title: 'Quickstart',
+              summary: 'Start here',
+              section: 'Guides',
+              keywords: [],
+              updated_at: 1,
+              blocks: [],
+            },
+          };
+      const adapter = createLiveContentAdapter(liveEnv(async () => liveResponse({
+        success: true,
+        data,
+      })));
+      await assert.rejects(
+        () => kind === 'catalog'
+          ? adapter.getDocsCatalog()
+          : adapter.getDocPage('quickstart'),
+        (error) => error instanceof HttpError && error.status === 503 && error.details.reason === 'invalid_upstream_schema',
+      );
+    }
+  }
 });
 
 test('unknown fixture document slugs return 404', async () => {

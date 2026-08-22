@@ -4,11 +4,12 @@
 
 ## 1. 权限与资源前置条件
 
-使用短时、限定单一目标 account（可再限制 TTL/IP）的 custom API token。此 Worker 只使用 Workers Static Assets、明文 config vars 与 Service Binding；在显式提供 `CLOUDFLARE_ACCOUNT_ID`、account 已有 workers.dev subdomain、且不管理 zone route 的前提下，最小权限是：
+使用短时、限定单一目标 account（可再限制 TTL/IP）的 custom API token。此 Worker 只使用 Workers Static Assets、明文 config vars、Worker Service Binding 与一个既有 VPC Service binding；在显式提供 `CLOUDFLARE_ACCOUNT_ID`、account 已有 workers.dev subdomain、且不管理 zone route 的前提下，最小权限/角色是：
 
 - Account / Workers Scripts / Edit。
+- Account role / `Connectivity Directory Bind`，只用于读取、列出并绑定既有 VPC Service。
 
-Cloudflare 的 Worker upload API 把 `Workers Scripts Write` 列为所需权限；Dashboard custom token 中对应 `Workers Scripts / Edit`。本配置声明一个既有 VPC Service 的 binding，但不创建或管理 VPC/Tunnel、DNS、Secrets Store、zone route、KV、D1 或 R2 resource，因此不要授予 Account Settings Edit、Workers Routes Edit、Workers KV/R2 Storage Edit、DNS Edit、Tunnel/VPC 或 account-wide unrestricted 权限。若当前 Wrangler/组织策略返回明确的缺权错误，停止并由 account owner 审核；不要自行扩大 token scope。参考 [Worker upload API permission](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/content/methods/update/)。
+Cloudflare 的 Worker upload API 把 `Workers Scripts Write` 列为所需权限；Dashboard custom token 中对应 `Workers Scripts / Edit`。Cloudflare Workers VPC 文档明确要求 `Connectivity Directory Bind` 才能把 Worker 绑定到既有 VPC Service；`Connectivity Directory Admin` 仅用于创建、更新、删除 VPC Service 或直接绑定 Tunnel，本部署不需要也不得申请。配置不会创建或管理 VPC/Tunnel、DNS、Secrets Store、zone route、KV、D1 或 R2 resource，因此不要授予 Connectivity Directory Admin、Account Settings Edit、Workers Routes Edit、Workers KV/R2 Storage Edit、DNS Edit、Tunnel/VPC Admin 或 account-wide unrestricted 权限。若当前 Wrangler/组织策略返回明确的缺权错误，停止并由 account owner 审核；不要自行扩大 token scope。参考 [Worker upload API permission](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/content/methods/update/) 与 [VPC Service required roles](https://developers.cloudflare.com/workers-vpc/configuration/vpc-services/#required-roles)。
 
 Production entrypoint 要求 `CLOUDFLARE_ACCOUNT_ID` 与 `CLOUDFLARE_API_TOKEN` 只存在于当前 process environment。不要写入 repository、`.env*`、`.dev.vars*`、shell history、构建日志或 commit。官方 credential 与 CI 说明：
 

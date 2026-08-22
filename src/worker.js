@@ -33,13 +33,19 @@ export async function route(request, env = {}) {
   const pathname = normalizePath(url.pathname);
 
   if (request.method === 'GET' && pathname === '/api/health') {
+    const content = await liveContentHealth(env);
     return json({
-      status: 'ok',
+      status: content.mode === CONTENT_ADAPTER_LIVE && !content.healthy
+        ? 'degraded'
+        : 'ok',
       service: 'cloudflare-newapi-page',
       phase: PHASE,
-      content_adapter: String(env.CONTENT_ADAPTER || 'fixture'),
+      content_adapter: content.mode,
+      content_adapter_selected: content.mode,
+      content_adapter_configured: content.configured,
       pricing_context: LOCKED_PRICING_CONTEXT,
-      live_newapi: isLiveContentMode(env),
+      live_newapi: content.healthy,
+      live_newapi_healthy: content.healthy,
       downloads: downloadServiceStatus(env),
     });
   }
@@ -50,18 +56,33 @@ export async function route(request, env = {}) {
 
   if (request.method === 'GET' && pathname === '/api/content/docs') {
     const adapter = createContentAdapter(env);
-    return json({ success: true, data: await adapter.getDocsCatalog() });
+    return publicContentResponse(
+      await adapter.getDocsCatalogResponse({
+        ifNoneMatch: conditionalValidator(request),
+      }),
+      (payload) => ({ success: true, data: payload }),
+    );
   }
 
   if (request.method === 'GET' && pathname.startsWith('/api/content/docs/')) {
     const slug = decodeDocSlug(pathname.slice('/api/content/docs/'.length));
     const adapter = createContentAdapter(env);
-    return json({ success: true, data: await adapter.getDocPage(slug) });
+    return publicContentResponse(
+      await adapter.getDocPageResponse(slug, {
+        ifNoneMatch: conditionalValidator(request),
+      }),
+      (payload) => ({ success: true, data: payload }),
+    );
   }
 
   if (request.method === 'GET' && pathname === '/api/content/pricing') {
     const adapter = createContentAdapter(env);
-    return json(await adapter.getPricing());
+    return publicContentResponse(
+      await adapter.getPricingResponse({
+        ifNoneMatch: conditionalValidator(request),
+      }),
+      (payload) => payload,
+    );
   }
 
   if (pathname.startsWith('/api/content/')) {
@@ -89,9 +110,38 @@ export async function route(request, env = {}) {
   return withSecurityHeaders(await env.ASSETS.fetch(request));
 }
 
-function isLiveContentMode(env) {
+async function liveContentHealth(env) {
   const mode = String(env.CONTENT_ADAPTER || 'fixture').trim().toLowerCase();
-  return mode === CONTENT_ADAPTER_LIVE;
+  if (mode !== CONTENT_ADAPTER_LIVE) {
+    return { mode, configured: mode === 'fixture', healthy: false };
+  }
+  try {
+    const adapter = createContentAdapter(env);
+    const healthy = await adapter.checkHealth();
+    return { mode, configured: true, healthy: healthy === true };
+  } catch {
+    return { mode, configured: false, healthy: false };
+  }
+}
+
+function publicContentResponse(result, envelope) {
+  if (result?.status === 304) {
+    const headers = new Headers({ 'cache-control': 'no-cache' });
+    if (result.etag) headers.set('etag', result.etag);
+    return withSecurityHeaders(new Response(null, { status: 304, headers }));
+  }
+  if (!result || result.status !== 200) {
+    throw new HttpError(503, 'Live content is temporarily unavailable.');
+  }
+  const headers = { 'cache-control': 'no-cache' };
+  if (result.etag) headers.etag = result.etag;
+  return json(envelope(result.payload), 200, headers);
+}
+
+function conditionalValidator(request) {
+  const value = request.headers.get('if-none-match');
+  if (!value || value.length > 2_048 || /[\u0000-\u001f\u007f]/.test(value)) return undefined;
+  return value;
 }
 
 function normalizePath(pathname) {

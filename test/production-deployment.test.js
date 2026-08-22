@@ -64,6 +64,18 @@ test('production preflight accepts the committed deployment contract', async () 
   await assert.doesNotReject(assertProductionRuntimeContract());
 });
 
+test('production runbook names the least-privilege VPC binding role', async () => {
+  const source = await readFile(
+    new URL('../docs/production-deployment.md', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /Connectivity Directory Bind/);
+  assert.match(source, /既有 VPC Service/);
+  assert.match(source, /Connectivity Directory Admin/);
+  assert.match(source, /不要授予|不得申请/);
+  assert.doesNotMatch(source, /VPC permission is not needed|VPC.*permission.*not needed/i);
+});
+
 test('production preflight rejects disabled, unbound, or non-fixture production config', async () => {
   const source = await readFile(CONFIG_URL, 'utf8');
   const productionStart = source.indexOf('[env.production]');
