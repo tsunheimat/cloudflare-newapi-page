@@ -10,7 +10,12 @@ import {
   calculateModelPricing,
   getOrdinaryUserModels,
 } from './pricing.js';
-import { contentStatus } from './content-meta.js';
+import {
+  DEFAULT_DOCS_SLUG,
+  contentStatus,
+  docsCatalogHasSlug,
+  docsDefaultSlug,
+} from './content-meta.js';
 
 const PRICING_MOBILE_QUERY = '(max-width: 767px)';
 const THEME_STORAGE_KEY = 'juapi-theme';
@@ -113,10 +118,6 @@ function handlePricingViewportChange() {
 
 async function renderRoute() {
   let path = normalizePath(window.location.pathname);
-  if (path === '/docs') {
-    window.history.replaceState(window.history.state, '', '/docs/quickstart');
-    path = '/docs/quickstart';
-  }
   activeDocsSearchButton = null;
   activeDocsTocObserver?.disconnect();
   activeDocsTocObserver = null;
@@ -125,6 +126,23 @@ async function renderRoute() {
   main.setAttribute('aria-busy', 'true');
 
   try {
+    if (path === '/docs') {
+      const catalog = await ensureDocsCatalog();
+      const slug = docsDefaultSlug(catalog.data);
+      path = docsPath(slug);
+      window.history.replaceState(window.history.state, '', path);
+    } else if (path.startsWith('/docs/')) {
+      const requestedSlug = path.slice('/docs/'.length);
+      const catalog = await ensureDocsCatalog();
+      // Keep old fixture links stable while repairing the live legacy entrypoint.
+      if (requestedSlug === DEFAULT_DOCS_SLUG && !docsCatalogHasSlug(catalog.data, requestedSlug)) {
+        const slug = docsDefaultSlug(catalog.data);
+        if (slug !== requestedSlug) {
+          path = docsPath(slug);
+          window.history.replaceState(window.history.state, '', path);
+        }
+      }
+    }
     if (path === '/') {
       await renderHome();
     } else if (path.startsWith('/docs/')) {
@@ -147,6 +165,7 @@ async function renderHome() {
     loadContentSurfaces(),
   ]);
   state.integration = integration;
+  const docsHref = docsPath(content.docs.defaultSlug);
   document.title = 'JuAPI 开发者中心';
   const downloads = state.integration.data;
   const fragment = document.createDocumentFragment();
@@ -155,7 +174,7 @@ async function renderHome() {
   const heroInner = node('div', { class: 'home-hero__inner' });
   const actions = node('div', { class: 'hero-actions' });
   actions.append(
-    linkButton('/docs/quickstart', '开始阅读文档', 'primary'),
+    linkButton(docsHref, '开始阅读文档', 'primary'),
     linkButton('/pricing', '查看模型价格', 'secondary'),
   );
   heroInner.append(
@@ -191,7 +210,7 @@ async function renderHome() {
       '01',
       '开发文档',
       '结构化导航、页内目录、全站搜索和可一键复制的请求示例。',
-      '/docs/quickstart',
+      docsHref,
       '打开文档',
     ),
     featureCard(
@@ -199,7 +218,7 @@ async function renderHome() {
       '模型价格',
       '按供应商、计费方式与能力筛选，支持表格与卡片两种阅读视图。',
       '/pricing',
-      '打开价格',
+      '打开模型价格',
     ),
     downloadsCard(downloads),
   );
@@ -250,15 +269,21 @@ async function loadContentSurfaces() {
   if (!state.docsCatalog) state.docsCatalog = docsResponse;
   if (!state.pricing) state.pricing = pricingResponse;
   return {
-    docs: contentStatus(docsResponse.data.meta),
+    docs: {
+      ...contentStatus(docsResponse.data.meta),
+      defaultSlug: docsDefaultSlug(docsResponse.data),
+    },
     pricing: contentStatus(pricingResponse.meta),
   };
 }
 
+async function ensureDocsCatalog() {
+  if (!state.docsCatalog) state.docsCatalog = await api('/api/content/docs');
+  return state.docsCatalog;
+}
+
 async function renderDocs(slug) {
-  if (!state.docsCatalog) {
-    state.docsCatalog = await api('/api/content/docs');
-  }
+  await ensureDocsCatalog();
   const response = await api(`/api/content/docs/${encodeURIComponent(slug)}`);
   const catalog = state.docsCatalog.data;
   const page = response.data.page;
@@ -298,7 +323,7 @@ async function renderDocs(slug) {
     'aria-label': '面包屑导航',
   });
   breadcrumbs.append(
-    node('a', { href: '/docs/quickstart', 'data-link': '' }, '开发文档'),
+    node('a', { href: docsPath(docsDefaultSlug(catalog)), 'data-link': '' }, '开发文档'),
     node('span', { 'aria-hidden': 'true' }, '/'),
     node('span', {}, page.section),
     renderDataBadge(response.data.meta),
@@ -700,20 +725,18 @@ function renderPricingRule(payload) {
   title.append('计价规则', renderDataBadge(payload.meta));
   const summary = node('div', { class: 'pricing-rule-summary' });
   const source = contentStatus(payload.meta).sourceText;
+  const ratio = payload.group_ratio.default;
   if (state.pricingMode === 'official') {
     summary.append(
       node('div', {}, `官方价格为 ${source}提供的原始美元基础价。`),
-      node('div', {}, '官方价格模式不应用分组倍率、充值换算或展示货币换算。'),
+      node('div', {}, `当前普通用户 default 分组倍率为 ${formatNumber(ratio)}x；价格数据保持 NewAPI 上游值。`),
     );
   } else {
-    const ratio = Number(payload.group_ratio.default);
     const conversion = pricingConversion(payload);
-    const official = 10;
-    const payable = official * ratio * conversion.rate;
     summary.append(
       node('div', {}, `官方价格为 ${source}提供的原始美元基础价。`),
       node('div', {}, `实付金额（${conversion.currency}） = 官方价格（USD） × 分组倍率 × 当前换算（${formatNumber(conversion.rate)} ${conversion.currency}/USD）`),
-      node('div', {}, `示例：官方 $${official.toFixed(2)} × ${formatNumber(ratio)}x × ${formatNumber(conversion.rate)} ${conversion.currency}/USD = ${conversion.symbol}${payable.toFixed(2)}（加价 ${formatNumber((ratio - 1) * 100)}%）`),
+      node('div', {}, `当前普通用户 default 分组倍率为 ${formatNumber(ratio)}x；展示值直接使用 NewAPI 上游价格数据。`),
     );
   }
   summary.append(node('div', { class: 'pricing-source-notice' }, payload.meta.notice || `${contentStatus(payload.meta).badge}。`));
@@ -1066,11 +1089,7 @@ function getFilteredPricing(payload) {
 
 function calculatePricingView(model, payload) {
   if (state.pricingMode === 'official') {
-    const officialPayload = {
-      ...payload,
-      group_ratio: { ...payload.group_ratio, default: 1 },
-    };
-    return calculateModelPricing(model, officialPayload, {
+    return calculateModelPricing(model, payload, {
       currency: 'USD',
       tokenUnit: state.tokenUnit,
       show_with_recharge: false,
@@ -1155,7 +1174,7 @@ function renderPricingPriceCell(price, keys) {
   cell.append(
     node('strong', {}, item.formatted),
     node('span', { class: 'pricing-price-unit' }, `/ ${price.unit}`),
-    node('span', {}, state.pricingMode === 'official' ? '基础价格' : '实付金额'),
+    node('span', {}, state.pricingMode === 'official' ? 'default 分组基础价格' : '实付金额'),
   );
   return cell;
 }
@@ -1163,7 +1182,10 @@ function renderPricingPriceCell(price, keys) {
 function renderPricingComparison(payload) {
   const cell = node('div', { class: 'pricing-comparison-cell' });
   if (state.pricingMode === 'official') {
-    cell.append(node('strong', {}, '官方价格'), node('span', {}, '不应用分组换算'));
+    cell.append(
+      node('strong', {}, '官方价格'),
+      node('span', {}, `default · ${formatNumber(payload.group_ratio.default)}x · 已锁定`),
+    );
   } else {
     cell.append(
       node('strong', {}, 'default'),
@@ -1592,7 +1614,7 @@ function renderNotFound() {
     node('span', {}, '404'),
     node('h1', {}, '没有找到这个页面'),
     node('p', {}, '链接可能已经移动，或者尚未开放。'),
-    linkButton('/docs/quickstart', '返回文档', 'primary'),
+    linkButton(docsPath(docsDefaultSlug(state.docsCatalog?.data)), '返回文档', 'primary'),
   ));
 }
 
@@ -1647,6 +1669,10 @@ function updateActiveNavigation(path) {
 
 function normalizePath(path) {
   return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
+}
+
+function docsPath(slug) {
+  return `/docs/${encodeURIComponent(slug || DEFAULT_DOCS_SLUG)}`;
 }
 
 function isTypingTarget(target) {

@@ -63,13 +63,17 @@ UTF-8 decoding, JSON parsing, validation, and projection.
 The live Docs projection must provide the existing catalog/page block contract.
 Both `schema_version` and `renderer_version` must equal the currently supported
 value `1`; future or unknown versions fail closed until explicitly reviewed.
-Pricing remains identity-independent and is accepted only when:
+Pricing remains identity-independent and is accepted only when the locked
+ordinary-user context is present and every public group ratio is a finite,
+non-negative value supplied by NewAPI. The adapter preserves those upstream
+ratios, including `group_ratio.default`; it does not normalize, clamp, or
+substitute a configured value. The public context is:
 
 ```text
 context.user_group      = default
 context.selected_group  = default
 context.locked          = true
-group_ratio.default     = 1.25
+group_ratio.default     = <finite upstream value>
 ```
 
 ## Cutover and rollback

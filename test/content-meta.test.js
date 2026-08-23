@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { contentStatus } from '../public/static/content-meta.js';
+import {
+  contentStatus,
+  docsCatalogHasSlug,
+  docsDefaultSlug,
+} from '../public/static/content-meta.js';
 
 test('content status metadata distinguishes validated live and fixture sources', () => {
   assert.deepEqual(
@@ -39,4 +43,28 @@ test('content status metadata does not claim a source when flags disagree', () =
     contentStatus({ source: 'newapi', fixture: true, live: true, label: 'bad' }).badge,
     'bad · 状态待确认',
   );
+});
+
+test('Docs navigation selects the first generated live catalog slug', () => {
+  const catalog = {
+    sections: [{
+      title: 'Guides',
+      items: [{
+        slug: 'page-1785606868894-3673ea8d4916890d',
+        title: 'Live quickstart',
+        summary: 'Generated live page',
+        keywords: [],
+      }],
+    }],
+  };
+  assert.equal(docsDefaultSlug(catalog), 'page-1785606868894-3673ea8d4916890d');
+  assert.equal(
+    docsCatalogHasSlug(catalog, 'page-1785606868894-3673ea8d4916890d'),
+    true,
+  );
+  assert.equal(docsCatalogHasSlug(catalog, 'quickstart'), false);
+});
+
+test('Docs navigation keeps the fixture fallback when a catalog has no pages', () => {
+  assert.equal(docsDefaultSlug({ sections: [] }), 'quickstart');
 });

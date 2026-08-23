@@ -1,3 +1,5 @@
+export const DEFAULT_DOCS_SLUG = 'quickstart';
+
 export function contentStatus(meta = {}) {
   const source = typeof meta.source === 'string' && meta.source.trim() !== ''
     ? meta.source.trim()
@@ -32,4 +34,23 @@ export function contentStatus(meta = {}) {
     badge: `${label} · 状态待确认`,
     sourceText: `${label}（状态待确认）`,
   };
+}
+
+export function docsDefaultSlug(catalog, fallback = DEFAULT_DOCS_SLUG) {
+  for (const section of catalog?.sections || []) {
+    for (const item of section?.items || []) {
+      if (isDocsSlug(item?.slug)) return item.slug;
+    }
+  }
+  return fallback;
+}
+
+export function docsCatalogHasSlug(catalog, slug) {
+  return (catalog?.sections || []).some((section) =>
+    (section?.items || []).some((item) => item?.slug === slug),
+  );
+}
+
+function isDocsSlug(value) {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9-]{0,79}$/.test(value);
 }

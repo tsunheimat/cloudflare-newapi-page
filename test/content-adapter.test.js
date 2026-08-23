@@ -73,7 +73,7 @@ test('pricing adapter contract requires locked default/default context', () => {
       selected_group: 'default',
       locked: true,
     },
-    group_ratio: { default: 1.25 },
+    group_ratio: { default: 10 },
     usable_group: { default: '普通用户' },
   };
   assert.equal(assertOrdinaryUserPricingContext(base), base);
@@ -83,7 +83,7 @@ test('pricing adapter contract requires locked default/default context', () => {
     { ...base, context: { ...base.context, selected_group: 'vip' } },
     { ...base, context: { ...base.context, locked: false } },
     { ...base, group_ratio: {} },
-    { ...base, group_ratio: { default: 1 } },
+    { ...base, group_ratio: { default: '1' } },
     { ...base, group_ratio: { default: -1 } },
     { ...base, group_ratio: { default: Number.POSITIVE_INFINITY } },
     { ...base, group_ratio: { default: Number.NaN } },
@@ -149,7 +149,7 @@ const livePricing = {
   },
   data: [{ model_name: 'live-model', enable_groups: ['default'] }],
   vendors: [{ id: 1, name: 'Live vendor' }],
-  group_ratio: { default: 1.25 },
+  group_ratio: { default: 10, premium: 2 },
   usable_group: { default: '普通用户' },
   supported_endpoint: {},
   auto_groups: [],
@@ -159,21 +159,22 @@ const livePricing = {
 
 test('live adapter uses only the VPC binding and private GET contract', async () => {
   const calls = [];
+  const liveDocsSlug = 'page-1785606868894-3673ea8d4916890d';
   const adapter = createContentAdapter(liveEnv(async (request) => {
     calls.push(request);
     return liveResponse({
       success: true,
       data: {
         meta: liveMeta(true),
-        sections: [{ title: 'Guides', items: [{ slug: 'quickstart', title: 'Quickstart', summary: 'Start here', keywords: [] }] }],
-        search_index: [{ slug: 'quickstart', anchor: null, title: 'Quickstart', target_title: 'Quickstart', text: 'Start here' }],
+        sections: [{ title: 'Guides', items: [{ slug: liveDocsSlug, title: 'Live quickstart', summary: 'Start here', keywords: [] }] }],
+        search_index: [{ slug: liveDocsSlug, anchor: null, title: 'Live quickstart', target_title: 'Live quickstart', text: 'Start here' }],
       },
     });
   }));
   const catalog = await adapter.getDocsCatalog();
   assert.equal(adapter.name, CONTENT_ADAPTER_LIVE);
   assert.equal(adapter.live, true);
-  assert.equal(catalog.sections[0].items[0].slug, 'quickstart');
+  assert.equal(catalog.sections[0].items[0].slug, liveDocsSlug);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].method, 'GET');
   assert.equal(new URL(calls[0].url).hostname, 'newapi-api.newapi');
@@ -229,10 +230,11 @@ test('live adapter validates pricing invariants and does not fall back to fixtur
   const pricing = await adapter.getPricing();
   assert.equal(pricing.meta.live, true);
   assert.equal(pricing.context.locked, true);
-  assert.equal(pricing.group_ratio.default, 1.25);
+  assert.equal(pricing.group_ratio.default, 10);
+  assert.equal(pricing.group_ratio.premium, 2);
 
   const invalid = createContentAdapter(liveEnv(async () =>
-    liveResponse({ ...livePricing, group_ratio: { default: 1 } }),
+    liveResponse({ ...livePricing, group_ratio: { default: -1 } }),
   ));
   await assert.rejects(
     () => invalid.getPricing(),

@@ -26,7 +26,7 @@ export const PRODUCTION_CONTRACT = Object.freeze({
   downloadsService: 'cloudflare-download-site',
   newApiVpcBinding: 'NEWAPI_VPC_SERVICE',
   newApiVpcServiceId: '01a027bb-280d-7630-b837-7afd6a0ca196',
-  docsProbeSlug: 'quickstart',
+  docsProbeSlug: 'page-1785606868894-3673ea8d4916890d',
 });
 
 // Wrangler 4.124.0 loads these files, in this order, for `--env production`.
@@ -201,8 +201,22 @@ export async function assertProductionRuntimeContract() {
                 schema_version: 1,
                 renderer_version: 1,
               },
-              sections: [],
-              search_index: [],
+              sections: [{
+                title: 'Guides',
+                items: [{
+                  slug: PRODUCTION_CONTRACT.docsProbeSlug,
+                  title: 'Live quickstart',
+                  summary: 'Start here with the live API.',
+                  keywords: ['quickstart'],
+                }],
+              }],
+              search_index: [{
+                slug: PRODUCTION_CONTRACT.docsProbeSlug,
+                anchor: null,
+                title: 'Live quickstart',
+                target_title: 'Live quickstart',
+                text: 'Start here with the live API.',
+              }],
             },
           }), { headers });
         }
@@ -222,7 +236,7 @@ export async function assertProductionRuntimeContract() {
               },
               page: {
                 slug: PRODUCTION_CONTRACT.docsProbeSlug,
-                title: 'Quickstart',
+                title: 'Live quickstart',
                 summary: 'Start here with the live API.',
                 section: 'Guides',
                 keywords: ['quickstart'],
@@ -262,7 +276,7 @@ export async function assertProductionRuntimeContract() {
             },
             data: [],
             vendors: [],
-            group_ratio: { default: 1.25 },
+            group_ratio: { default: 10, premium: 2 },
             usable_group: { default: '普通用户' },
             supported_endpoint: {},
             auto_groups: [],
@@ -319,7 +333,7 @@ export async function assertProductionRuntimeContract() {
   assert.equal(docsPage.data.meta.schema_version, 1);
   assert.equal(docsPage.data.meta.renderer_version, 1);
   assert.equal(docsPage.data.page.slug, PRODUCTION_CONTRACT.docsProbeSlug);
-  assert.equal(docsPage.data.page.title, 'Quickstart');
+  assert.equal(docsPage.data.page.title, 'Live quickstart');
   assert.equal(docsPage.data.page.section, 'Guides');
   assert.equal(docsPage.data.page.updated_at, 0);
   assert.ok(docsPage.data.page.blocks.length > 0);
@@ -334,7 +348,7 @@ export async function assertProductionRuntimeContract() {
     selected_group: 'default',
     locked: true,
   });
-  assert.equal(pricing.group_ratio.default, 1.25);
+  assert.equal(pricing.group_ratio.default, 10);
 
   const downstream = await worker.fetch(
     new Request('https://production.invalid/downloads'),

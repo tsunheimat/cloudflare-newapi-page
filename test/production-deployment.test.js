@@ -69,8 +69,10 @@ test('production runbook probes a successful live Docs page and target-specific 
     new URL('../docs/production-deployment.md', import.meta.url),
     'utf8',
   );
-  assert.match(source, /\/api\/content\/docs\/quickstart/);
-  assert.match(source, /\.data\.page\.slug == "quickstart"/);
+  assert.match(source, /LIVE_DOCS_SLUG=/);
+  assert.match(source, /page-1785606868894-3673ea8d4916890d/);
+  assert.match(source, /\.data\.sections[\s\S]*?map\(\.items\)[\s\S]*?map\(\.slug\)/);
+  assert.match(source, /\.data\.page\.slug == \$slug/);
   assert.match(source, /\.data\.page\.blocks \| length > 0/);
   assert.match(source, /a0bce69108d7898c75385dd64b16e4deb927a3e0/);
   assert.match(source, /ROLLBACK_VERSION_ID/);
@@ -82,6 +84,7 @@ test('production runbook probes a successful live Docs page and target-specific 
   assert.doesNotMatch(source, /随后重跑第 5 节 verification/);
   assert.match(source, /fixture-backed|fixture.*non-live|non-live.*fixture/i);
   assert.match(source, /unknown|unsupported/i);
+  assert.match(source, /group_ratio\.default \| type == "number"/);
 });
 
 test('production runbook names the least-privilege VPC binding role', async () => {

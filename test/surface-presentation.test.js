@@ -35,7 +35,9 @@ test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader state
   assert.match(app, /未找到匹配的文档/);
   assert.match(app, /catalog\.search_index/);
   assert.match(app, /if \(headings\.length > 0\)/);
-  assert.match(app, /window\.history\.replaceState\(window\.history\.state, '', '\/docs\/quickstart'\)/);
+  assert.match(app, /docsDefaultSlug\(catalog\.data\)/);
+  assert.match(app, /docsPath\(slug\)/);
+  assert.doesNotMatch(app, /replaceState\(window\.history\.state, '', '\/docs\/quickstart'\)/);
 
   assert.match(styles, /--docs-sidebar-width:\s*272px/);
   assert.match(styles, /--docs-gutter:\s*clamp\(32px, 4vw, 48px\)/);
@@ -102,6 +104,8 @@ test('front-door home/header remain present and content calls stay API-relative'
   assert.match(app, /loadContentSurfaces\(\)/);
   assert.doesNotMatch(app, /官方价格为 fixture 中配置/);
   assert.doesNotMatch(app, /内容仍是 fixture/);
+  assert.doesNotMatch(app, /group_ratio:\s*\{\s*\.\.\.payload\.group_ratio,\s*default:\s*1\s*\}/);
+  assert.doesNotMatch(app, /const official = 10/);
   assert.doesNotMatch(app, /fetch\(['"]https?:\/\//);
   assert.doesNotMatch(app, /newapi\.(?:internal|local)|tunnel|vpc/i);
 });

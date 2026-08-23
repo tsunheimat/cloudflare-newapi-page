@@ -125,14 +125,29 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/do
     '
 
 # Validate a real Docs page, not only catalog metadata.
-curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/docs/quickstart" \
-  | jq -e '
+# The currently observed live catalog includes
+# `page-1785606868894-3673ea8d4916890d`; derive the slug from the catalog so
+# generated identifiers remain authoritative if NewAPI republishes the page.
+LIVE_DOCS_SLUG="$(
+  curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/docs" \
+    | jq -er '
+        .data.sections
+        | map(.items)
+        | add
+        | map(.slug)
+        | .[0] // empty
+      '
+)"
+test -n "$LIVE_DOCS_SLUG"
+curl --fail-with-body --silent --show-error \
+  "$PRODUCTION_BASE_URL/api/content/docs/$LIVE_DOCS_SLUG" \
+  | jq -e --arg slug "$LIVE_DOCS_SLUG" '
       .data.meta.source == "newapi" and
       .data.meta.fixture == false and
       .data.meta.live == true and
       .data.meta.schema_version == 1 and
       .data.meta.renderer_version == 1 and
-      .data.page.slug == "quickstart" and
+      .data.page.slug == $slug and
       (.data.page.title | type == "string" and length > 0) and
       (.data.page.section | type == "string" and length > 0) and
       (.data.page.updated_at | type == "number" and . >= 0) and
@@ -145,7 +160,7 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/pr
       .meta.fixture == false and
       .meta.live == true and
       .context == {user_group:"default", selected_group:"default", locked:true} and
-      .group_ratio.default == 1.25
+      (.group_ratio.default | type == "number" and isfinite and . >= 0)
     '
 ```
 

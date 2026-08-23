@@ -32,7 +32,7 @@ npm run dev
 Wrangler 会输出本地 URL。直接访问：
 
 ```text
-/docs/quickstart
+/docs
 /pricing
 /api/health
 ```
@@ -138,7 +138,7 @@ npm run deploy:production
 - default 仍是 `disabled`；staging contract 未被破坏；
 - production 必须是已授权的 `CONTENT_ADAPTER=newapi`、`DOWNLOADS_INTEGRATION=production-service-binding`；default/top-level 与 staging 必须继续是 fixture；
 - production 必须且只能有 `DOWNLOADS_SERVICE -> cloudflare-download-site`；
-- Docs/Pricing runtime 必须通过 NewAPI v1 health/schema contract，metadata 为 `source=newapi`、`fixture=false`、`live=true`，价格上下文继续锁定 `default/default` 且 default group ratio 为 `1.25`；
+- Docs/Pricing runtime 必须通过 NewAPI v1 health/schema contract，metadata 为 `source=newapi`、`fixture=false`、`live=true`，价格上下文继续锁定 `default/default`，并保留 NewAPI 实际提供的 default group ratio；
 - 完整 tests 与 default/staging/production dry-run 全部通过，且 validation 后仍是同一 HEAD 与 clean tracked/untracked worktree；
 - 真正 spawn Wrangler 前再次重验 commit、worktree、ignored dotenv 与 process environment。
 

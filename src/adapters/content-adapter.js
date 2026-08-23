@@ -12,7 +12,6 @@ export const LIVE_CONTENT_DOCS_RENDERER_VERSION = 1;
 export const LIVE_CONTENT_ORIGIN = 'http://newapi-api.newapi:3000';
 export const LIVE_CONTENT_TIMEOUT_MS = 5_000;
 export const LIVE_CONTENT_MAX_BODY_BYTES = 2 * 1024 * 1024;
-export const PUBLIC_DEFAULT_GROUP_RATIO = 1.25;
 export const LOCKED_PRICING_CONTEXT = Object.freeze({
   user_group: 'default',
   selected_group: 'default',
@@ -201,13 +200,11 @@ export function assertOrdinaryUserPricingContext(payload) {
   if (!(LOCKED_PRICING_CONTEXT.selected_group in (payload.group_ratio || {}))) {
     throw new HttpError(500, 'Pricing adapter omitted the default group ratio.');
   }
-  const defaultGroupRatio = Number(
-    payload.group_ratio[LOCKED_PRICING_CONTEXT.selected_group],
-  );
-  if (defaultGroupRatio !== PUBLIC_DEFAULT_GROUP_RATIO) {
+  const defaultGroupRatio = payload.group_ratio[LOCKED_PRICING_CONTEXT.selected_group];
+  if (!isFiniteNumber(defaultGroupRatio) || defaultGroupRatio < 0) {
     throw new HttpError(
       500,
-      'Pricing adapter returned an invalid default group ratio; public pricing is fixed at 1.25.',
+      'Pricing adapter returned an invalid default group ratio.',
     );
   }
   if (!(LOCKED_PRICING_CONTEXT.selected_group in (payload.usable_group || {}))) {
@@ -494,7 +491,7 @@ function assertLivePricing(payload) {
     assertString(vendor.name, 300);
     if (vendor.description !== undefined) assertString(vendor.description, 5_000, { allowEmpty: true });
   });
-  if (!isRecord(payload.group_ratio) || payload.group_ratio.default !== PUBLIC_DEFAULT_GROUP_RATIO) schemaFailure();
+  assertLiveGroupRatios(payload.group_ratio);
   if (!isRecord(payload.usable_group) || typeof payload.usable_group.default !== 'string' || payload.usable_group.default.trim() === '') schemaFailure();
   if (!isRecord(payload.supported_endpoint)) schemaFailure();
   Object.entries(payload.supported_endpoint).forEach(([key, endpoint]) => {
@@ -551,6 +548,22 @@ function assertLiveVideoPricing(profile) {
       if (!isFiniteNumber(rates[field]) || rates[field] < 0) schemaFailure();
     });
   });
+}
+
+function assertLiveGroupRatios(value) {
+  if (!isRecord(value) || !Object.hasOwn(value, LOCKED_PRICING_CONTEXT.selected_group)) {
+    schemaFailure();
+  }
+  Object.entries(value).forEach(([key, ratio]) => {
+    if (!isPublicMapKey(key)) return;
+    if (!isFiniteNumber(ratio) || ratio < 0) schemaFailure();
+  });
+  if (
+    !isFiniteNumber(value[LOCKED_PRICING_CONTEXT.selected_group]) ||
+    value[LOCKED_PRICING_CONTEXT.selected_group] < 0
+  ) {
+    schemaFailure();
+  }
 }
 
 function assertEnvelope(payload, kind) {
@@ -782,7 +795,7 @@ function projectLivePricing(payload) {
       if (vendor.description !== undefined) projected.description = vendor.description;
       return projected;
     }),
-    group_ratio: { default: payload.group_ratio.default },
+    group_ratio: projectPublicMap(payload.group_ratio, (ratio) => ratio),
     usable_group: { default: payload.usable_group.default },
     supported_endpoint: projectEndpointMap(payload.supported_endpoint),
     auto_groups: projectPublicIdentifierArray(payload.auto_groups),
