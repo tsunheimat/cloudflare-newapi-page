@@ -1,7 +1,10 @@
 export const ORDINARY_USER_GROUP = 'default';
 export const ORDINARY_SELECTED_GROUP = 'default';
+export const PRICING_MODE_GROUP = 'group';
+export const PRICING_MODE_OFFICIAL = 'official';
 export const PRICING_MODE_TIERED = 'tiered_expr';
 export const PRICING_MODE_VIDEO = 'video';
+export const PRICING_MODE_CODEX_FAST = 'codex_fast';
 export const VIDEO_SETTLEMENT_UNIT = 'per_1m_completion_tokens';
 export const BILLING_EXPR_GRAMMAR_VERSION = 1;
 export const BILLING_EXPR_CONTRACT = 'newapi-billing-expr-v1';
@@ -76,6 +79,32 @@ export function getDefaultGroupRatio(payload) {
   return Number(payload.group_ratio[ORDINARY_SELECTED_GROUP]);
 }
 
+// Keep this resolver aligned with NewAPI's pricingPresentation helper. The
+// official view is the ungrouped USD base price; the ordinary group view uses
+// the upstream selected group's ratio without inventing a replacement.
+export function resolvePricingContext({
+  model,
+  selectedGroup = ORDINARY_SELECTED_GROUP,
+  groupRatio = {},
+  pricingMode = PRICING_MODE_GROUP,
+} = {}) {
+  if (pricingMode === PRICING_MODE_OFFICIAL) {
+    return { usedGroup: null, usedGroupRatio: 1 };
+  }
+  if (
+    selectedGroup &&
+    selectedGroup !== 'all' &&
+    groupRatio[selectedGroup] !== undefined &&
+    modelSupportsGroup(model, selectedGroup)
+  ) {
+    return {
+      usedGroup: selectedGroup,
+      usedGroupRatio: groupRatio[selectedGroup],
+    };
+  }
+  return { usedGroup: null, usedGroupRatio: 1 };
+}
+
 // This is the displayPrice sequence used by NewAPI's model marketplace:
 // nominal USD -> optional recharge conversion -> selected display currency.
 export function convertPricingDisplayValue({
@@ -129,11 +158,18 @@ export function calculateModelPricing(model, payload, options = {}) {
   assertOrdinaryPricingPayload(payload);
   if (!modelSupportsGroup(model, ORDINARY_SELECTED_GROUP)) return null;
 
-  const groupRatio = getDefaultGroupRatio(payload);
+  const pricingMode = options.pricingMode || PRICING_MODE_GROUP;
+  const pricingContext = resolvePricingContext({
+    model,
+    selectedGroup: ORDINARY_SELECTED_GROUP,
+    groupRatio: payload.group_ratio,
+    pricingMode,
+  });
   const display = normalizeDisplaySettings(payload.display, options);
   const common = {
-    group: ORDINARY_SELECTED_GROUP,
-    groupRatio,
+    group: pricingContext.usedGroup,
+    groupRatio: pricingContext.usedGroupRatio,
+    pricingMode,
     model,
   };
 
@@ -144,6 +180,9 @@ export function calculateModelPricing(model, payload, options = {}) {
   }
   if (model.billing_mode === PRICING_MODE_TIERED) {
     return calculateTieredPricing(model, display, common);
+  }
+  if (model.billing_mode === PRICING_MODE_CODEX_FAST) {
+    return calculateCodexFastPricing(model, display, common);
   }
 
   if (
@@ -428,6 +467,10 @@ function calculatePerRequestPricing(model, display, common) {
 
 function calculateTieredPricing(model, display, common) {
   const parsed = parseBillingExpression(model.billing_expr);
+  return calculateParsedTieredPricing(model, display, common, parsed);
+}
+
+function calculateParsedTieredPricing(model, display, common, parsed) {
   if (!parsed.complete) {
     return unavailablePricing(
       common,
@@ -495,6 +538,76 @@ function calculateTieredPricing(model, display, common) {
     // There is deliberately no top-level pricesUSD/items projection: a tier
     // and request context must be selected before a final price exists.
     items: [],
+  };
+}
+
+function calculateCodexFastPricing(model, display, common) {
+  const profile = model.codex_fast_pricing;
+  if (!display) {
+    return unavailablePricing(common, PRICING_MODE_CODEX_FAST, 'invalid_display_settings', 'Fast 价格显示参数不完整。');
+  }
+  if (!profile || typeof profile !== 'object' || profile.version !== 1) {
+    return unavailablePricing(common, PRICING_MODE_CODEX_FAST, 'invalid_codex_fast_profile', 'Fast 价格档案不完整。');
+  }
+
+  if (profile.mode === 'prices') {
+    const values = {
+      input: profile.input_price,
+      output: profile.output_price,
+      cacheRead: profile.cached_input_price,
+    };
+    if (Object.values(values).some((value) => !isNonNegativeFinite(value))) {
+      return unavailablePricing(common, PRICING_MODE_CODEX_FAST, 'invalid_codex_fast_profile', 'Fast 显式价格不完整。');
+    }
+    const pricesUSD = Object.fromEntries(
+      Object.entries(values).map(([key, value]) => [key, value * common.groupRatio]),
+    );
+    const items = priceItems(pricesUSD, display, display?.tokenUnit);
+    if (!items) return unavailablePricing(common, PRICING_MODE_CODEX_FAST, 'invalid_display_conversion', 'Fast 价格无法换算为所选币种。');
+    return {
+      ...common,
+      kind: PRICING_MODE_CODEX_FAST,
+      availability: 'available',
+      unit: display.tokenUnit === 'K' ? '1K tokens' : '1M tokens',
+      pricesUSD,
+      items,
+      fastMode: profile.mode,
+    };
+  }
+
+  if (profile.mode === 'multiplier' && isNonNegativeFinite(profile.multiplier) && profile.multiplier > 0) {
+    const parsed = parseBillingExpression(model.billing_expr);
+    const effective = parsed.complete
+      ? parsed
+      : parseWrappedFastExpression(model.billing_expr, profile.multiplier);
+    if (effective.complete) {
+      const result = calculateParsedTieredPricing(model, display, common, scaleParsedTiers(effective, profile.multiplier));
+      return { ...result, kind: PRICING_MODE_CODEX_FAST, fastMode: profile.mode };
+    }
+  }
+  return unavailablePricing(common, PRICING_MODE_CODEX_FAST, 'unsupported_codex_fast_profile', 'Fast 动态价格无法完整解析。');
+}
+
+function parseWrappedFastExpression(expression, multiplier) {
+  if (typeof expression !== 'string' || !Number.isFinite(multiplier) || multiplier <= 0) return { complete: false, tiers: [], requestRule: null };
+  let body = expression.trim();
+  const versionMatch = body.match(/^v(\d+):/);
+  if (versionMatch) body = body.slice(versionMatch[0].length).trim();
+  const parts = splitOutsideStrings(body, '|||');
+  if (parts.length > 2) return { complete: false, tiers: [], requestRule: null };
+  const base = stripFullOuterParentheses(parts[0]);
+  const factors = splitTopLevelOperator(base, '*');
+  if (!factors || factors.length !== 2 || Number(factors[1]) !== multiplier) return { complete: false, tiers: [], requestRule: null };
+  return parseBillingExpression(`v1:${stripFullOuterParentheses(factors[0])}${parts.length === 2 ? `|||${parts[1]}` : ''}`);
+}
+
+function scaleParsedTiers(parsed, multiplier) {
+  return {
+    ...parsed,
+    tiers: parsed.tiers.map((tier) => ({
+      ...tier,
+      pricesUSD: Object.fromEntries(Object.entries(tier.pricesUSD).map(([key, value]) => [key, value * multiplier])),
+    })),
   };
 }
 

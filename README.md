@@ -68,11 +68,14 @@ npm run deploy:production -- --dry-run
 
 当前展示和计算分支与已核对的 NewAPI 行为保持一致：
 
+- 官方价格模式使用未分组的原始美元基础价（effective ratio `1`）；分组价格模式才使用 NewAPI 提供的 `group_ratio.default`（当前 live 配置为 `10`），不会把分组倍率套到官方价格上。
 - 普通按量：`model_ratio × 2 × default group ratio` 得到 USD / 1M 输入 tokens；输出、缓存、图片和音频再乘对应 ratio。
 - 按次：`model_price × default group ratio`。
 - `billing_mode=tiered_expr` 优先于 legacy `quota_type`。Versioned v1 parser 的变量 registry 与 NewAPI 对齐为 `p`、`c`、`cr`、`cc`、`cc1h`、`img`、`img_o`、`ai`、`ao`；价格项采用 `p * 3 + c * 15` 语法，并保留 `|||when(...) * multiplier` 请求规则后缀。
+- `billing_mode=codex_fast` 保留 version 1 Fast profile：显式 `prices` 使用 input/cached-input/output 三个公开价格，`multiplier` 对完整 tiered expression 统一缩放；profile 或表达式不能完整验证时显示不可计算，不回退到 `model_ratio`、`model_price` 或固定倍率。
 - 动态表达式必须整段解析成功；未知版本、未知字段、任一损坏档位或请求规则都会把该模型明确标记为不可计算，不会保留部分价格，也不会回退到 legacy 字段。即使全部档位可解析，页面也不会把第一档冒充没有请求上下文的最终价格。
 - `billing_mode=video` 只在完整的 version 1 `video_pricing` 存在时生效；每一个分辨率都必须同时包含有/无输入视频价格。来源 CNY/USD 先正规化成 USD，再应用真实 default group ratio，之后与普通价格共用充值及 USD/CNY/CUSTOM 显示换算。
+- Live model projection retains the current public NewAPI row families: presentation (`description`, `icon`, `tags`, `owner_by`, `vendor_id`), capability flags/endpoints, legacy ratios, `billing_mode`/`billing_expr`, Fast profile/base model, video pricing/capability/route/geometry/duration contracts, and row `pricing_version`. Nested endpoint, video, Fast, geometry, and capability objects use explicit public allowlists and size/type bounds; private or unknown fields are dropped before the stable public ETag is calculated.
 - 充值价格和所有卡片、动态档位、影片详情矩阵共用 `price`、`usd_exchange_rate`、`custom_currency_exchange_rate` 的换算顺序。
 
 Fixture 数字只验证以上路径。未来 adapter 必须投影 NewAPI 的公开价格 response，而不是建立另一套价格表。

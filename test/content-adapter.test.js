@@ -266,6 +266,147 @@ test('live adapter validates pricing invariants and does not fall back to fixtur
   );
 });
 
+test('live pricing retains the current NewAPI model families through a bounded public projection', async () => {
+  const currentModel = {
+    model_name: 'live-video-fast',
+    description: 'Current model',
+    icon: 'https://cdn.example/icon.png',
+    tags: 'Video,Fast',
+    vendor_id: 7,
+    image_generation_model: true,
+    video_generation_model: true,
+    quota_type: 2,
+    model_ratio: 0,
+    model_price: 0,
+    owner_by: 'provider',
+    completion_ratio: 0,
+    cache_ratio: 0.1,
+    create_cache_ratio: 0.2,
+    image_ratio: 0.3,
+    audio_ratio: 0.4,
+    audio_completion_ratio: 0.5,
+    enable_groups: ['default'],
+    supported_endpoint_types: ['openai-video'],
+    endpoint_map: {
+      'openai-video': { method: 'POST', path: '/v1/video/generations', private_secret: 'drop' },
+      private_secret: { method: 'POST', path: '/private' },
+    },
+    billing_mode: 'video',
+    billing_expr: 'v1:tier("base", p * 1 + c * 2)',
+    video_pricing: {
+      version: 1,
+      currency: 'USD',
+      unit: 'per_1m_completion_tokens',
+      rate_multiplier: 1,
+      resolution_rates: { '720p': { without_video: 2, with_video: 3, private_secret: 'drop' } },
+      private_secret: 'drop',
+    },
+    codex_fast_pricing: { version: 1, mode: 'prices', input_price: 1, cached_input_price: 0.5, output_price: 2, private_secret: 'drop' },
+    codex_fast_base_model: 'base-model',
+    video_geometry_contract: 'geometry-v1',
+    video_route_contract: 'openai-video-generations-v1',
+    video_input_duration_policy: 'included',
+    video_capability: {
+      model: 'live-video-fast',
+      mapped_upstream_models: ['upstream-video'],
+      schema_version: 1,
+      profile: { name: 'profile', label: 'Profile', revision: 2, checksum: 'checksum-v2', private_secret: 'drop' },
+      output: {
+        resolutions: ['720p'], default_resolution: '720p', known_unsupported_resolutions: ['4k'],
+        ratios: ['16:9'], default_ratio: '16:9', duration_min: 1, duration_max: 10,
+        allow_auto_duration: true, default_duration: 5, output_formats: ['mp4'], default_output_format: 'mp4',
+      },
+      audio: { generate_audio_supported: true, generate_audio_default: false },
+      media: {
+        max_images: 2, max_videos: 1, max_audios: 1,
+        allow_video_only_reference: true, allow_audio_only_reference: false,
+        modes: {
+          text_generate: {
+            selectable: true, ratios: ['16:9'], duration_min: 1, duration_max: 10,
+            allow_auto_duration: true, min_images: 0, max_images: 1,
+            min_reference_videos: 0, required_video_roles: [], duration_upstream_validated: false,
+          },
+        },
+      },
+      geometry: { '720p': { '16:9': [1280, 720] } },
+      image_size: { max_single_decoded_bytes: 1024, single_limit_exclusive: true, single_limit_label: 'single', max_total_decoded_bytes: 2048, total_limit_label: 'total' },
+      max_serialized_request_bytes: 4096,
+    },
+    pricing_version: 'model-pricing-v2',
+    private_secret: 'drop',
+  };
+  const adapter = createContentAdapter(liveEnv(async () => liveResponse({
+    ...livePricing,
+    data: [currentModel],
+    vendors: [{ id: 7, name: 'Vendor', description: 'Public', icon: 'vendor-icon', private_secret: 'drop' }],
+    supported_endpoint: { openai: { method: 'POST', path: '/v1/chat/completions', private_secret: 'drop' } },
+  })));
+  const result = await adapter.getPricingResponse();
+  const model = result.payload.data[0];
+  assert.deepEqual(model, {
+    model_name: 'live-video-fast', description: 'Current model', icon: 'https://cdn.example/icon.png', tags: 'Video,Fast', vendor_id: 7,
+    quota_type: 2, model_ratio: 0, model_price: 0, owner_by: 'provider', completion_ratio: 0, cache_ratio: 0.1, create_cache_ratio: 0.2,
+    image_ratio: 0.3, audio_ratio: 0.4, audio_completion_ratio: 0.5, billing_mode: 'video', billing_expr: 'v1:tier("base", p * 1 + c * 2)',
+    codex_fast_base_model: 'base-model', video_geometry_contract: 'geometry-v1', video_route_contract: 'openai-video-generations-v1', video_input_duration_policy: 'included',
+    pricing_version: 'model-pricing-v2', image_generation_model: true, video_generation_model: true, enable_groups: ['default'], supported_endpoint_types: ['openai-video'],
+    endpoint_map: { 'openai-video': { method: 'POST', path: '/v1/video/generations' } },
+    video_pricing: { version: 1, currency: 'USD', unit: 'per_1m_completion_tokens', rate_multiplier: 1, resolution_rates: { '720p': { without_video: 2, with_video: 3 } } },
+    codex_fast_pricing: { version: 1, mode: 'prices', input_price: 1, cached_input_price: 0.5, output_price: 2 },
+    video_capability: {
+      model: 'live-video-fast', mapped_upstream_models: ['upstream-video'], schema_version: 1,
+      profile: { name: 'profile', label: 'Profile', revision: 2, checksum: 'checksum-v2' },
+      output: { resolutions: ['720p'], default_resolution: '720p', ratios: ['16:9'], default_ratio: '16:9', duration_min: 1, duration_max: 10, allow_auto_duration: true, default_duration: 5, output_formats: ['mp4'], known_unsupported_resolutions: ['4k'], default_output_format: 'mp4' },
+      audio: { generate_audio_supported: true, generate_audio_default: false },
+      media: { max_images: 2, max_videos: 1, max_audios: 1, allow_video_only_reference: true, allow_audio_only_reference: false, modes: { text_generate: { selectable: true, ratios: ['16:9'], min_images: 0, max_images: 1, duration_min: 1, duration_max: 10, allow_auto_duration: true, min_reference_videos: 0, required_video_roles: [], duration_upstream_validated: false } } },
+      geometry: { '720p': { '16:9': [1280, 720] } }, image_size: { max_single_decoded_bytes: 1024, single_limit_exclusive: true, single_limit_label: 'single', max_total_decoded_bytes: 2048, total_limit_label: 'total' }, max_serialized_request_bytes: 4096,
+    },
+  });
+  assert.equal(Object.hasOwn(model, 'private_secret'), false);
+  assert.equal(Object.hasOwn(model.endpoint_map, 'private_secret'), false);
+  assert.equal(Object.hasOwn(model.video_pricing, 'private_secret'), false);
+  assert.equal(Object.hasOwn(result.payload.vendors[0], 'private_secret'), false);
+});
+
+test('pricing ETag changes for capability and route-contract-only changes', async () => {
+  const base = { ...livePricing, data: [{ model_name: 'video', enable_groups: ['default'], video_route_contract: 'route-v1', video_geometry_contract: 'geometry-v1' }] };
+  let requestCount = 0;
+  const adapter = createLiveContentAdapter(liveEnv(async () => liveResponse(
+    requestCount++ === 0 ? base : { ...base, data: [{ ...base.data[0], video_route_contract: 'route-v2' }] },
+    200,
+    { etag: '"same-upstream-etag"' },
+  )));
+  const first = await adapter.getPricingResponse();
+  const changed = await adapter.getPricingResponse();
+  assert.notEqual(first.etag, changed.etag);
+  assert.equal(changed.payload.data[0].video_route_contract, 'route-v2');
+});
+
+test('live pricing rejects malformed bounded nested Fast/video capability objects', async () => {
+  const invalidRows = [
+    {
+      ...livePricing.data[0],
+      codex_fast_pricing: { version: 1, mode: 'prices', input_price: 1, cached_input_price: 1 },
+    },
+    {
+      ...livePricing.data[0],
+      video_capability: {
+        model: 'live-model', mapped_upstream_models: ['upstream'], schema_version: 1,
+        profile: { name: 'profile', label: 'Profile', revision: 1, checksum: 'sum' },
+        output: { resolutions: ['720p'], default_resolution: '720p', ratios: ['16:9'], default_ratio: '16:9', duration_min: 1, duration_max: 10, allow_auto_duration: true, default_duration: 5, output_formats: ['mp4'] },
+        audio: { generate_audio_supported: true },
+        media: { max_images: 1, max_videos: 1, max_audios: 0, allow_video_only_reference: false, allow_audio_only_reference: false, modes: { text_generate: { selectable: true, ratios: ['16:9'], min_images: 0, max_images: 1, duration_min: 1, duration_max: 10, allow_auto_duration: true, required_video_roles: ['x'.repeat(201)] } } },
+      },
+    },
+  ];
+  for (const row of invalidRows) {
+    const adapter = createContentAdapter(liveEnv(async () => liveResponse({ ...livePricing, data: [row] })));
+    await assert.rejects(
+      () => adapter.getPricing(),
+      (error) => error instanceof HttpError && error.status === 503 && error.details.reason === 'invalid_upstream_schema',
+    );
+  }
+});
+
 test('live pricing uses deterministic model ordering and canonical ETags', async () => {
   const models = [
     { model_name: 'zeta-model', description: 'Zeta', model_ratio: 2, enable_groups: ['default'] },

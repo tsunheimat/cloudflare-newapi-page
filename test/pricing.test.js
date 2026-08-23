@@ -5,6 +5,7 @@ import { pricingFixture } from '../src/fixtures/pricing.js';
 import {
   BILLING_EXPR_CONTRACT,
   BILLING_VARIABLES,
+  PRICING_MODE_OFFICIAL,
   assertOrdinaryPricingPayload,
   calculateModelPricing,
   convertPricingDisplayValue,
@@ -74,6 +75,62 @@ test('per-token pricing uses model ratio, the real default ratio, and shared con
   assert.equal(pricing.pricesUSD.cacheRead, 0.125);
   assert.equal(pricing.items.find((item) => item.key === 'input').value, 9);
   assert.equal(pricing.items.find((item) => item.key === 'output').value, 36);
+});
+
+test('official pricing uses ratio one while group pricing uses the upstream default ratio', () => {
+  const payload = cloneFixture();
+  payload.group_ratio.default = 10;
+  const model = payload.data.find((item) => item.model_name === 'demo-chat-standard');
+  const official = calculateModelPricing(model, payload, {
+    pricingMode: PRICING_MODE_OFFICIAL,
+    currency: 'USD',
+    show_with_recharge: false,
+  });
+  const group = calculateModelPricing(model, payload, {
+    currency: 'USD',
+    show_with_recharge: false,
+  });
+  assert.equal(official.group, null);
+  assert.equal(official.groupRatio, 1);
+  assert.equal(official.pricesUSD.input, 1);
+  assert.equal(group.group, 'default');
+  assert.equal(group.groupRatio, 10);
+  assert.equal(group.pricesUSD.input, 10);
+});
+
+test('official and group modes preserve Fast explicit, multiplier, tiered, and video semantics', () => {
+  const payload = cloneFixture();
+  payload.group_ratio.default = 10;
+  const fastExplicit = {
+    model_name: 'fast-explicit', enable_groups: ['default'], billing_mode: 'codex_fast',
+    codex_fast_pricing: { version: 1, mode: 'prices', input_price: 2, cached_input_price: 1, output_price: 4 },
+  };
+  const officialFast = calculateModelPricing(fastExplicit, payload, { pricingMode: PRICING_MODE_OFFICIAL, currency: 'USD', show_with_recharge: false });
+  const groupFast = calculateModelPricing(fastExplicit, payload, { currency: 'USD', show_with_recharge: false });
+  assert.equal(officialFast.pricesUSD.input, 2);
+  assert.equal(groupFast.pricesUSD.input, 20);
+
+  const fastMultiplier = {
+    model_name: 'fast-multiplier', enable_groups: ['default'], billing_mode: 'codex_fast',
+    codex_fast_pricing: { version: 1, mode: 'multiplier', multiplier: 2 },
+    billing_expr: 'v1:tier("base", p * 3 + c * 4)',
+  };
+  const multiplierOfficial = calculateModelPricing(fastMultiplier, payload, { pricingMode: PRICING_MODE_OFFICIAL, currency: 'USD', show_with_recharge: false });
+  const multiplierGroup = calculateModelPricing(fastMultiplier, payload, { currency: 'USD', show_with_recharge: false });
+  assert.equal(multiplierOfficial.tiers[0].pricesUSD.input, 6);
+  assert.equal(multiplierGroup.tiers[0].pricesUSD.input, 60);
+
+  const tiered = payload.data.find((item) => item.model_name === 'demo-tiered-context');
+  const tieredOfficial = calculateModelPricing(tiered, payload, { pricingMode: PRICING_MODE_OFFICIAL, currency: 'USD', show_with_recharge: false });
+  const tieredGroup = calculateModelPricing(tiered, payload, { currency: 'USD', show_with_recharge: false });
+  assert.equal(tieredOfficial.tiers[0].pricesUSD.input, 0.8);
+  assert.equal(tieredGroup.tiers[0].pricesUSD.input, 8);
+
+  const video = payload.data.find((item) => item.model_name === 'demo-video-generation');
+  const videoOfficial = calculateModelPricing(video, payload, { pricingMode: PRICING_MODE_OFFICIAL, currency: 'USD', show_with_recharge: false });
+  const videoGroup = calculateModelPricing(video, payload, { currency: 'USD', show_with_recharge: false });
+  assert.equal(videoOfficial.rows[0].withoutVideo.usdPrice, 1);
+  assert.equal(videoGroup.rows[0].withoutVideo.usdPrice, 10);
 });
 
 test('per-token K display divides only after the shared currency conversion', () => {

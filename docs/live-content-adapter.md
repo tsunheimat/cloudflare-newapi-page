@@ -82,6 +82,26 @@ context.locked          = true
 group_ratio.default     = <finite upstream value>
 ```
 
+The live model projection is an explicit compatibility allowlist, not a raw
+JSON pass-through. It retains the current NewAPI public fields (`model_name`,
+description/icon/tags/vendor/owner presentation, image/video flags, quota and
+all legacy ratios, enabled groups and endpoint types, `endpoint_map`,
+`billing_mode`/`billing_expr`, `codex_fast_pricing`/`codex_fast_base_model`,
+`video_pricing`, video geometry/route/input-duration contracts,
+`video_capability`, and row `pricing_version`). Endpoint maps, Fast profiles,
+video rate matrices, resolution dimensions, and capability/media objects are
+schema-validated with finite numeric, identifier, depth/entry, and byte-size
+bounds. Only their documented public fields are projected; secret-like or
+unknown keys are redacted. The canonical projected payload (including every
+retained nested field) is the input to the stable pricing ETag, so a capability
+or route-contract-only change cannot produce a false `304`.
+
+The browser keeps NewAPI's two pricing modes: official mode uses effective
+ratio `1` and raw/base official USD prices, while ordinary group mode uses the
+upstream selected default group ratio. This applies consistently to legacy
+ratio, per-request, tiered-expression, Codex Fast, and video calculations;
+there is no fixed replacement ratio or invented model logic.
+
 ## Cutover and rollback
 
 Top-level and staging remain explicitly fixture-backed. The authorized

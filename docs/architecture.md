@@ -78,13 +78,30 @@ usable_group.default    exists
 
 Pricing presentation 同样复用 pinned NewAPI 的供应商 → 分组 → 价格清单、计价规则、table/card、filter 与 detail-sheet hierarchy。Public surface 只渲染一个 disabled `default` group card；供应商、计费类型、端点、标签、货币、单位与 recharge display 可以筛选或切换，但任何 control 都不能改变 `user_group=default`、`selected_group=default`、`locked=true`。
 
-模型可见性沿用 NewAPI group 规则：空 `enable_groups`、`all` 或包含 `default` 才可在普通用户页面显示。`billing_mode` 是 `tiered_expr` 与 `video` 的优先判别字段，不能被 legacy `quota_type` 覆盖。
+价格模式仍遵循 NewAPI 的 `resolvePricingContext`：`official` 使用
+`usedGroupRatio=1` 和原始美元基础价，`group` 使用当前选中（本 Worker
+锁定为 `default`）的 upstream ratio。这个 effective ratio 同时用于普通、
+按次、tiered、Codex Fast 和 video 分支；不会把 `group_ratio.default` 套到
+official 模式，也不会引入固定倍率。
+
+模型可见性沿用 NewAPI group 规则：空 `enable_groups`、`all` 或包含 `default` 才可在普通用户页面显示。`billing_mode` 是 `tiered_expr`、`codex_fast` 与 `video` 的优先判别字段，不能被 legacy `quota_type` 覆盖。
 
 Versioned tiered display contract 目前只接受 NewAPI v1 的完整静态单位价格子集：`tier(name, p * price + c * price + ...)`、`p/c/len` 档位条件、完整 v1 variable registry，以及 `|||when(...) * multiplier` 请求规则后缀。任何未覆盖的有效 backend expression 也必须显示为不可计算；public Worker 不会执行 provider request function、取局部 regex 命中或把第一档投影成最终价格。
 
 Video display contract 会保存 `video_pricing.currency` 来源币种，先将 CNY/USD rate 正规化为 USD，再应用真实的 `group_ratio.default`，最后与所有其他 pricing card 共用充值与 USD/CNY/CUSTOM conversion。一个 resolution row 缺少必要字段会使整份 video profile 不可计算，不会用剩余 row 产生起价。
 
 Live adapter 保留结构化 video pricing、capability、route contract、input-duration policy 和 billing expression；Worker 只验证/转发公开 payload，不执行 billing expression。新版或不支持的 contract 必须 fail closed 或由现有页面明确显示不可计算，不能取第一项、最低价或 legacy 字段自行猜测。
+
+Model projection explicitly retains the current public NewAPI row contract:
+presentation (`model_name`, `description`, `icon`, `tags`, `vendor_id`,
+`owner_by`), image/video flags, quota and all legacy ratios, group and endpoint
+capabilities (`enable_groups`, `supported_endpoint_types`, `endpoint_map`),
+`billing_mode`/`billing_expr`, `video_pricing`, Fast profile/base model, video
+geometry/route/input-duration contracts, `video_capability`, and row
+`pricing_version`. Nested maps and capability objects use field allowlists plus
+bounded identifier arrays, finite numeric values, dimensions, media modes and
+serialized-request/image limits. Unknown or secret-like keys are dropped, and
+the complete projected payload is canonicalized for the stable pricing ETag.
 
 ## Download service binding
 

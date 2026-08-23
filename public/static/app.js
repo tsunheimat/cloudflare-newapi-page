@@ -735,7 +735,7 @@ function renderPricingRule(payload) {
   if (state.pricingMode === 'official') {
     summary.append(
       node('div', {}, `官方价格为 ${source}提供的原始美元基础价。`),
-      node('div', {}, `当前普通用户 default 分组倍率为 ${formatNumber(ratio)}x；价格数据保持 NewAPI 上游值。`),
+      node('div', {}, `官方模式 effective 倍率为 1x；普通用户 default 分组配置为 ${formatNumber(ratio)}x，价格数据保持 NewAPI 上游值。`),
     );
   } else {
     const conversion = pricingConversion(payload);
@@ -920,6 +920,7 @@ function renderPricingFilterControls(payload, values, onChange, includeLockedGro
       ['per_token', '按量计费'],
       ['per_request', '按次计费'],
       ['tiered_expr', '动态计费'],
+      ['codex_fast', 'Codex Fast'],
       ['video', '影片计费'],
     ], values.billing, (value) => onChange('billing', value), 'billing'),
   );
@@ -1096,12 +1097,14 @@ function getFilteredPricing(payload) {
 function calculatePricingView(model, payload) {
   if (state.pricingMode === 'official') {
     return calculateModelPricing(model, payload, {
+      pricingMode: 'official',
       currency: 'USD',
       tokenUnit: state.tokenUnit,
       show_with_recharge: false,
     });
   }
   return calculateModelPricing(model, payload, {
+    pricingMode: 'group',
     currency: state.currency,
     tokenUnit: state.tokenUnit,
     show_with_recharge: state.showWithRecharge,
@@ -1160,8 +1163,10 @@ function renderPricingTable(calculated, payload) {
 function renderPricingTierCell(price) {
   const cell = node('div', { class: 'pricing-native-tier-cell' });
   cell.append(node('span', { class: `surface-tag billing-${price.kind}` }, billingLabel(price.kind)));
-  if (price.kind === 'tiered_expr') {
+  if (price.kind === 'tiered_expr' || (price.kind === 'codex_fast' && price.parseComplete)) {
     cell.append(node('span', { class: 'pricing-native-tier-condition' }, price.parseComplete ? `${price.tiers.length} 个原生档位 · 需请求上下文` : '动态价格不可计算'));
+  } else if (price.kind === 'codex_fast') {
+    cell.append(node('span', { class: 'pricing-native-tier-condition' }, 'Fast 显式价格'));
   } else if (price.kind === 'video') {
     cell.append(node('span', { class: 'pricing-native-tier-condition' }, price.availability === 'available' ? `${price.rows.length} 个分辨率档位` : '影片价格不可计算'));
   }
@@ -1171,7 +1176,7 @@ function renderPricingTierCell(price) {
 function renderPricingPriceCell(price, keys) {
   const item = price.items.find((candidate) => keys.includes(candidate.key));
   if (!item) {
-    if (price.kind === 'tiered_expr' && price.parseComplete) {
+    if (['tiered_expr', 'codex_fast'].includes(price.kind) && price.parseComplete) {
       return node('span', { class: 'pricing-context-required' }, '需请求上下文');
     }
     return node('span', { class: 'pricing-empty-price' }, '—');
@@ -1180,7 +1185,7 @@ function renderPricingPriceCell(price, keys) {
   cell.append(
     node('strong', {}, item.formatted),
     node('span', { class: 'pricing-price-unit' }, `/ ${price.unit}`),
-    node('span', {}, state.pricingMode === 'official' ? 'default 分组基础价格' : '实付金额'),
+    node('span', {}, state.pricingMode === 'official' ? '官方基础价格' : '实付金额'),
   );
   return cell;
 }
@@ -1190,7 +1195,7 @@ function renderPricingComparison(payload) {
   if (state.pricingMode === 'official') {
     cell.append(
       node('strong', {}, '官方价格'),
-      node('span', {}, `default · ${formatNumber(payload.group_ratio.default)}x · 已锁定`),
+      node('span', {}, 'default · 官方倍率 1x · 已锁定'),
     );
   } else {
     cell.append(
@@ -1237,7 +1242,7 @@ function renderPricingCardPriceLines(price) {
     lines.append(node('p', { class: 'pricing-unavailable' }, price.unavailableReason || '价格不可计算。'));
     return lines;
   }
-  if (price.kind === 'tiered_expr') {
+  if (price.kind === 'tiered_expr' || (price.kind === 'codex_fast' && price.parseComplete)) {
     lines.append(node('p', { class: 'pricing-context-required' }, '需按完整档位与请求上下文计算，不显示单一价格。'));
     return lines;
   }
@@ -1259,11 +1264,11 @@ function openPricingDetail(model, price, vendor, payload) {
     node('p', { class: 'pricing-detail-description' }, model.description || ''),
     node('div', { class: 'pricing-detail-context' },
       node('strong', {}, '价格上下文'),
-      node('span', {}, `user_group=default · selected_group=default · locked=true · group_ratio=${formatNumber(payload.group_ratio.default)}`),
+      node('span', {}, `user_group=default · selected_group=default · locked=true · effective_ratio=${formatNumber(state.pricingMode === 'official' ? 1 : payload.group_ratio.default)}`),
     ),
     renderPricingCardPriceLines(price),
   );
-  if (price.kind === 'tiered_expr') dialog.content.append(renderTierDetails(price));
+  if (price.kind === 'tiered_expr' || (price.kind === 'codex_fast' && price.parseComplete)) dialog.content.append(renderTierDetails(price));
   if (price.kind === 'video') dialog.content.append(renderVideoDetails(price));
   const endpoints = node('div', { class: 'pricing-detail-endpoints' });
   (model.supported_endpoint_types || []).forEach((endpoint) => endpoints.append(node('span', { class: 'surface-tag' }, endpoint)));
@@ -1552,6 +1557,7 @@ function billingLabel(kind) {
     per_token: '按量计费',
     per_request: '按次计费',
     tiered_expr: '动态计费',
+    codex_fast: 'Codex Fast',
     video: '影片计费',
   }[kind] || '计费待确认';
 }
