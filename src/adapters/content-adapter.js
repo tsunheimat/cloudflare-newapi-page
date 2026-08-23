@@ -431,7 +431,7 @@ function assertLiveDocsCatalog(payload) {
   });
   if (!Array.isArray(data.search_index) || data.search_index.length > 5_000) schemaFailure();
   data.search_index.forEach(assertSearchRecord);
-  return data;
+  return projectLiveDocsCatalog(data);
 }
 
 function assertLiveDocsPage(payload) {
@@ -443,7 +443,7 @@ function assertLiveDocsPage(payload) {
   if (!Number.isInteger(page.updated_at) || page.updated_at < 0) schemaFailure();
   if (!Array.isArray(page.blocks) || page.blocks.length > 500) schemaFailure();
   page.blocks.forEach(assertDocsBlock);
-  return data;
+  return projectLiveDocsPage(data);
 }
 
 function assertLivePricing(payload) {
@@ -463,18 +463,42 @@ function assertLivePricing(payload) {
   payload.data.forEach((item) => {
     if (!isRecord(item)) schemaFailure();
     assertString(item.model_name, 300);
+    ['description', 'tags', 'billing_mode', 'billing_expr'].forEach((field) => {
+      if (item[field] !== undefined) assertString(item[field], field === 'billing_expr' ? 50_000 : 5_000, { allowEmpty: true });
+    });
+    if (item.vendor_id !== undefined && (!Number.isInteger(item.vendor_id) || item.vendor_id < 0)) schemaFailure();
+    if (item.quota_type !== undefined && !Number.isInteger(item.quota_type)) schemaFailure();
+    [
+      'model_ratio',
+      'model_price',
+      'completion_ratio',
+      'cache_ratio',
+      'create_cache_ratio',
+      'image_ratio',
+      'audio_ratio',
+      'audio_completion_ratio',
+    ].forEach((field) => {
+      if (item[field] !== undefined && !isFiniteNumber(item[field])) schemaFailure();
+    });
+    ['image_generation_model', 'video_generation_model'].forEach((field) => {
+      if (item[field] !== undefined && typeof item[field] !== 'boolean') schemaFailure();
+    });
     if (item.enable_groups !== undefined && (!Array.isArray(item.enable_groups) || item.enable_groups.some((group) => typeof group !== 'string'))) schemaFailure();
+    if (item.supported_endpoint_types !== undefined && (!Array.isArray(item.supported_endpoint_types) || item.supported_endpoint_types.some((endpoint) => typeof endpoint !== 'string'))) schemaFailure();
+    if (item.video_pricing !== undefined) assertLiveVideoPricing(item.video_pricing);
   });
   if (!Array.isArray(payload.vendors) || payload.vendors.length > 1_000) schemaFailure();
   payload.vendors.forEach((vendor) => {
     if (!isRecord(vendor)) schemaFailure();
     if (!Number.isInteger(vendor.id) || vendor.id < 0) schemaFailure();
     assertString(vendor.name, 300);
+    if (vendor.description !== undefined) assertString(vendor.description, 5_000, { allowEmpty: true });
   });
   if (!isRecord(payload.group_ratio) || payload.group_ratio.default !== PUBLIC_DEFAULT_GROUP_RATIO) schemaFailure();
   if (!isRecord(payload.usable_group) || typeof payload.usable_group.default !== 'string' || payload.usable_group.default.trim() === '') schemaFailure();
   if (!isRecord(payload.supported_endpoint)) schemaFailure();
-  Object.values(payload.supported_endpoint).forEach((endpoint) => {
+  Object.entries(payload.supported_endpoint).forEach(([key, endpoint]) => {
+    if (!isPublicMapKey(key)) return;
     if (!isRecord(endpoint)) schemaFailure();
     assertString(endpoint.method, 20);
     assertString(endpoint.path, 500);
@@ -482,7 +506,7 @@ function assertLivePricing(payload) {
   if (!Array.isArray(payload.auto_groups) || payload.auto_groups.some((group) => typeof group !== 'string')) schemaFailure();
   assertVideoResolutionDimensions(payload.video_resolution_dimensions);
   if (typeof payload.pricing_version !== 'string' || payload.pricing_version.trim() === '') schemaFailure();
-  return payload;
+  return projectLivePricing(payload);
 }
 
 function assertLiveHealth(payload) {
@@ -500,13 +524,31 @@ function assertLiveHealth(payload) {
 
 function assertVideoResolutionDimensions(value) {
   if (!isRecord(value)) schemaFailure();
-  Object.values(value).forEach((resolutionSet) => {
+  Object.entries(value).forEach(([key, resolutionSet]) => {
+    if (!isPublicMapKey(key)) return;
     if (!isRecord(resolutionSet)) schemaFailure();
-    Object.values(resolutionSet).forEach((geometrySet) => {
+    Object.entries(resolutionSet).forEach(([geometryKey, geometrySet]) => {
+      if (!isPublicMapKey(geometryKey)) return;
       if (!isRecord(geometrySet)) schemaFailure();
-      Object.values(geometrySet).forEach((dimensions) => {
+      Object.entries(geometrySet).forEach(([dimensionKey, dimensions]) => {
+        if (!isPublicMapKey(dimensionKey)) return;
         if (!Array.isArray(dimensions) || dimensions.length !== 2 || dimensions.some((dimension) => !Number.isInteger(dimension) || dimension <= 0)) schemaFailure();
       });
+    });
+  });
+}
+
+function assertLiveVideoPricing(profile) {
+  if (!isRecord(profile) || profile.version !== 1) schemaFailure();
+  assertString(profile.currency, 20);
+  assertString(profile.unit, 80);
+  if (!isFiniteNumber(profile.rate_multiplier) || profile.rate_multiplier <= 0) schemaFailure();
+  if (!isRecord(profile.resolution_rates)) schemaFailure();
+  Object.entries(profile.resolution_rates).forEach(([key, rates]) => {
+    if (!isPublicMapKey(key)) return;
+    if (!isRecord(rates)) schemaFailure();
+    ['without_video', 'with_video'].forEach((field) => {
+      if (!isFiniteNumber(rates[field]) || rates[field] < 0) schemaFailure();
     });
   });
 }
@@ -520,6 +562,7 @@ function assertLiveMeta(meta, docs) {
   if (!isRecord(meta) || meta.source !== 'newapi' || meta.fixture !== false || meta.live !== true || meta.contract_version !== LIVE_CONTENT_CONTRACT_VERSION) schemaFailure();
   assertString(meta.label, 200);
   if (meta.updated_at !== null && (!Number.isInteger(meta.updated_at) || meta.updated_at < 0)) schemaFailure();
+  if (meta.notice !== undefined) assertString(meta.notice, 2_000, { allowEmpty: true });
   if (
     docs &&
     (meta.schema_version !== LIVE_CONTENT_DOCS_SCHEMA_VERSION ||
@@ -605,6 +648,225 @@ function isRecord(value) {
 
 function isFiniteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+const PUBLIC_PRICING_MODEL_FIELDS = [
+  'model_name',
+  'description',
+  'tags',
+  'vendor_id',
+  'quota_type',
+  'model_ratio',
+  'model_price',
+  'completion_ratio',
+  'cache_ratio',
+  'create_cache_ratio',
+  'image_ratio',
+  'audio_ratio',
+  'audio_completion_ratio',
+  'billing_mode',
+  'billing_expr',
+  'image_generation_model',
+  'video_generation_model',
+  'enable_groups',
+  'supported_endpoint_types',
+];
+
+function projectLiveDocsCatalog(data) {
+  return {
+    meta: projectLiveMeta(data.meta, true),
+    sections: data.sections.map((section) => ({
+      title: section.title,
+      items: section.items.map(projectDocsItem),
+    })),
+    search_index: data.search_index.map((record) => ({
+      slug: record.slug,
+      anchor: record.anchor ?? null,
+      title: record.title,
+      target_title: record.target_title,
+      text: record.text,
+    })),
+  };
+}
+
+function projectLiveDocsPage(data) {
+  return {
+    meta: projectLiveMeta(data.meta, true),
+    page: {
+      slug: data.page.slug,
+      title: data.page.title,
+      summary: data.page.summary,
+      section: data.page.section,
+      keywords: [...data.page.keywords],
+      updated_at: data.page.updated_at,
+      blocks: data.page.blocks.map(projectDocsBlock),
+    },
+  };
+}
+
+function projectLiveMeta(meta, docs) {
+  const projected = {
+    source: meta.source,
+    fixture: meta.fixture,
+    live: meta.live,
+    label: meta.label,
+    updated_at: meta.updated_at,
+    contract_version: meta.contract_version,
+  };
+  if (docs) {
+    projected.schema_version = meta.schema_version;
+    projected.renderer_version = meta.renderer_version;
+  } else if (meta.notice !== undefined) {
+    projected.notice = meta.notice;
+  }
+  return projected;
+}
+
+function projectDocsItem(item) {
+  return {
+    slug: item.slug,
+    title: item.title,
+    summary: item.summary,
+    keywords: [...item.keywords],
+  };
+}
+
+function projectDocsBlock(block) {
+  switch (block.type) {
+    case 'lead':
+    case 'paragraph':
+      return { type: block.type, text: block.text };
+    case 'heading':
+      return { type: block.type, id: block.id, level: block.level, text: block.text };
+    case 'callout':
+      return { type: block.type, tone: block.tone, title: block.title, text: block.text };
+    case 'code':
+      return { type: block.type, language: block.language, label: block.label, code: block.code };
+    case 'bullets':
+      return { type: block.type, items: [...block.items] };
+    case 'endpoint':
+      return { type: block.type, method: block.method, id: block.id, path: block.path, text: block.text };
+    case 'table':
+      return { type: block.type, columns: [...block.columns], rows: block.rows.map((row) => [...row]) };
+    case 'link-cards':
+      return {
+        type: block.type,
+        items: block.items.map((item) => ({ slug: item.slug, title: item.title, text: item.text })),
+      };
+    default:
+      schemaFailure();
+  }
+}
+
+function projectLivePricing(payload) {
+  return {
+    success: true,
+    meta: projectLiveMeta(payload.meta, false),
+    context: {
+      user_group: payload.context.user_group,
+      selected_group: payload.context.selected_group,
+      locked: payload.context.locked,
+    },
+    display: {
+      quota_display_type: payload.display.quota_display_type,
+      default_currency: payload.display.default_currency,
+      price: payload.display.price,
+      usd_exchange_rate: payload.display.usd_exchange_rate,
+      custom_currency_exchange_rate: payload.display.custom_currency_exchange_rate,
+      custom_currency_symbol: payload.display.custom_currency_symbol,
+      show_with_recharge: payload.display.show_with_recharge,
+    },
+    data: payload.data.map(projectPricingModel),
+    vendors: payload.vendors.map((vendor) => {
+      const projected = { id: vendor.id, name: vendor.name };
+      if (vendor.description !== undefined) projected.description = vendor.description;
+      return projected;
+    }),
+    group_ratio: { default: payload.group_ratio.default },
+    usable_group: { default: payload.usable_group.default },
+    supported_endpoint: projectEndpointMap(payload.supported_endpoint),
+    auto_groups: projectPublicIdentifierArray(payload.auto_groups),
+    video_resolution_dimensions: projectPublicMap(
+      payload.video_resolution_dimensions,
+      (value) => projectVideoDimensionSet(value),
+    ),
+    pricing_version: payload.pricing_version,
+  };
+}
+
+function projectPricingModel(model) {
+  const projected = {};
+  PUBLIC_PRICING_MODEL_FIELDS.forEach((field) => {
+    if (!Object.hasOwn(model, field)) return;
+    if (field === 'enable_groups' || field === 'supported_endpoint_types') {
+      projected[field] = projectPublicIdentifierArray(model[field]);
+    } else {
+      projected[field] = model[field];
+    }
+  });
+  if (Object.hasOwn(model, 'video_pricing')) {
+    projected.video_pricing = projectVideoPricing(model.video_pricing);
+  }
+  return projected;
+}
+
+function projectPublicIdentifierArray(values) {
+  return values.filter((value) => isPublicMapKey(value));
+}
+
+function projectVideoPricing(profile) {
+  if (!isRecord(profile)) return profile;
+  const projected = {};
+  ['version', 'currency', 'unit', 'rate_multiplier'].forEach((field) => {
+    if (Object.hasOwn(profile, field)) projected[field] = profile[field];
+  });
+  if (isRecord(profile.resolution_rates)) {
+    projected.resolution_rates = projectPublicMap(profile.resolution_rates, (rates) => {
+      if (!isRecord(rates)) return rates;
+      const projectedRates = {};
+      ['without_video', 'with_video'].forEach((field) => {
+        if (Object.hasOwn(rates, field)) projectedRates[field] = rates[field];
+      });
+      return projectedRates;
+    });
+  }
+  return projected;
+}
+
+function projectEndpointMap(endpoints) {
+  return projectPublicMap(endpoints, (endpoint) => {
+    if (!isRecord(endpoint)) return undefined;
+    return { method: endpoint.method, path: endpoint.path };
+  });
+}
+
+function projectVideoDimensionSet(value) {
+  if (!isRecord(value)) return value;
+  return projectPublicMap(value, (geometrySet) => {
+    if (!isRecord(geometrySet)) return undefined;
+    return projectPublicMap(geometrySet, (dimensions) => (
+      Array.isArray(dimensions) ? [...dimensions] : undefined
+    ));
+  });
+}
+
+function projectPublicMap(value, projectValue) {
+  if (!isRecord(value)) return value;
+  const projected = {};
+  Object.entries(value).forEach(([key, entry]) => {
+    // Map keys are public identifiers, not free-form object fields. Restrict
+    // them to the identifier shape used by the reviewed NewAPI contract so
+    // names such as private_secret can never cross the public boundary.
+    if (!isPublicMapKey(key)) return;
+    const projectedValue = projectValue(entry);
+    if (projectedValue === undefined) return;
+    projected[key] = projectedValue;
+  });
+  return projected;
+}
+
+function isPublicMapKey(key) {
+  return /^[A-Za-z0-9][A-Za-z0-9:./-]{0,79}$/.test(key);
 }
 
 function clone(value) {

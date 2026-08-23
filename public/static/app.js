@@ -10,6 +10,7 @@ import {
   calculateModelPricing,
   getOrdinaryUserModels,
 } from './pricing.js';
+import { contentStatus } from './content-meta.js';
 
 const PRICING_MOBILE_QUERY = '(max-width: 767px)';
 const THEME_STORAGE_KEY = 'juapi-theme';
@@ -141,9 +142,11 @@ async function renderRoute() {
 }
 
 async function renderHome() {
-  if (!state.integration) {
-    state.integration = await api('/api/integrations/downloads');
-  }
+  const [integration, content] = await Promise.all([
+    state.integration || api('/api/integrations/downloads'),
+    loadContentSurfaces(),
+  ]);
+  state.integration = integration;
   document.title = 'JuAPI 开发者中心';
   const downloads = state.integration.data;
   const fragment = document.createDocumentFragment();
@@ -161,10 +164,10 @@ async function renderHome() {
     node(
       'p',
       { class: 'home-lead' },
-      '开发文档、模型价格与客户端下载的公共入口，运行在独立的 Cloudflare Worker 上。文档与价格内容由上游应用提供，本站只负责呈现。',
+      `开发文档、模型价格与客户端下载的公共入口，运行在独立的 Cloudflare Worker 上。Docs ${content.docs.sourceText}，Pricing ${content.pricing.sourceText}。`,
     ),
     actions,
-    heroMeta(downloads),
+    heroMeta(downloads, content),
   );
   hero.append(heroInner);
 
@@ -206,11 +209,11 @@ async function renderHome() {
   const boundaryCard = node('div', { class: 'boundary-panel__card' });
   boundaryCard.append(
     node('div', { class: 'eyebrow' }, 'PHASE 2 DEPLOYMENT BOUNDARY'),
-    node('h2', {}, 'Production downloads 可接入，内容仍是 fixture。'),
+    node('h2', {}, 'Production downloads 可接入，内容状态随响应 metadata 标识。'),
     node(
       'p',
       {},
-      '页面明确标识 fixture 来源；只有命名 staging／production 的对应 runtime gate 与 callable binding 同时成立才会转发。即使 bound，状态仍是未验证健康、非 live。下载、admin、R2、rollback 和微信群二维码继续由原 Worker 持有。',
+      `Docs：${content.docs.badge}；Pricing：${content.pricing.badge}。只有命名 staging／production 的对应 runtime gate 与 callable binding 同时成立才会转发。即使 bound，下载状态仍是未验证健康、非 live。下载、admin、R2、rollback 和微信群二维码继续由原 Worker 持有。`,
     ),
   );
   boundary.append(boundaryCard);
@@ -219,10 +222,10 @@ async function renderHome() {
   replaceMain(fragment);
 }
 
-function heroMeta(downloads) {
+function heroMeta(downloads, content) {
   const list = node('dl', { class: 'hero-meta' });
   [
-    ['内容来源', 'Fixture · 非 live'],
+    ['内容来源', `${content.docs.badge} / ${content.pricing.badge}`],
     ['价格上下文', 'default / default · 已锁定'],
     ['客户端下载', downloadsSummary(downloads)],
   ].forEach(([term, description]) => {
@@ -237,6 +240,19 @@ function downloadsSummary(status) {
   if (status.active) return 'Bound-unverified · 非 live';
   if (!status.enabled) return '当前环境 disabled · fail closed';
   return status.binding_present ? '当前环境 binding 无效' : '当前环境 binding 未提供';
+}
+
+async function loadContentSurfaces() {
+  const [docsResponse, pricingResponse] = await Promise.all([
+    state.docsCatalog || api('/api/content/docs'),
+    state.pricing ? Promise.resolve(state.pricing) : api('/api/content/pricing'),
+  ]);
+  if (!state.docsCatalog) state.docsCatalog = docsResponse;
+  if (!state.pricing) state.pricing = pricingResponse;
+  return {
+    docs: contentStatus(docsResponse.data.meta),
+    pricing: contentStatus(pricingResponse.meta),
+  };
 }
 
 async function renderDocs(slug) {
@@ -683,9 +699,10 @@ function renderPricingRule(payload) {
   const title = node('div', { class: 'pricing-rule-title' });
   title.append('计价规则', renderDataBadge(payload.meta));
   const summary = node('div', { class: 'pricing-rule-summary' });
+  const source = contentStatus(payload.meta).sourceText;
   if (state.pricingMode === 'official') {
     summary.append(
-      node('div', {}, '官方价格为 fixture 中配置的原始美元基础价。'),
+      node('div', {}, `官方价格为 ${source}提供的原始美元基础价。`),
       node('div', {}, '官方价格模式不应用分组倍率、充值换算或展示货币换算。'),
     );
   } else {
@@ -694,12 +711,12 @@ function renderPricingRule(payload) {
     const official = 10;
     const payable = official * ratio * conversion.rate;
     summary.append(
-      node('div', {}, '官方价格为 fixture 中配置的原始美元基础价。'),
+      node('div', {}, `官方价格为 ${source}提供的原始美元基础价。`),
       node('div', {}, `实付金额（${conversion.currency}） = 官方价格（USD） × 分组倍率 × 当前换算（${formatNumber(conversion.rate)} ${conversion.currency}/USD）`),
       node('div', {}, `示例：官方 $${official.toFixed(2)} × ${formatNumber(ratio)}x × ${formatNumber(conversion.rate)} ${conversion.currency}/USD = ${conversion.symbol}${payable.toFixed(2)}（加价 ${formatNumber((ratio - 1) * 100)}%）`),
     );
   }
-  summary.append(node('div', { class: 'pricing-fixture-notice' }, payload.meta.notice));
+  summary.append(node('div', { class: 'pricing-source-notice' }, payload.meta.notice || `${contentStatus(payload.meta).badge}。`));
   copy.append(title, summary);
   section.append(copy);
   return section;
@@ -1372,9 +1389,9 @@ function copyButton(text) {
 }
 
 function renderDataBadge(meta, label = undefined) {
-  const badge = node('span', { class: `data-badge ${meta.live ? 'live' : 'fixture'}` });
-  const defaultLabel = meta.live ? 'NewAPI · Live' : 'Fixture · 非 live';
-  const displayLabel = label || (meta.live ? meta.label || defaultLabel : defaultLabel);
+  const status = contentStatus(meta);
+  const badge = node('span', { class: `data-badge ${status.kind}` });
+  const displayLabel = label || status.badge;
   badge.append(node('i', { 'aria-hidden': 'true' }), document.createTextNode(displayLabel));
   return badge;
 }

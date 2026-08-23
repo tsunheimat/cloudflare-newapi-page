@@ -234,6 +234,80 @@ test('live content mode preserves public route envelopes and pricing lock', asyn
   assert.equal(payload.group_ratio.default, 1.25);
 });
 
+test('live Docs catalog/page and Pricing responses project only reviewed public fields', async () => {
+  const token = 'worker-live-content-token-' + 'x'.repeat(32);
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname;
+        if (path.endsWith('/pricing')) {
+          return new Response(JSON.stringify({
+            success: true,
+            private_secret: 'top-level-secret',
+            meta: { source: 'newapi', fixture: false, live: true, label: 'NewAPI live content', updated_at: null, contract_version: 'v1', private_secret: 'meta-secret' },
+            context: { user_group: 'default', selected_group: 'default', locked: true, private_secret: 'context-secret' },
+            display: { quota_display_type: 'USD', default_currency: 'CNY', price: 7.2, usd_exchange_rate: 7.2, custom_currency_exchange_rate: 1, custom_currency_symbol: '¤', show_with_recharge: true, private_secret: 'display-secret' },
+            data: [{ model_name: 'live-model', description: 'Valid model', enable_groups: ['default'], private_secret: 'model-secret', video_pricing: { version: 1, currency: 'CNY', unit: 'per_1m_completion_tokens', rate_multiplier: 1, resolution_rates: { '720p': { without_video: 2, with_video: 3, private_secret: 'video-rate-secret' } }, private_secret: 'video-secret' } }],
+            vendors: [{ id: 1, name: 'Live vendor', private_secret: 'vendor-secret' }],
+            group_ratio: { default: 1.25, private_secret: 'ratio-secret' },
+            usable_group: { default: '普通用户', private_secret: 'usable-secret' },
+            supported_endpoint: { openai: { method: 'POST', path: '/v1/chat/completions', private_secret: 'endpoint-secret' }, private_secret: { method: 'GET', path: '/secret' } },
+            auto_groups: [],
+            video_resolution_dimensions: { '720p': { landscape: { default: [1280, 720], private_secret: [1, 1] } }, private_secret: { hidden: { default: [1, 1] } } },
+            pricing_version: 'live-v1',
+          }), { headers: { 'content-type': 'application/json', 'x-newapi-content-contract': 'v1' } });
+        }
+        if (path.endsWith('/docs/quickstart')) {
+          return new Response(JSON.stringify({
+            success: true,
+            private_secret: 'page-envelope-secret',
+            data: {
+              meta: { source: 'newapi', fixture: false, live: true, label: 'NewAPI live content', updated_at: null, contract_version: 'v1', schema_version: 1, renderer_version: 1, private_secret: 'page-meta-secret' },
+              page: {
+                slug: 'quickstart', title: 'Quickstart', summary: 'Start here', section: 'Guides', keywords: [], updated_at: 1, private_secret: 'page-secret',
+                blocks: [{ type: 'paragraph', text: 'Valid page text', private_secret: 'block-secret' }],
+              },
+            },
+          }), { headers: { 'content-type': 'application/json', 'x-newapi-content-contract': 'v1' } });
+        }
+        return new Response(JSON.stringify({
+          success: true,
+          private_secret: 'catalog-envelope-secret',
+          data: {
+            meta: { source: 'newapi', fixture: false, live: true, label: 'NewAPI live content', updated_at: null, contract_version: 'v1', schema_version: 1, renderer_version: 1, private_secret: 'catalog-meta-secret' },
+            sections: [{ title: 'Guides', private_secret: 'section-secret', items: [{ slug: 'quickstart', title: 'Quickstart', summary: 'Start here', keywords: [], private_secret: 'item-secret' }] }],
+            search_index: [{ slug: 'quickstart', anchor: null, title: 'Quickstart', target_title: 'Quickstart', text: 'Valid search text', private_secret: 'search-secret' }],
+          },
+        }), { headers: { 'content-type': 'application/json', 'x-newapi-content-contract': 'v1' } });
+      },
+    },
+  };
+
+  const catalog = await fetchWorker('/api/content/docs', env);
+  assert.equal(catalog.status, 200);
+  const catalogBody = await catalog.json();
+  assert.equal(catalogBody.data.sections[0].items[0].slug, 'quickstart');
+  assert.equal(catalogBody.data.search_index[0].text, 'Valid search text');
+  assert.doesNotMatch(JSON.stringify(catalogBody), /private_secret/);
+
+  const page = await fetchWorker('/api/content/docs/quickstart', env);
+  assert.equal(page.status, 200);
+  const pageBody = await page.json();
+  assert.equal(pageBody.data.page.blocks[0].text, 'Valid page text');
+  assert.doesNotMatch(JSON.stringify(pageBody), /private_secret/);
+
+  const pricing = await fetchWorker('/api/content/pricing', env);
+  assert.equal(pricing.status, 200);
+  const pricingBody = await pricing.json();
+  assert.equal(pricingBody.data[0].model_name, 'live-model');
+  assert.equal(pricingBody.vendors[0].name, 'Live vendor');
+  assert.equal(pricingBody.group_ratio.default, 1.25);
+  assert.doesNotMatch(JSON.stringify(pricingBody), /private_secret/);
+});
+
 test('live Docs and Pricing preserve ETags and upstream conditional 304 responses', async () => {
   const token = 'worker-live-content-token-' + 'x'.repeat(32);
   const calls = [];

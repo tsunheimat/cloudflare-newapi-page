@@ -85,7 +85,7 @@ test('Pricing presentation reuses the canonical hierarchy while exposing one loc
   assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.pricing-card-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
 });
 
-test('front-door home/header remain present and content calls stay fixture API-relative', async () => {
+test('front-door home/header remain present and content calls stay API-relative', async () => {
   const [app, _styles, index] = await sources;
 
   assert.match(index, /<header class="site-header">/);
@@ -98,6 +98,10 @@ test('front-door home/header remain present and content calls stay fixture API-r
 
   assert.match(app, /api\('\/api\/content\/docs'\)/);
   assert.match(app, /api\('\/api\/content\/pricing'\)/);
+  assert.match(app, /contentStatus\(payload\.meta\)/);
+  assert.match(app, /loadContentSurfaces\(\)/);
+  assert.doesNotMatch(app, /官方价格为 fixture 中配置/);
+  assert.doesNotMatch(app, /内容仍是 fixture/);
   assert.doesNotMatch(app, /fetch\(['"]https?:\/\//);
   assert.doesNotMatch(app, /newapi\.(?:internal|local)|tunnel|vpc/i);
 });

@@ -2119,7 +2119,7 @@ a.feature-card:hover::before {
   overflow-wrap: anywhere;
 }
 
-.pricing-fixture-notice {
+.pricing-source-notice {
   margin-top: 4px;
   color: var(--semi-color-text-2);
 }
