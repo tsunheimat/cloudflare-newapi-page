@@ -85,7 +85,7 @@ wrangler deploy --config <repo>/wrangler.toml --env production --strict
 
 该 deploy 只上传本 repo 的 caller Worker code/assets/config：它不会修改 sibling checkout bytes，不会部署 `cloudflare-download-site`，也不会直接读取、写入或删除 downstream R2 objects。
 
-## 5. Production verification
+## 5. Current production cutover verification (live target only)
 
 把 deploy 输出的实际 HTTPS URL 写入当前 shell；不要猜测 account subdomain：
 
@@ -124,6 +124,21 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/do
       .data.meta.renderer_version == 1
     '
 
+# Validate a real Docs page, not only catalog metadata.
+curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/docs/quickstart" \
+  | jq -e '
+      .data.meta.source == "newapi" and
+      .data.meta.fixture == false and
+      .data.meta.live == true and
+      .data.meta.schema_version == 1 and
+      .data.meta.renderer_version == 1 and
+      .data.page.slug == "quickstart" and
+      (.data.page.title | type == "string" and length > 0) and
+      (.data.page.section | type == "string" and length > 0) and
+      (.data.page.updated_at | type == "number" and . >= 0) and
+      (.data.page.blocks | length > 0)
+    '
+
 curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/pricing" \
   | jq -e '
       .meta.source == "newapi" and
@@ -149,14 +164,66 @@ curl --fail-with-body --silent --show-error --output /dev/null \
 
 ## 6. Rollback
 
-若 verification 失败且部署前记录了已知良好的 previous version ID，执行：
+若 verification 失败且部署前记录了已知良好的 previous version ID，先确认 rollback target 的 source commit；不接受无法精确绑定到已审查 target 的 rollback。
 
 ```bash
-npx wrangler rollback <PREVIOUS_VERSION_ID> --env production \
+read -r -p "Rollback version ID: " ROLLBACK_VERSION_ID
+test -n "$ROLLBACK_VERSION_ID"
+read -r -p "Rollback target source commit: " ROLLBACK_TARGET_SOURCE_COMMIT
+ROLLBACK_FIXTURE_PARENT_COMMIT="a0bce69108d7898c75385dd64b16e4deb927a3e0"
+case "$ROLLBACK_TARGET_SOURCE_COMMIT" in
+  "$ROLLBACK_FIXTURE_PARENT_COMMIT") ;;
+  *)
+    printf 'Unsupported rollback target source commit; refusing verification.\n' >&2
+    exit 1
+    ;;
+esac
+
+npx wrangler rollback "$ROLLBACK_VERSION_ID" --env production \
   --message "rollback failed production verification"
 ```
 
-Rollback 会立即建立新的 caller deployment；随后重跑第 5 节 verification。Cloudflare 的 [Workers rollback 文档](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/) 说明 rollback 不修改 connected resources，但旧 version 依赖的 binding/resource 必须仍存在。
+The exact `a0bce69108d7898c75385dd64b16e4deb927a3e0` parent is fixture-backed; after that rollback, use fixture predicates and do not judge it by live=true:
+
+```bash
+curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/health" \
+  | jq -e '
+      .phase == "2" and
+      .content_adapter == "fixture" and
+      .live_newapi == false and
+      .pricing_context.user_group == "default" and
+      .pricing_context.selected_group == "default" and
+      .downloads.mode == "production-service-binding" and
+      .downloads.configured == true and
+      .downloads.bound == true and
+      .downloads.active == true and
+      .downloads.healthy == null and
+      .downloads.live == false and
+      .downloads.phase == "bound-unverified"
+    '
+curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/docs" \
+  | jq -e '.data.meta.source == "fixture" and .data.meta.fixture == true and .data.meta.live == false'
+curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/docs/quickstart" \
+  | jq -e '
+      .data.meta.source == "fixture" and
+      .data.meta.fixture == true and
+      .data.meta.live == false and
+      .data.page.slug == "quickstart" and
+      (.data.page.title | type == "string" and length > 0) and
+      (.data.page.section | type == "string" and length > 0) and
+      .data.page.updated_at == null and
+      (.data.page.blocks | length > 0)
+    '
+curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/pricing" \
+  | jq -e '
+      .meta.source == "fixture" and
+      .meta.fixture == true and
+      .meta.live == false and
+      .context == {user_group:"default", selected_group:"default", locked:true}
+    '
+```
+
+Cloudflare 的 [Workers rollback 文档](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/) 说明 rollback 不修改 connected resources，但旧 version 依赖的 binding/resource 必须仍存在。
 
 Caller rollback 不会恢复任何此前经 `/admin/*` POST 写入的 downstream/R2 state；这类恢复只能按 `cloudflare-download-site` 自己的生产 runbook 处理，不能由本 repo 代替。
 

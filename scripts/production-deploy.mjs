@@ -26,6 +26,7 @@ export const PRODUCTION_CONTRACT = Object.freeze({
   downloadsService: 'cloudflare-download-site',
   newApiVpcBinding: 'NEWAPI_VPC_SERVICE',
   newApiVpcServiceId: '01a027bb-280d-7630-b837-7afd6a0ca196',
+  docsProbeSlug: 'quickstart',
 });
 
 // Wrangler 4.124.0 loads these files, in this order, for `--env production`.
@@ -205,6 +206,35 @@ export async function assertProductionRuntimeContract() {
             },
           }), { headers });
         }
+        if (url.pathname.endsWith(`/docs/${PRODUCTION_CONTRACT.docsProbeSlug}`)) {
+          return new Response(JSON.stringify({
+            success: true,
+            data: {
+              meta: {
+                source: 'newapi',
+                fixture: false,
+                live: true,
+                label: 'NewAPI live content',
+                updated_at: null,
+                contract_version: 'v1',
+                schema_version: 1,
+                renderer_version: 1,
+              },
+              page: {
+                slug: PRODUCTION_CONTRACT.docsProbeSlug,
+                title: 'Quickstart',
+                summary: 'Start here with the live API.',
+                section: 'Guides',
+                keywords: ['quickstart'],
+                updated_at: 0,
+                blocks: [{
+                  type: 'lead',
+                  text: 'This is a successful live Docs page response.',
+                }],
+              },
+            },
+          }), { headers });
+        }
         if (url.pathname.endsWith('/pricing')) {
           return new Response(JSON.stringify({
             success: true,
@@ -279,6 +309,22 @@ export async function assertProductionRuntimeContract() {
   assert.equal(docs.data.meta.schema_version, 1);
   assert.equal(docs.data.meta.renderer_version, 1);
 
+  const docsPage = await fetchJson(
+    `/api/content/docs/${PRODUCTION_CONTRACT.docsProbeSlug}`,
+    env,
+  );
+  assert.equal(docsPage.data.meta.source, 'newapi');
+  assert.equal(docsPage.data.meta.fixture, false);
+  assert.equal(docsPage.data.meta.live, true);
+  assert.equal(docsPage.data.meta.schema_version, 1);
+  assert.equal(docsPage.data.meta.renderer_version, 1);
+  assert.equal(docsPage.data.page.slug, PRODUCTION_CONTRACT.docsProbeSlug);
+  assert.equal(docsPage.data.page.title, 'Quickstart');
+  assert.equal(docsPage.data.page.section, 'Guides');
+  assert.equal(docsPage.data.page.updated_at, 0);
+  assert.ok(docsPage.data.page.blocks.length > 0);
+  assert.equal(docsPage.data.page.blocks[0].type, 'lead');
+
   const pricing = await fetchJson('/api/content/pricing', env);
   assert.equal(pricing.meta.source, 'newapi');
   assert.equal(pricing.meta.fixture, false);
@@ -299,6 +345,7 @@ export async function assertProductionRuntimeContract() {
   assert.deepEqual(upstreamPaths, [
     '/api/internal/live-content/v1/health',
     '/api/internal/live-content/v1/docs',
+    `/api/internal/live-content/v1/docs/${PRODUCTION_CONTRACT.docsProbeSlug}`,
     '/api/internal/live-content/v1/pricing',
   ]);
 }

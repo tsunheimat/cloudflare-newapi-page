@@ -64,6 +64,26 @@ test('production preflight accepts the committed deployment contract', async () 
   await assert.doesNotReject(assertProductionRuntimeContract());
 });
 
+test('production runbook probes a successful live Docs page and target-specific rollback semantics', async () => {
+  const source = await readFile(
+    new URL('../docs/production-deployment.md', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /\/api\/content\/docs\/quickstart/);
+  assert.match(source, /\.data\.page\.slug == "quickstart"/);
+  assert.match(source, /\.data\.page\.blocks \| length > 0/);
+  assert.match(source, /a0bce69108d7898c75385dd64b16e4deb927a3e0/);
+  assert.match(source, /ROLLBACK_VERSION_ID/);
+  assert.match(source, /wrangler rollback \"\$ROLLBACK_VERSION_ID\"/);
+  assert.match(source, /Current production cutover verification \(live target only\)/);
+  assert.match(source, /\.content_adapter == "newapi"/);
+  assert.match(source, /ROLLBACK_FIXTURE_PARENT_COMMIT/);
+  assert.match(source, /\.content_adapter == "fixture"/);
+  assert.doesNotMatch(source, /随后重跑第 5 节 verification/);
+  assert.match(source, /fixture-backed|fixture.*non-live|non-live.*fixture/i);
+  assert.match(source, /unknown|unsupported/i);
+});
+
 test('production runbook names the least-privilege VPC binding role', async () => {
   const source = await readFile(
     new URL('../docs/production-deployment.md', import.meta.url),
