@@ -191084,10 +191084,6 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
       Se(!0);
       try {
         const wt = await Bto.get({
-          userId: _t,
-          language: $t,
-          resource: "pricing",
-          force: et,
           fetcher: async () => {
             var At, Qt;
             const Tt = await dy.get("/api/pricing", {

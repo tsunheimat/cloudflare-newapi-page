@@ -82,7 +82,13 @@ test('Pricing presentation reuses canonical session groups, fields, and both com
   assert.match(app, /data-user-group/);
   assert.match(app, /data-selected-group/);
   assert.match(app, /data-group-locked/);
-  assert.match(app, /front-door\/v1\/pricing/);
+  assert.match(app, /legacyPricing: null/);
+  assert.match(app, /state\.legacyPricing \|\| await api\('\/api\/content\/pricing'\)/);
+  assert.doesNotMatch(
+    app,
+    /async function renderPricing\(\)[\s\S]*?front-door\/v1\/pricing/,
+    'legacy /pricing must not load authenticated front-door Pricing',
+  );
   assert.match(app, /payload\.context\.user_group/);
   assert.match(app, /payload\.context\.selected_group/);
   assert.match(app, /payload\.context\.locked/);
@@ -130,6 +136,8 @@ test('authenticated Pricing route ships the canonical component bundle without a
   assert.match(bundle, /cache: "no-store"/);
   assert.match(bundle, /disableDuplicate: !0/);
   assert.doesNotMatch(bundle, /"New-API-User": Wto\(\)/);
+  assert.doesNotMatch(bundle, /userId: _t|language: \$t/);
+  assert.match(bundle, /Bto\.get\(\{\s*fetcher: async/);
   assert.ok(bundle.length > 1_000_000);
   assert.ok(stylesheet.includes('.pricing-page-shell'));
 });

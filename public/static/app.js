@@ -27,6 +27,7 @@ const pricingMobileMedia = window.matchMedia?.(PRICING_MOBILE_QUERY) || null;
 
 const state = {
   docsCatalog: null,
+  legacyPricing: null,
   integration: null,
   docsQuery: '',
   pricingQuery: '',
@@ -280,18 +281,9 @@ function downloadsSummary(status) {
 
 async function loadContentSurfaces() {
   const docsResponse = state.docsCatalog || await api('/api/content/docs');
-  const canonicalPricing = await api('/api/front-door/v1/pricing', { frontDoor: true }).catch((error) => {
-    if (readBrowserUser()?.public_id) throw error;
-    return null;
-  });
-  // The approved GetPricing alias intentionally returns the exact NewAPI
-  // response. Its display settings are already loaded by the canonical SPA
-  // status bootstrap; if that snapshot is absent, normalization fails closed
-  // rather than inventing exchange rates or labels.
-  const pricingResponse = canonicalPricing
-    ? normalizeFrontDoorPricing(canonicalPricing)
-    : await api('/api/content/pricing');
+  const pricingResponse = state.legacyPricing || await api('/api/content/pricing');
   if (!state.docsCatalog) state.docsCatalog = docsResponse;
+  state.legacyPricing ||= pricingResponse;
   await ensureDocsNavigation();
   return {
     docs: {
@@ -724,13 +716,12 @@ async function renderPricing() {
     await renderCanonicalPricing();
     return;
   }
-  const canonicalPricing = await api('/api/front-door/v1/pricing', { frontDoor: true }).catch((error) => {
-    if (readBrowserUser()?.public_id) throw error;
-    return null;
-  });
-  const payload = canonicalPricing
-    ? normalizeFrontDoorPricing(canonicalPricing)
-    : await api('/api/content/pricing');
+  // `/pricing` is the public compatibility surface. Keep its fixture/live
+  // public-content state separate from the authenticated front-door clone.
+  // The public API helper may reuse only this legacy response and its ETag;
+  // no front-door body, validator, or in-flight promise is retained here.
+  const payload = state.legacyPricing || await api('/api/content/pricing');
+  state.legacyPricing ||= payload;
   state.currency = payload.display?.default_currency || 'CNY';
   state.showWithRecharge = payload.display?.show_with_recharge === true;
   const models = getOrdinaryUserModels(payload);

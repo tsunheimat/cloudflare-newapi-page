@@ -308,6 +308,8 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
     pricing_version: 'canonical-browser-v1',
   };
   const page = await newPage(context);
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
   let statusRequests = 0;
   await page.route('**/api/status', async (route) => {
     statusRequests += 1;
@@ -349,6 +351,8 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
   });
   await page.goto(`${baseUrl}/console/pricing`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('heading', { name: '模型价格', exact: true }).first().waitFor();
+  assert.deepEqual(pageErrors, [], 'canonical Pricing must mount without runtime errors');
+  assert.equal(pricingRequests, 1, 'canonical Pricing must issue its front-door request');
   assert.equal(statusRequests, 1);
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('status'))), {
     quota_display_type: 'CNY',
@@ -372,6 +376,12 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
   assert.equal(await rows.count(), 20);
   assert.match(await rows.first().textContent(), /gpt-canonical-00/);
   assert.match(await rows.nth(19).textContent(), /zeta-canonical-19/);
+
+  await visibleVendors.nth(1).click();
+  await page.waitForFunction(() => document.querySelectorAll('.pricing-model-table tbody tr').length === 2);
+  assert.match(await rows.first().textContent(), /zeta-canonical-22/);
+  await visibleVendors.first().click();
+  await page.waitForFunction(() => document.querySelectorAll('.pricing-model-table tbody tr').length === 20);
 
   await page.locator('.semi-page-next').click();
   await page.waitForFunction(() => document.querySelector('.pricing-model-table tbody')?.textContent?.includes('zeta-canonical-20'));
@@ -402,8 +412,17 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
 test('Pricing switches between desktop inline filters and the mobile modal at 768px', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await newPage(context);
+  let legacyPricingRequests = 0;
+  let frontDoorPricingRequests = 0;
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === '/api/content/pricing') legacyPricingRequests += 1;
+    if (pathname === '/api/front-door/v1/pricing') frontDoorPricingRequests += 1;
+  });
   await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
   assert.equal(new URL(page.url()).pathname, '/pricing');
+  assert.equal(legacyPricingRequests, 1, 'legacy Pricing loads its public payload once');
+  assert.equal(frontDoorPricingRequests, 0, 'legacy Pricing never loads front-door Pricing');
   const trigger = page.locator('[data-pricing-filter-trigger]');
   await trigger.click();
   const inline = page.locator('.pricing-advanced-filters');
@@ -442,6 +461,8 @@ test('Pricing switches between desktop inline filters and the mobile modal at 76
   assert.equal(await page.locator('.pricing-filter-modal').count(), 0);
   assert.equal(await trigger.getAttribute('aria-haspopup'), null);
   assert.match(await trigger.textContent(), /筛选 \(1\) · 收起/);
+  assert.equal(legacyPricingRequests, 1, 'legacy Pricing state/cache survives rerenders');
+  assert.equal(frontDoorPricingRequests, 0, 'legacy rerenders stay off the front door');
   await context.close();
 });
 
