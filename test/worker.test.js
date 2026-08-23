@@ -414,6 +414,53 @@ test('live Docs and Pricing preserve ETags and upstream conditional 304 response
   ]);
 });
 
+test('live Docs upstream 200 is not converted to a local 304 by matching ETag', async () => {
+  const docsEtag = '"pricing-deadbeef"';
+  const token = 'worker-live-content-token-' + 'x'.repeat(32);
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        assert.equal(new URL(request.url).pathname, '/api/internal/live-content/v1/docs');
+        assert.equal(request.headers.get('if-none-match'), docsEtag);
+        return new Response(JSON.stringify({
+          success: true,
+          data: {
+            meta: {
+              source: 'newapi',
+              fixture: false,
+              live: true,
+              label: 'NewAPI live content',
+              updated_at: null,
+              contract_version: 'v1',
+              schema_version: 1,
+              renderer_version: 1,
+            },
+            sections: [{ title: 'Guides', items: [] }],
+            search_index: [],
+          },
+        }), {
+          headers: {
+            'content-type': 'application/json',
+            'x-newapi-content-contract': 'v1',
+            etag: docsEtag,
+          },
+        });
+      },
+    },
+  };
+
+  const response = await fetchWorker('/api/content/docs', env, {
+    headers: { 'if-none-match': docsEtag },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('etag'), docsEtag);
+  assert.deepEqual((await response.json()).data.sections, [{ title: 'Guides', items: [] }]);
+});
+
 test('SPA routes pass through the asset binding with security headers', async () => {
   const response = await fetchWorker('/docs/quickstart', fixtureEnv);
   assert.equal(response.status, 200);

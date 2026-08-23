@@ -208,6 +208,30 @@ test('live adapter forwards only a browser validator and preserves verified ETag
   assert.equal(observed.headers.get('x-forwarded-authorization'), null);
 });
 
+test('live Docs keeps an upstream 200 body when its ETag matches the request', async () => {
+  let observed;
+  const adapter = createLiveContentAdapter(liveEnv(async (request) => {
+    observed = request;
+    return liveResponse({
+      success: true,
+      data: {
+        meta: liveMeta(true),
+        sections: [{ title: 'Guides', items: [] }],
+        search_index: [],
+      },
+    }, 200, { etag: '"catalog-v1"' });
+  }));
+
+  const result = await adapter.getDocsCatalogResponse({
+    ifNoneMatch: '"catalog-v1"',
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(result.etag, '"catalog-v1"');
+  assert.deepEqual(result.payload.sections, [{ title: 'Guides', items: [] }]);
+  assert.equal(observed.headers.get('if-none-match'), '"catalog-v1"');
+});
+
 test('matching live conditional responses preserve verified 304 semantics', async () => {
   let observed;
   const adapter = createLiveContentAdapter(liveEnv(async (request) => {
@@ -286,6 +310,62 @@ test('live pricing uses deterministic model ordering and canonical ETags', async
   const conditional = await adapter.getPricingResponse({ ifNoneMatch: first.etag });
   assert.deepEqual(conditional, { status: 304, payload: null, etag: first.etag });
   assert.equal(calls[2].headers.get('if-none-match'), first.etag);
+});
+
+test('live pricing matches quoted, wildcard, strong, and weak validators correctly', async () => {
+  const changedPricing = {
+    ...livePricing,
+    data: [{
+      ...livePricing.data[0],
+      model_ratio: 2,
+    }],
+    pricing_version: 'live-v2',
+  };
+  const validators = [];
+  let requestCount = 0;
+  const adapter = createLiveContentAdapter(liveEnv(async (request) => {
+    validators.push(request.headers.get('if-none-match'));
+    const payload = requestCount++ === 0 ? livePricing : changedPricing;
+    return liveResponse(payload, 200, { etag: `"raw-${requestCount}"` });
+  }));
+
+  const initial = await adapter.getPricingResponse();
+  const changed = await adapter.getPricingResponse({
+    ifNoneMatch: '"old,*,tag"',
+  });
+  assert.equal(initial.status, 200);
+  assert.equal(changed.status, 200);
+  assert.notEqual(changed.etag, initial.etag);
+  assert.equal(changed.payload.data[0].model_ratio, 2);
+
+  const strong = await adapter.getPricingResponse({
+    ifNoneMatch: changed.etag,
+  });
+  assert.deepEqual(strong, { status: 304, payload: null, etag: changed.etag });
+
+  const weakValidator = `W/${changed.etag}`;
+  const weakInList = await adapter.getPricingResponse({
+    ifNoneMatch: `"unrelated", ${weakValidator}`,
+  });
+  assert.deepEqual(weakInList, {
+    status: 304,
+    payload: null,
+    etag: changed.etag,
+  });
+
+  const wildcard = await adapter.getPricingResponse({ ifNoneMatch: '*' });
+  assert.deepEqual(wildcard, {
+    status: 304,
+    payload: null,
+    etag: changed.etag,
+  });
+  assert.deepEqual(validators, [
+    null,
+    '"old,*,tag"',
+    changed.etag,
+    `"unrelated", ${weakValidator}`,
+    '*',
+  ]);
 });
 
 test('live adapter bounds upstream failures and redacts backend responses', async () => {

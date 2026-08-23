@@ -345,7 +345,7 @@ function fetchLivePayload(
       assertBeforeDeadline(deadline, controller);
       const publicEtag = projectEtag ? projectEtag(validated) : etag;
       assertBeforeDeadline(deadline, controller);
-      if (publicEtag && etagMatches(ifNoneMatch, publicEtag)) {
+      if (projectEtag && publicEtag && etagMatches(ifNoneMatch, publicEtag)) {
         return { status: 304, payload: null, etag: publicEtag };
       }
       return { status: 200, payload: validated, etag: publicEtag };
@@ -429,12 +429,30 @@ function verifiedEtag(value) {
 
 function etagMatches(value, current) {
   if (typeof value !== 'string' || !current) return false;
-  return value.split(',').some((candidate) => {
-    const trimmed = candidate.trim();
-    if (trimmed === '*') return true;
-    if (!verifiedEtag(trimmed)) return false;
-    return trimmed.replace(/^W\//, '') === current.replace(/^W\//, '');
+  const fieldValue = value.trim();
+  if (fieldValue === '*') return true;
+  return parseEntityTagList(fieldValue).some((candidate) => {
+    if (candidate === '*') return true;
+    if (!verifiedEtag(candidate)) return false;
+    return candidate.replace(/^W\//, '') === current.replace(/^W\//, '');
   });
+}
+
+function parseEntityTagList(value) {
+  const candidates = [];
+  let start = 0;
+  let inOpaqueTag = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === '"') {
+      inOpaqueTag = !inOpaqueTag;
+    } else if (character === ',' && !inOpaqueTag) {
+      candidates.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  candidates.push(value.slice(start).trim());
+  return candidates;
 }
 
 function liveUnavailable(reason) {
