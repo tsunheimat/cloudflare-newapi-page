@@ -103,7 +103,7 @@ Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only pr
 
 ## NewAPI live adapter cutover gates
 
-在把任一命名环境从 fixture 切到 `newapi` 前至少需要：
+production named environment 已按授权切到 `newapi`；top-level 与 staging 仍保持 fixture。任何后续 live 变更至少需要：
 
 1. 明确 Cloudflare Worker 到 private NewAPI 的授权 transport（service binding、Tunnel/private network 等）与 owner。
 2. 当前部署的 NewAPI private live Docs/Pricing response 样本和 v1 版本标识。
@@ -112,6 +112,6 @@ Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only pr
 5. Worker timeout/body/schema failure 和 rollback policy 已由 focused tests 覆盖；任何 stale-cache policy 需由 operator 单独批准。
 6. staging 端到端验收；页面上的 live badge 只能由已验证 adapter 明确产生。
 
-当前 artifact 只包含已核对的 private service host/port 与 VPC service ID，不包含任何 secret value、Tunnel mutation、credential 或 live data mutation。命名环境仍保持 fixture，具体 operator steps 见 [live-content-adapter.md](live-content-adapter.md)。
+当前 artifact 只包含已核对的 private service host/port 与 VPC service ID，不包含任何 secret value、Tunnel mutation、credential 或 live data mutation。production live cutover 的 guarded deployment 与 verification 见 [production-deployment.md](production-deployment.md) 和 [live-content-adapter.md](live-content-adapter.md)。
 
 Phase 2 的 local/mock 与 Wrangler dry-run 不能证明实际 Cloudflare account 已存在该 binding、deployed target 与只读 source snapshot 相同、R2 objects 可用或 production routing 已完成。

@@ -10,9 +10,10 @@ run_worker_first = true
 not_found_handling = "single-page-application"
 
 [vars]
-# Fixture remains the safety default. The implemented NewAPI adapter is selected
-# with CONTENT_ADAPTER="newapi" only after the VPC path and Worker secret have
-# been provisioned and verified by an explicitly authorized cutover.
+# Fixture remains the safety default for the top-level and staging environments.
+# The explicitly authorized production named environment selects the reviewed
+# NewAPI adapter after the VPC path and Worker secret were provisioned and
+# verified by the controller.
 CONTENT_ADAPTER = "fixture"
 DOWNLOADS_INTEGRATION = "disabled"
 
@@ -38,7 +39,7 @@ service_id = "01a027bb-280d-7630-b837-7afd6a0ca196"
 workers_dev = true
 
 [env.production.vars]
-CONTENT_ADAPTER = "fixture"
+CONTENT_ADAPTER = "newapi"
 DOWNLOADS_INTEGRATION = "production-service-binding"
 
 [[env.production.services]]

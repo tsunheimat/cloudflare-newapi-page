@@ -8,8 +8,8 @@
 - `/docs/*`：复用 pinned NewAPI Docs Hub 2.0 的信息层级与 reader chrome，包括分组侧栏、Ctrl/Cmd+K 搜索、页内目录、移动端 drawer、翻页、表格、callout 和可复制代码示例。
 - `/pricing`：复用 pinned NewAPI 模型价格页的供应商 → 分组 → 价格清单层级、table/card view、筛选与详情；保留 USD/CNY/CUSTOM、充值换算与 1M/1K 展示，价格上下文固定为普通用户 `user_group=default`、`selected_group=default`。
 - `/api/content/docs`、`/api/content/docs/:slug`：可替换 Docs adapter contract。
-- `/api/content/pricing`：保留 NewAPI pricing fields 的 fixture contract。
-- `CONTENT_ADAPTER="newapi"`：通过 `NEWAPI_VPC_SERVICE` 读取私有 NewAPI live Docs/Pricing；当前配置仍在 fixture safety mode。
+- `/api/content/pricing`：保留 NewAPI pricing fields contract；top-level/staging 使用 fixture，production 使用已验证的 live adapter。
+- `CONTENT_ADAPTER="newapi"`：通过 `NEWAPI_VPC_SERVICE` 读取私有 NewAPI live Docs/Pricing；仅 production named environment 选择该模式，top-level/staging 保持 fixture safety mode。
 - `/api/integrations/downloads`：既有下载 Worker Service Binding 的状态、route mode 与能力边界。
 - Worker security headers、API fail-closed 行为与 SPA asset fallback。
 - 统一的 JuAPI 界面：三个页面共用同一套 logo、色板、排版与组件，支持浅色 / 深色主题（跟随系统，可在 header 手动切换）。
@@ -52,7 +52,7 @@ npm run build:production
 npm run deploy:production -- --dry-run
 ```
 
-最后一条是 production 部署入口的本地 preflight 模式：它先锁定 clean full commit，验证 production config、fixture/non-live runtime contract，再执行完整 `validate`，最后重验同一 HEAD 与 clean tracked/untracked worktree；PASS 与 `DRY RUN ONLY` 输出都会包含该 40 位 commit，不上传任何 Worker。
+最后一条是 production 部署入口的本地 preflight 模式：它先锁定 clean full commit，验证 production config、authorized NewAPI live runtime contract（含 health/schema validation），再执行完整 `validate`，最后重验同一 HEAD 与 clean tracked/untracked worktree；PASS 与 `DRY RUN ONLY` 输出都会包含该 40 位 commit，不上传任何 Worker。
 
 ## Pricing 产品语义
 
@@ -99,7 +99,7 @@ binding = "NEWAPI_VPC_SERVICE"
 service_id = "01a027bb-280d-7630-b837-7afd6a0ca196"
 
 [env.production.vars]
-CONTENT_ADAPTER = "fixture"
+CONTENT_ADAPTER = "newapi"
 DOWNLOADS_INTEGRATION = "production-service-binding"
 
 [[env.production.services]]
@@ -136,9 +136,9 @@ npm run deploy:production
 脚本不接受 environment/config override，固定执行 `wrangler deploy --env production --strict`。执行前会要求 Node 22+、clean full Git commit、当前 shell 中的 `CLOUDFLARE_ACCOUNT_ID` 与 `CLOUDFLARE_API_TOKEN`，拒绝 pinned Wrangler 会读取的 ignored production dotenv、control-plane/proxy/log/output overrides 与 legacy credential aliases，并验证：
 
 - default 仍是 `disabled`；staging contract 未被破坏；
-- production 必须是 `CONTENT_ADAPTER=fixture`、`DOWNLOADS_INTEGRATION=production-service-binding`；
+- production 必须是已授权的 `CONTENT_ADAPTER=newapi`、`DOWNLOADS_INTEGRATION=production-service-binding`；default/top-level 与 staging 必须继续是 fixture；
 - production 必须且只能有 `DOWNLOADS_SERVICE -> cloudflare-download-site`；
-- Docs/Pricing runtime metadata 必须是 `source=fixture`、`fixture=true`、`live=false`，价格上下文继续锁定 `default/default`；
+- Docs/Pricing runtime 必须通过 NewAPI v1 health/schema contract，metadata 为 `source=newapi`、`fixture=false`、`live=true`，价格上下文继续锁定 `default/default` 且 default group ratio 为 `1.25`；
 - 完整 tests 与 default/staging/production dry-run 全部通过，且 validation 后仍是同一 HEAD 与 clean tracked/untracked worktree；
 - 真正 spawn Wrangler 前再次重验 commit、worktree、ignored dotenv 与 process environment。
 
@@ -146,7 +146,7 @@ Credential 最小基线、same-account/deployed-target 前置条件、部署前�
 
 ## NewAPI live integration 边界
 
-`CONTENT_ADAPTER` 在所有环境仍是 `fixture`。显式的 `newapi` mode 已实现并 fail closed：它只使用 `NEWAPI_VPC_SERVICE`、`LIVE_CONTENT_ADAPTER_TOKEN` 和固定的 `newapi-api.newapi:3000` 私有 origin，进行 GET-only、超时/大小限制和 v1 schema 校验；缺少 secret/binding、上游失败或 schema drift 都返回通用 503，绝不回退 fixture。详细 contract、secret hygiene 与未执行的 staging/production steps 见 [docs/live-content-adapter.md](docs/live-content-adapter.md)。
+Top-level 与 staging 的 `CONTENT_ADAPTER` 仍是 `fixture`；production named environment 已按授权切换为 `newapi`。该 mode 已实现并 fail closed：它只使用 `NEWAPI_VPC_SERVICE`、`LIVE_CONTENT_ADAPTER_TOKEN` 和固定的 `newapi-api.newapi:3000` 私有 origin，进行 GET-only、超时/大小限制和 v1 schema 校验；缺少 secret/binding、上游失败或 schema drift 都返回通用 503，绝不回退 fixture。详细 contract、secret hygiene 与 production verification 见 [docs/live-content-adapter.md](docs/live-content-adapter.md)。
 
 ## 明确排除
 

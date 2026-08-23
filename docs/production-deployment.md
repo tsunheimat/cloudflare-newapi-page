@@ -29,8 +29,9 @@ Entrypoint 也会 fail closed 拒绝下列会改变 pinned Wrangler 行为的 pr
 
 1. `CLOUDFLARE_ACCOUNT_ID` 指向准备部署 caller Worker 的 account，且该 account 已有可用的 `workers.dev` subdomain。
 2. 名为 `cloudflare-download-site` 的 target Worker 已先部署在同一 account。Cloudflare Service Binding 只能绑定本 account 的 Worker，且 target 必须先于 caller 存在；本 repo 不创建或部署 target。见 [Service Bindings deployment](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/#deployment)。
-3. Account owner 已确认 deployed target 的生产语义与本 repo 审查的 transport contract 相容。Local sibling commit/hash 不是 deployed-source 证明。
-4. Operator 已明确 production URL 的访问控制。Service Binding 不提供浏览器侧 admin authorization；`/admin/*` 的 session/auth 仍由 downstream Worker 负责。
+3. Production live content prerequisites are already controller-verified: Worker secret `LIVE_CONTENT_ADAPTER_TOKEN`, VPC binding `NEWAPI_VPC_SERVICE`, its reviewed service ID/private route, and the NewAPI runtime secret are present and healthy. Do not copy or record their values here.
+4. Account owner 已确认 deployed target 的生产语义与本 repo 审查的 transport contract 相容。Local sibling commit/hash 不是 deployed-source 证明。
+5. Operator 已明确 production URL 的访问控制。Service Binding 不提供浏览器侧 admin authorization；`/admin/*` 的 session/auth 仍由 downstream Worker 负责。
 
 Local preflight 与 `wrangler deploy --dry-run` 不会查询已部署 target 是否存在，也不会证明 binding、R2 objects 或 production route 可用。实际 deployment request 才会由 Cloudflare 对 same-account target 做权威检查；target 缺失时部署必须失败。
 
@@ -43,7 +44,7 @@ npm ci
 npm run deploy:production -- --dry-run
 ```
 
-该命令只允许 `--dry-run` 这个可选参数。它会在 validation 前取得 clean full commit，检查 production config、fixture/non-live runtime metadata、download production gate，以及已核对但尚未启用内容 cutover 的 `NEWAPI_VPC_SERVICE` binding，并运行完整 tests 与 default/staging/production Wrangler dry-run。Validation 后会再次要求同一 HEAD 与 clean tracked/untracked worktree；成功结尾必须包含同一个 40 位 commit：
+该命令只允许 `--dry-run` 这个可选参数。它会在 validation 前取得 clean full commit，检查 production config、已授权的 `CONTENT_ADAPTER=newapi` live runtime contract（包括 health response/schema validation）、download production gate，以及已核对的 `NEWAPI_VPC_SERVICE` binding，并运行完整 tests 与 default/staging/production Wrangler dry-run。Validation 后会再次要求同一 HEAD 与 clean tracked/untracked worktree；成功结尾必须包含同一个 40 位 commit：
 
 ```text
 [production validation] PASS: clean commit <40_HEX_COMMIT>; HEAD and tracked/untracked worktree are unchanged.
@@ -94,14 +95,15 @@ PRODUCTION_BASE_URL="${PRODUCTION_BASE_URL%/}"
 export PRODUCTION_BASE_URL
 ```
 
-先验证 fixture/non-live 与 binding state：
+先验证 NewAPI live contract 与 binding state：
 
 ```bash
 curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/health" \
   | jq -e '
       .phase == "2" and
-      .content_adapter == "fixture" and
-      .live_newapi == false and
+      .content_adapter == "newapi" and
+      .live_newapi == true and
+      .live_newapi_healthy == true and
       .pricing_context.user_group == "default" and
       .pricing_context.selected_group == "default" and
       .downloads.mode == "production-service-binding" and
@@ -114,14 +116,21 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/health" \
     '
 
 curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/docs" \
-  | jq -e '.data.meta.source == "fixture" and .data.meta.fixture == true and .data.meta.live == false'
+  | jq -e '
+      .data.meta.source == "newapi" and
+      .data.meta.fixture == false and
+      .data.meta.live == true and
+      .data.meta.schema_version == 1 and
+      .data.meta.renderer_version == 1
+    '
 
 curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/pricing" \
   | jq -e '
-      .meta.source == "fixture" and
-      .meta.fixture == true and
-      .meta.live == false and
-      .context == {user_group:"default", selected_group:"default", locked:true}
+      .meta.source == "newapi" and
+      .meta.fixture == false and
+      .meta.live == true and
+      .context == {user_group:"default", selected_group:"default", locked:true} and
+      .group_ratio.default == 1.25
     '
 ```
 

@@ -2,8 +2,8 @@
 
 The Worker has a `CONTENT_ADAPTER` boundary with two modes:
 
-- `fixture` (the default, including the current staging and production vars);
-- `newapi` (implemented, but not selected by this branch's safety gates).
+- `fixture` (the default, including the current top-level and staging vars);
+- `newapi` (selected only by the explicitly authorized production named environment).
 
 The `newapi` mode is read-only. It calls the private NewAPI contract through
 the `NEWAPI_VPC_SERVICE` Cloudflare Workers VPC Service binding. The binding is
@@ -74,10 +74,17 @@ group_ratio.default     = 1.25
 
 ## Cutover and rollback
 
-This branch intentionally leaves top-level, staging, and production
-`CONTENT_ADAPTER` values at `fixture`. Before a live cutover, an operator must
-verify the VPC/Tunnel path, install the Worker secret, run a staging GET-only
-probe against the live contract, review response/renderer/schema samples, and
-retain the fixture configuration for rollback. Local tests and Wrangler
-`--dry-run` builds do not prove Cloudflare account bindings, Tunnel transport,
-secret installation, or production traffic.
+Top-level and staging remain explicitly fixture-backed. The authorized
+production named environment selects `CONTENT_ADAPTER="newapi"` and requires
+the reviewed `NEWAPI_VPC_SERVICE` binding plus `LIVE_CONTENT_ADAPTER_TOKEN`.
+The guarded production preflight exercises the live health, Docs, and Pricing
+contract with a deterministic local binding mock; it rejects production if the
+named environment is changed back to fixture or any other mode. The controller
+has separately verified the production Worker version, secret, VPC service,
+private route, and NewAPI runtime prerequisites for this cutover.
+
+Rollback is a controller-owned deployment decision: retain the previous Worker
+version ID outside this repository and use the production runbook if live
+verification fails. Local tests and Wrangler `--dry-run` builds do not prove
+Cloudflare account bindings, Tunnel transport, secret installation, or
+production traffic.

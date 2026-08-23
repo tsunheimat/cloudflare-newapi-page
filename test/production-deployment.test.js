@@ -76,7 +76,7 @@ test('production runbook names the least-privilege VPC binding role', async () =
   assert.doesNotMatch(source, /VPC permission is not needed|VPC.*permission.*not needed/i);
 });
 
-test('production preflight rejects disabled, unbound, or non-fixture production config', async () => {
+test('production preflight rejects disabled, unbound, or non-live production config', async () => {
   const source = await readFile(CONFIG_URL, 'utf8');
   const productionStart = source.indexOf('[env.production]');
   assert.ok(productionStart > 0);
@@ -103,7 +103,7 @@ test('production preflight rejects disabled, unbound, or non-fixture production 
   );
   assert.throws(() =>
     assertProductionConfig(
-      before + production.replace('CONTENT_ADAPTER = "fixture"', 'CONTENT_ADAPTER = "newapi"'),
+      before + production.replace('CONTENT_ADAPTER = "newapi"', 'CONTENT_ADAPTER = "fixture"'),
     ),
   );
   assert.throws(() =>

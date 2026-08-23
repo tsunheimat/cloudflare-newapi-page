@@ -16,7 +16,9 @@ const WRANGLER_BIN_PATH = resolve(
 
 export const PRODUCTION_CONTRACT = Object.freeze({
   workerName: 'cloudflare-newapi-page',
-  contentAdapter: 'fixture',
+  defaultContentAdapter: 'fixture',
+  stagingContentAdapter: 'fixture',
+  productionContentAdapter: 'newapi',
   defaultDownloadsMode: 'disabled',
   stagingDownloadsMode: 'staging-service-binding',
   productionDownloadsMode: 'production-service-binding',
@@ -124,7 +126,7 @@ export function assertProductionConfig(source) {
   assert.equal(value(sections, '<root>', 'name'), PRODUCTION_CONTRACT.workerName);
   assert.equal(
     value(sections, 'vars', 'CONTENT_ADAPTER'),
-    PRODUCTION_CONTRACT.contentAdapter,
+    PRODUCTION_CONTRACT.defaultContentAdapter,
   );
   assert.equal(
     value(sections, 'vars', 'DOWNLOADS_INTEGRATION'),
@@ -133,7 +135,7 @@ export function assertProductionConfig(source) {
   assert.equal(value(sections, 'env.staging', 'workers_dev'), true);
   assert.equal(
     value(sections, 'env.staging.vars', 'CONTENT_ADAPTER'),
-    PRODUCTION_CONTRACT.contentAdapter,
+    PRODUCTION_CONTRACT.stagingContentAdapter,
   );
   assert.equal(
     value(sections, 'env.staging.vars', 'DOWNLOADS_INTEGRATION'),
@@ -145,7 +147,7 @@ export function assertProductionConfig(source) {
   assert.equal(value(sections, 'env.production', 'workers_dev'), true);
   assert.equal(
     value(sections, 'env.production.vars', 'CONTENT_ADAPTER'),
-    PRODUCTION_CONTRACT.contentAdapter,
+    PRODUCTION_CONTRACT.productionContentAdapter,
   );
   assert.equal(
     value(sections, 'env.production.vars', 'DOWNLOADS_INTEGRATION'),
@@ -157,9 +159,90 @@ export function assertProductionConfig(source) {
 
 export async function assertProductionRuntimeContract() {
   let forwarded = false;
+  const upstreamPaths = [];
+  const liveToken = `production-contract-${'x'.repeat(32)}`;
   const env = {
-    CONTENT_ADAPTER: PRODUCTION_CONTRACT.contentAdapter,
+    CONTENT_ADAPTER: PRODUCTION_CONTRACT.productionContentAdapter,
+    LIVE_CONTENT_ADAPTER_TOKEN: liveToken,
     DOWNLOADS_INTEGRATION: PRODUCTION_CONTRACT.productionDownloadsMode,
+    NEWAPI_VPC_SERVICE: {
+      async fetch(request) {
+        const url = new URL(request.url);
+        upstreamPaths.push(url.pathname);
+        assert.equal(request.method, 'GET');
+        assert.equal(
+          request.headers.get('authorization'),
+          `Bearer ${liveToken}`,
+        );
+        const headers = {
+          'content-type': 'application/json; charset=utf-8',
+          'x-newapi-content-contract': 'v1',
+        };
+        if (url.pathname.endsWith('/health')) {
+          return new Response(JSON.stringify({
+            success: true,
+            service: 'newapi-live-content',
+            contract_version: 'v1',
+            read_only: true,
+          }), { headers });
+        }
+        if (url.pathname.endsWith('/docs')) {
+          return new Response(JSON.stringify({
+            success: true,
+            data: {
+              meta: {
+                source: 'newapi',
+                fixture: false,
+                live: true,
+                label: 'NewAPI live content',
+                updated_at: null,
+                contract_version: 'v1',
+                schema_version: 1,
+                renderer_version: 1,
+              },
+              sections: [],
+              search_index: [],
+            },
+          }), { headers });
+        }
+        if (url.pathname.endsWith('/pricing')) {
+          return new Response(JSON.stringify({
+            success: true,
+            meta: {
+              source: 'newapi',
+              fixture: false,
+              live: true,
+              label: 'NewAPI live content',
+              updated_at: null,
+              contract_version: 'v1',
+            },
+            context: {
+              user_group: 'default',
+              selected_group: 'default',
+              locked: true,
+            },
+            display: {
+              quota_display_type: 'USD',
+              default_currency: 'CNY',
+              price: 7.2,
+              usd_exchange_rate: 7.2,
+              custom_currency_exchange_rate: 1,
+              custom_currency_symbol: '¤',
+              show_with_recharge: true,
+            },
+            data: [],
+            vendors: [],
+            group_ratio: { default: 1.25 },
+            usable_group: { default: '普通用户' },
+            supported_endpoint: {},
+            auto_groups: [],
+            video_resolution_dimensions: {},
+            pricing_version: 'live-v1',
+          }), { headers });
+        }
+        throw new Error(`unexpected live contract path: ${url.pathname}`);
+      },
+    },
     DOWNLOADS_SERVICE: {
       async fetch() {
         forwarded = true;
@@ -173,8 +256,10 @@ export async function assertProductionRuntimeContract() {
 
   const health = await fetchJson('/api/health', env);
   assert.equal(health.phase, '2');
-  assert.equal(health.content_adapter, 'fixture');
-  assert.equal(health.live_newapi, false);
+  assert.equal(health.status, 'ok');
+  assert.equal(health.content_adapter, 'newapi');
+  assert.equal(health.live_newapi, true);
+  assert.equal(health.live_newapi_healthy, true);
   assert.deepEqual(health.pricing_context, {
     user_group: 'default',
     selected_group: 'default',
@@ -188,19 +273,22 @@ export async function assertProductionRuntimeContract() {
   assert.equal(health.downloads.phase, 'bound-unverified');
 
   const docs = await fetchJson('/api/content/docs', env);
-  assert.equal(docs.data.meta.source, 'fixture');
-  assert.equal(docs.data.meta.fixture, true);
-  assert.equal(docs.data.meta.live, false);
+  assert.equal(docs.data.meta.source, 'newapi');
+  assert.equal(docs.data.meta.fixture, false);
+  assert.equal(docs.data.meta.live, true);
+  assert.equal(docs.data.meta.schema_version, 1);
+  assert.equal(docs.data.meta.renderer_version, 1);
 
   const pricing = await fetchJson('/api/content/pricing', env);
-  assert.equal(pricing.meta.source, 'fixture');
-  assert.equal(pricing.meta.fixture, true);
-  assert.equal(pricing.meta.live, false);
+  assert.equal(pricing.meta.source, 'newapi');
+  assert.equal(pricing.meta.fixture, false);
+  assert.equal(pricing.meta.live, true);
   assert.deepEqual(pricing.context, {
     user_group: 'default',
     selected_group: 'default',
     locked: true,
   });
+  assert.equal(pricing.group_ratio.default, 1.25);
 
   const downstream = await worker.fetch(
     new Request('https://production.invalid/downloads'),
@@ -208,6 +296,11 @@ export async function assertProductionRuntimeContract() {
   );
   assert.equal(downstream.status, 200);
   assert.equal(forwarded, true);
+  assert.deepEqual(upstreamPaths, [
+    '/api/internal/live-content/v1/health',
+    '/api/internal/live-content/v1/docs',
+    '/api/internal/live-content/v1/pricing',
+  ]);
 }
 
 export async function main(args = process.argv.slice(2), env = process.env) {
@@ -221,7 +314,7 @@ export async function main(args = process.argv.slice(2), env = process.env) {
   if (mode === 'deploy') assertCredentialPrerequisites(env);
   const commit = await assertCleanCommit();
   process.stdout.write(
-    `[production preflight] PASS: clean commit ${commit}; production is fixture/non-live for Docs and Pricing; download forwarding uses the production service-binding gate.\n`,
+    `[production preflight] PASS: clean commit ${commit}; production uses the authorized NewAPI live Docs/Pricing adapter with validated health contract; download forwarding uses the production service-binding gate.\n`,
   );
 
   await validateProductionCommit(commit, env);

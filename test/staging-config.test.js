@@ -52,7 +52,7 @@ test('only staging and production declare the reviewed download service binding'
   }
 });
 
-test('staging and production declare the reviewed NewAPI VPC Service without changing content mode', async () => {
+test('staging stays fixture while production selects the authorized NewAPI live adapter', async () => {
   const source = await readFile(CONFIG_URL, 'utf8');
   const sections = parseSections(source);
   const vpcSections = [...sections.keys()].filter((section) =>
@@ -72,7 +72,7 @@ test('staging and production declare the reviewed NewAPI VPC Service without cha
     assert.doesNotMatch((sections.get(section) || []).join('\n'), /\bremote\s*=/);
   }
   assert.equal(value(sections, 'env.staging.vars', 'CONTENT_ADAPTER'), 'fixture');
-  assert.equal(value(sections, 'env.production.vars', 'CONTENT_ADAPTER'), 'fixture');
+  assert.equal(value(sections, 'env.production.vars', 'CONTENT_ADAPTER'), 'newapi');
   assert.doesNotMatch(source, /www\.tokenrouter\.tech/i);
 });
 
@@ -88,7 +88,7 @@ test('live adapter documentation names the secret without embedding a value', as
   assert.doesNotMatch(source, /(?:sk|Bearer)[-_a-zA-Z0-9]{20,}/);
 });
 
-test('default stays disabled while staging and production use distinct explicit runtime gates', async () => {
+test('default and staging stay fixture while production uses its explicit live runtime gate', async () => {
   const source = await readFile(CONFIG_URL, 'utf8');
   const sections = parseSections(source);
 
@@ -96,7 +96,7 @@ test('default stays disabled while staging and production use distinct explicit 
   assert.equal(value(sections, 'vars', 'DOWNLOADS_INTEGRATION'), 'disabled');
   assert.equal(
     value(sections, 'env.production.vars', 'CONTENT_ADAPTER'),
-    'fixture',
+    'newapi',
   );
   assert.equal(
     value(sections, 'env.production.vars', 'DOWNLOADS_INTEGRATION'),
