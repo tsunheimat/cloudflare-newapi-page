@@ -64,6 +64,17 @@ fields fail closed, and legitimate public identifiers are retained even when
 their values contain words such as `token`. `/api/content/pricing` remains on this existing
 service-token adapter regardless of `New-Api-User`.
 
+The canonical `/console/pricing` bundle separately calls the public same-origin
+`/api/status` bootstrap. This is a read-only fixed `GET /api/status` through
+`NEWAPI_VPC_SERVICE`; it sends only `Accept: application/json` and never copies
+browser cookies, Authorization, API keys, provider credentials, or arbitrary
+headers. The Worker bounds the response to 256 KiB and five seconds, requires a
+JSON `{ success: true, data: object }` envelope, validates any canonical display
+settings that are present, projects only the reviewed public status fields, and
+returns a generic 503 on any upstream, body, timeout, or schema failure. It has
+no fixture or localStorage-derived display fallback; the canonical component's
+own display defaults remain in effect when anonymous status omits those fields.
+
 For the service-token live adapter, the Worker forwards only the browser's
 `If-None-Match` validator in addition to its fixed `Accept` and private adapter
 authorization.

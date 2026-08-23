@@ -191402,17 +191402,28 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
     var e;
     return String(((e = Opt()) == null ? void 0 : e.public_id) || "").trim();
   }
-  function Gto() {
-    const e = b.useMemo(() => Opt(), []), t = b.useMemo(() => ({}), []), r = b.useMemo(() => [{ user: e }, () => {
+  function Gto({ status: statusData = {} } = {}) {
+    const e = b.useMemo(() => Opt(), []), t = b.useMemo(() => statusData, [statusData]), r = b.useMemo(() => [{ user: e }, () => {
     }], [e]), n = b.useMemo(() => [{ status: t }, () => {
     }], [t]);
     return /* @__PURE__ */ a.jsx(uJe.Provider, { value: r, children: /* @__PURE__ */ a.jsx(sJe.Provider, { value: n, children: /* @__PURE__ */ a.jsx(Dht, { i18n: K0, children: /* @__PURE__ */ a.jsx(Uto, {}) }) }) });
   }
   let eu = null;
   globalThis.__mountCanonicalPricing = async () => {
-    await $vt, eu == null || eu.unmount();
-    const e = document.getElementById("canonical-pricing-root");
-    e && (eu = Dg.createRoot(e), eu.render(/* @__PURE__ */ a.jsx(Gto, {})));
+    await $vt;
+    const statusResponse = await dy.get("/api/status", {
+      secureApi: !1,
+      skipErrorHandler: !0,
+      disableDuplicate: !0,
+      __skipSecureApiRetry: !0
+    });
+    if (!((statusResponse == null ? void 0 : statusResponse.data) != null && statusResponse.data.success === !0 && statusResponse.data.data && typeof statusResponse.data.data == "object" && !Array.isArray(statusResponse.data.data)))
+      throw new Error("Canonical NewAPI status bootstrap is unavailable.");
+    localStorage.setItem("status", JSON.stringify(statusResponse.data.data));
+    Lrt(statusResponse.data.data);
+    eu == null || eu.unmount();
+    const root = document.getElementById("canonical-pricing-root");
+    root && (eu = Dg.createRoot(root), eu.render(/* @__PURE__ */ a.jsx(Gto, { status: statusResponse.data.data })));
   };
   globalThis.__unmountCanonicalPricing = () => {
     eu == null || eu.unmount(), eu = null;

@@ -117,6 +117,10 @@ test('authenticated Pricing route ships the canonical component bundle without a
   assert.match(app, /renderCanonicalPricing/);
   assert.match(app, /__mountCanonicalPricing/);
   assert.match(bundle, /\/api\/front-door\/v1\/pricing/);
+  assert.match(bundle, /dy\.get\("\/api\/status"/);
+  assert.match(bundle, /Canonical NewAPI status bootstrap is unavailable/);
+  assert.match(bundle, /statusResponse\.data\.data/);
+  assert.match(bundle, /localStorage\.setItem\("status", JSON\.stringify\(statusResponse\.data\.data\)\)/);
   assert.match(bundle, /__mountCanonicalPricing/);
   assert.match(bundle, /__unmountCanonicalPricing/);
   assert.ok(bundle.length > 1_000_000);

@@ -171,6 +171,21 @@ export async function assertProductionRuntimeContract() {
         const url = new URL(request.url);
         upstreamPaths.push(url.pathname);
         assert.equal(request.method, 'GET');
+        if (url.pathname === '/api/status') {
+          assert.deepEqual(Object.fromEntries(request.headers), {
+            accept: 'application/json',
+          });
+          return new Response(JSON.stringify({
+            success: true,
+            message: '',
+            data: {
+              secure_api_enabled: true,
+              secure_api_key_id: 'default',
+              secure_api_public_key: 'production-public-key',
+              server_time: 1_725_000_000,
+            },
+          }), { headers: { 'content-type': 'application/json; charset=utf-8' } });
+        }
         assert.equal(
           request.headers.get('authorization'),
           `Bearer ${liveToken}`,
@@ -316,6 +331,18 @@ export async function assertProductionRuntimeContract() {
   assert.equal(health.downloads.live, false);
   assert.equal(health.downloads.phase, 'bound-unverified');
 
+  const status = await fetchJson('/api/status', env);
+  assert.deepEqual(status, {
+    success: true,
+    message: '',
+    data: {
+      secure_api_enabled: true,
+      secure_api_key_id: 'default',
+      secure_api_public_key: 'production-public-key',
+      server_time: 1_725_000_000,
+    },
+  });
+
   const docs = await fetchJson('/api/content/docs', env);
   assert.equal(docs.data.meta.source, 'newapi');
   assert.equal(docs.data.meta.fixture, false);
@@ -358,6 +385,7 @@ export async function assertProductionRuntimeContract() {
   assert.equal(forwarded, true);
   assert.deepEqual(upstreamPaths, [
     '/api/internal/live-content/v1/health',
+    '/api/status',
     '/api/internal/live-content/v1/docs',
     `/api/internal/live-content/v1/docs/${PRODUCTION_CONTRACT.docsProbeSlug}`,
     '/api/internal/live-content/v1/pricing',

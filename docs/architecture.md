@@ -25,6 +25,10 @@ Normal-user clone:
     ├─ `/api/front-door/v1/pricing`
     └─ `/api/front-door/v1/docs/v2/navigation?locale=zh`
          └─ NEWAPI_VPC_SERVICE -> canonical NewAPI front-door aliases
+
+Public canonical bootstrap:
+  `/api/status` (read-only, fixed anonymous GET)
+         └─ NEWAPI_VPC_SERVICE -> canonical NewAPI `/api/status`
 ```
 
 The normal-user routes are a distinct session-only boundary. The Worker
@@ -45,10 +49,14 @@ remains a separate public-content compatibility path and is not used to fake
 per-user Pricing or Docs navigation.
 
 `/console/pricing` is the canonical React SPA route; `/pricing` remains a Worker
-fixture compatibility alias. The approved front-door contract does not add a
-second status alias. The Worker does not manufacture pricing context or display
-settings from localStorage; the canonical component's existing status defaults
-remain the only fallback when the approved response omits those settings.
+fixture compatibility alias. Its canonical bundle bootstraps through the public
+same-origin `/api/status` route before mounting. That route performs a bounded,
+fixed anonymous GET through `NEWAPI_VPC_SERVICE`, forwards no browser headers or
+credentials, and reconstructs only the reviewed status/display fields. Schema
+drift, timeout, oversized bodies, and upstream errors fail closed. The Worker
+never manufactures display settings from localStorage or falls back to fixture
+pricing; when anonymous NewAPI status omits authenticated-only display settings,
+the canonical React component retains its own existing display defaults.
 
 `ContentAdapter` 是唯一可替换资料边界。UI 不读取硬编码的 NewAPI hostname，也不直接访问 private/VPC/Tunnel。Fixture 和 live adapter 必须返回同一个 public display contract。Live adapter 的 secret、schema、failure 和 cutover contract 见 [live-content-adapter.md](live-content-adapter.md)。
 

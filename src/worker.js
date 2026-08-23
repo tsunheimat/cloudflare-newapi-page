@@ -16,6 +16,7 @@ import {
   withDownstreamSecurityHeaders,
   withSecurityHeaders,
 } from './http.js';
+import { createStatusAdapter } from './adapters/status.js';
 
 const PHASE = '2';
 
@@ -53,6 +54,18 @@ export async function route(request, env = {}) {
 
   if (request.method === 'GET' && pathname === '/api/integrations/downloads') {
     return json({ success: true, data: downloadServiceStatus(env) });
+  }
+
+  // Canonical NewAPI status is a public read-only bootstrap. The adapter
+  // reconstructs a fixed request and never forwards browser credentials or
+  // arbitrary headers to the private service binding.
+  if (request.method === 'GET' && pathname === '/api/status') {
+    const adapter = createStatusAdapter(env);
+    const result = await adapter.getResponse();
+    if (!result || result.status !== 200) {
+      throw new HttpError(503, 'Status is temporarily unavailable.');
+    }
+    return json(result.payload, 200, { 'cache-control': 'no-store' });
   }
 
   // The normal-user clone is a separate browser-session boundary.  It is

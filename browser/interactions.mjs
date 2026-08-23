@@ -262,6 +262,10 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
       group: 'token-public',
     }));
     localStorage.setItem('i18nextLng', 'zh-CN');
+    localStorage.setItem('status', JSON.stringify({
+      price: 999,
+      custom_currency_symbol: 'STALE',
+    }));
   });
   const models = Array.from({ length: 24 }, (_, index) => ({
     model_name: index < 12
@@ -301,6 +305,27 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
     pricing_version: 'canonical-browser-v1',
   };
   const page = await newPage(context);
+  let statusRequests = 0;
+  await page.route('**/api/status', async (route) => {
+    statusRequests += 1;
+    assert.equal(route.request().method(), 'GET');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        message: '',
+        data: {
+          quota_display_type: 'CNY',
+          price: 7.2,
+          usd_exchange_rate: 7.2,
+          custom_currency_exchange_rate: 1,
+          custom_currency_symbol: '¤',
+          model_marketplace_default: { vendor: '1', group: 'token-public' },
+        },
+      }),
+    });
+  });
   await page.route('**/api/front-door/v1/pricing', async (route) => {
     assert.equal(route.request().headers()['new-api-user'], 'canonical-browser-user');
     await route.fulfill({
@@ -311,6 +336,15 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
   });
   await page.goto(`${baseUrl}/console/pricing`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('heading', { name: '模型价格', exact: true }).first().waitFor();
+  assert.equal(statusRequests, 1);
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('status'))), {
+    quota_display_type: 'CNY',
+    price: 7.2,
+    usd_exchange_rate: 7.2,
+    custom_currency_exchange_rate: 1,
+    custom_currency_symbol: '¤',
+    model_marketplace_default: { vendor: '1', group: 'token-public' },
+  });
 
   assert.equal(await page.locator('.site-header').isVisible(), false);
   assert.equal((await page.locator('.pricing-page-intro p').textContent()).trim(), '比较模型价格，按供应商、分组和能力快速找到适合你的模型。');

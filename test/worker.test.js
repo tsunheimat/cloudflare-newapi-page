@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import worker, * as workerModule from '../src/worker.js';
+import { createStatusAdapter } from '../src/adapters/status.js';
 
 const fetchWorker = (path, env = {}, init = undefined) =>
   worker.fetch(new Request(`https://public.example${path}`, init), env);
@@ -60,6 +61,143 @@ test('content routes serve fixture docs and pricing', async () => {
   assert.equal(pricing.context.user_group, 'default');
   assert.equal(pricing.context.selected_group, 'default');
   assert.equal(pricing.meta.live, false);
+});
+
+test('/api/status forwards a fixed anonymous GET and projects canonical display settings', async () => {
+  const seen = [];
+  const upstream = {
+    success: true,
+    message: '',
+    data: {
+      server_time: 1_725_000_000,
+      secure_api_enabled: true,
+      secure_api_public_key: '-----BEGIN PUBLIC KEY-----\\npublic\\n-----END PUBLIC KEY-----',
+      secure_api_key_id: 'status-key',
+      secure_api_timestamp_window_seconds: 30,
+      quota_display_type: 'CNY',
+      price: 7.2,
+      usd_exchange_rate: 7.2,
+      custom_currency_exchange_rate: 1.1,
+      custom_currency_symbol: '¤',
+      display_in_currency: true,
+      model_marketplace_default: { vendor: 'vendor', group: 'default', private_secret: 'drop' },
+      private_secret: 'drop',
+    },
+    private_top_level: 'drop',
+  };
+  const response = await fetchWorker('/api/status?ignored=1', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        seen.push({
+          url: request.url,
+          method: request.method,
+          headers: Object.fromEntries(request.headers),
+        });
+        return new Response(JSON.stringify(upstream), {
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        });
+      },
+    },
+  }, {
+    headers: {
+      cookie: 'session=browser-secret',
+      authorization: 'Bearer browser-secret',
+      'x-api-key': 'browser-secret',
+      'x-provider-credential': 'browser-secret',
+      'x-random': 'must-not-forward',
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  const body = await response.json();
+  assert.deepEqual(body, {
+    success: true,
+    message: '',
+    data: {
+      server_time: 1_725_000_000,
+      secure_api_enabled: true,
+      secure_api_public_key: '-----BEGIN PUBLIC KEY-----\\npublic\\n-----END PUBLIC KEY-----',
+      secure_api_key_id: 'status-key',
+      secure_api_timestamp_window_seconds: 30,
+      quota_display_type: 'CNY',
+      price: 7.2,
+      usd_exchange_rate: 7.2,
+      custom_currency_exchange_rate: 1.1,
+      custom_currency_symbol: '¤',
+      display_in_currency: true,
+      model_marketplace_default: { vendor: 'vendor', group: 'default' },
+    },
+  });
+  assert.equal(seen.length, 1);
+  assert.equal(new URL(seen[0].url).pathname, '/api/status');
+  assert.equal(new URL(seen[0].url).search, '');
+  assert.equal(seen[0].method, 'GET');
+  assert.deepEqual(seen[0].headers, { accept: 'application/json' });
+});
+
+test('/api/status preserves the canonical anonymous bootstrap shape without fabricating display settings', async () => {
+  const response = await fetchWorker('/api/status', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => new Response(JSON.stringify({
+        success: true,
+        message: '',
+        data: {
+          secure_api_enabled: true,
+          secure_api_key_id: 'default',
+          secure_api_public_key: 'public-key',
+          server_time: 1_725_000_000,
+          system_name: 'must-not-project',
+        },
+      }), { headers: { 'content-type': 'application/json' } }),
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    success: true,
+    message: '',
+    data: {
+      secure_api_enabled: true,
+      secure_api_key_id: 'default',
+      secure_api_public_key: 'public-key',
+      server_time: 1_725_000_000,
+    },
+  });
+});
+
+test('/api/status fails closed for missing binding, invalid status, malformed schema, and oversized body', async () => {
+  const missing = await fetchWorker('/api/status', fixtureEnv);
+  assert.equal(missing.status, 503);
+  assert.equal((await missing.json()).error.details.reason, 'missing_vpc_binding');
+
+  for (const [response, reason] of [
+    [new Response('upstream', { status: 502, headers: { 'content-type': 'application/json' } }), 'upstream_status'],
+    [new Response('{bad', { headers: { 'content-type': 'application/json' } }), 'invalid_upstream_json'],
+    [new Response(JSON.stringify({ success: true }), { headers: { 'content-type': 'application/json' } }), 'invalid_upstream_schema'],
+    [new Response(JSON.stringify({ success: true, data: { quota_display_type: 'CNY', price: '7.2', usd_exchange_rate: 7.2, custom_currency_exchange_rate: 1, custom_currency_symbol: '¤' } }), { headers: { 'content-type': 'application/json' } }), 'invalid_upstream_schema'],
+    [new Response(JSON.stringify({ success: true, data: { private_secret: 'x'.repeat(1_000) } }), { headers: { 'content-type': 'application/json', 'content-length': '1024' } }), 'upstream_body_too_large'],
+  ]) {
+    const result = await (reason === 'upstream_body_too_large'
+      ? createStatusAdapter({ NEWAPI_VPC_SERVICE: { fetch: async () => response.clone() } }, { maxBodyBytes: 32 }).getResponse().catch((error) => error)
+      : fetchWorker('/api/status', {
+        ...fixtureEnv,
+        NEWAPI_VPC_SERVICE: { fetch: async () => response.clone() },
+      }));
+    if (reason === 'upstream_body_too_large') {
+      assert.equal(result.status, 503, reason);
+      assert.equal(result.details.reason, reason);
+    } else {
+      assert.equal(result.status, 503, reason);
+      assert.equal((await result.json()).error.details.reason, reason);
+    }
+  }
+
+  const timedOut = await createStatusAdapter({
+    NEWAPI_VPC_SERVICE: { fetch: async () => new Promise(() => {}) },
+  }, { timeoutMs: 5 }).getResponse().catch((error) => error);
+  assert.equal(timedOut.status, 503);
+  assert.equal(timedOut.details.reason, 'upstream_timeout');
 });
 
 test('/console/pricing is an asset route and never falls back to fixture pricing', async () => {
