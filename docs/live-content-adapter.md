@@ -54,8 +54,12 @@ fallback path in live mode.
 
 For Docs and Pricing, the Worker forwards only the browser's `If-None-Match`
 validator in addition to its fixed `Accept` and private adapter authorization.
-Docs preserve a syntactically valid upstream `ETag` on public `200` responses
-and return an empty public `304` when the verified upstream does. Pricing
+Docs preserve a syntactically valid upstream `ETag` on public `200` responses.
+An upstream Docs `304` becomes an empty public `304` only when this request
+forwarded a browser `If-None-Match` validator and the upstream `ETag` weakly
+matches one of its quote-aware entity tags (or its wildcard); missing or
+mismatched validators fail closed with 503. A Docs `200` is never converted to
+a local `304`. Pricing
 projects models in deterministic ascending code-unit order by the public
 `model_name` key (using the canonical projected model as a duplicate-name
 tie-breaker), sorts vendors by their stable public `id`, and sorts projected
@@ -94,8 +98,13 @@ all legacy ratios, enabled groups and endpoint types, `endpoint_map`,
 `video_capability`, and row `pricing_version`). Endpoint maps, Fast profiles,
 video rate matrices, resolution dimensions, and capability/media objects are
 schema-validated with finite numeric, identifier, depth/entry, and byte-size
-bounds. Only their documented public fields are projected; secret-like or
-unknown keys are redacted. The canonical projected payload (including every
+bounds. Top-level and model endpoint maps are limited to 500 entries, and every
+global or capability geometry dimension is a positive integer no greater than
+100,000. Only documented public fields are projected. Dynamic map keys with
+separator-delimited or camel-case secret-bearing segments (for example,
+`client_secret`, `service_token`, `oauth_secret`, `api_token`, or
+`authorization_header`) and unknown object fields are redacted; ordinary
+public identifiers remain available. The canonical projected payload (including every
 retained nested field) is the input to the stable pricing ETag, so a capability
 or route-contract-only change cannot produce a false `304`. The
 `video_capability.max_serialized_request_bytes` field has an inclusive finite

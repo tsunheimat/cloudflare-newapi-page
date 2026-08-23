@@ -12,6 +12,9 @@ export const LIVE_CONTENT_DOCS_RENDERER_VERSION = 1;
 export const LIVE_CONTENT_ORIGIN = 'http://newapi-api.newapi:3000';
 export const LIVE_CONTENT_TIMEOUT_MS = 5_000;
 export const LIVE_CONTENT_MAX_BODY_BYTES = 2 * 1024 * 1024;
+export const LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES = 500;
+// Match the finite coordinate limit already enforced by capability geometry.
+export const LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION = 100_000;
 // Seedance 2.5 currently publishes this inclusive request-size bound. Keep
 // the compatibility limit finite so an upstream value cannot disable
 // Worker-side validation entirely.
@@ -297,8 +300,9 @@ function fetchLivePayload(
         throw liveUnavailable('invalid_upstream_etag');
       }
       if (response.status === 304) {
-        if (!etag) throw liveUnavailable('invalid_upstream_etag');
-        if (projectEtag && !etagMatches(ifNoneMatch, etag)) {
+        // An upstream 304 is valid only for the browser validator forwarded by
+        // this request, including on Docs paths without a projected ETag.
+        if (!etag || !etagMatches(ifNoneMatch, etag)) {
           throw liveUnavailable('invalid_upstream_etag');
         }
         return { status: 304, payload: null, etag };
@@ -552,6 +556,7 @@ function assertLivePricing(payload) {
   assertLiveGroupRatios(payload.group_ratio);
   if (!isRecord(payload.usable_group) || typeof payload.usable_group.default !== 'string' || payload.usable_group.default.trim() === '') schemaFailure();
   if (!isRecord(payload.supported_endpoint)) schemaFailure();
+  if (Object.keys(payload.supported_endpoint).length > LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES) schemaFailure();
   Object.entries(payload.supported_endpoint).forEach(([key, endpoint]) => {
     if (!isPublicMapKey(key)) return;
     if (!isRecord(endpoint)) schemaFailure();
@@ -590,7 +595,7 @@ function assertVideoResolutionDimensions(value) {
       if (Object.keys(geometrySet).length > 100) schemaFailure();
       Object.entries(geometrySet).forEach(([dimensionKey, dimensions]) => {
         if (!isPublicMapKey(dimensionKey)) return;
-        if (!Array.isArray(dimensions) || dimensions.length !== 2 || dimensions.some((dimension) => !Number.isInteger(dimension) || dimension <= 0)) schemaFailure();
+        if (!Array.isArray(dimensions) || dimensions.length !== 2 || dimensions.some((dimension) => !Number.isInteger(dimension) || dimension <= 0 || dimension > LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION)) schemaFailure();
       });
     });
   });
@@ -618,7 +623,7 @@ function assertLiveIdentifierArray(value, maxLength = 500) {
 }
 
 function assertLiveEndpointMap(value) {
-  if (!isRecord(value) || Object.keys(value).length > 500) schemaFailure();
+  if (!isRecord(value) || Object.keys(value).length > LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES) schemaFailure();
   Object.entries(value).forEach(([key, endpoint]) => {
     if (!isPublicMapKey(key)) return;
     if (!isRecord(endpoint)) schemaFailure();
@@ -716,7 +721,7 @@ function assertLiveVideoGeometry(value) {
     if (!isRecord(ratios) || Object.keys(ratios).length > 100) schemaFailure();
     Object.entries(ratios).forEach(([ratio, dimensions]) => {
       if (!isPublicMapKey(ratio)) return;
-      if (!Array.isArray(dimensions) || dimensions.length !== 2 || dimensions.some((dimension) => !Number.isInteger(dimension) || dimension <= 0 || dimension > 100_000)) schemaFailure();
+      if (!Array.isArray(dimensions) || dimensions.length !== 2 || dimensions.some((dimension) => !Number.isInteger(dimension) || dimension <= 0 || dimension > LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION)) schemaFailure();
     });
   });
 }
@@ -1217,7 +1222,20 @@ function projectPublicMap(value, projectValue) {
 
 function isPublicMapKey(key) {
   if (typeof key !== 'string' || key.startsWith('__')) return false;
-  if (/^(?:authorization|cookie|password|private[_-]?secret|secret|token|api[_-]?key)$/i.test(key)) return false;
+  // Treat secret-bearing words as separator-delimited identifier segments,
+  // including camel-case segments, without rejecting public names such as
+  // tokenization or api_endpoint.
+  const normalized = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-:.\/]+/g, '_')
+    .toLowerCase();
+  const compact = normalized.replace(/_/g, '');
+  if (/(?:^|_)(?:authorization|cookie|password|credential|secret|token)(?:_|$)/.test(normalized)) return false;
+  if (/(?:^|_)api_(?:key|token)(?:_|$)/.test(normalized)) return false;
+  // Preserve the previous exact-name coverage for historical spellings such
+  // as `apikey` and `privatesecret`, while also covering their token/key
+  // equivalents.
+  if (/^(?:api(?:key|token)|private(?:key|secret))$/.test(compact)) return false;
   return /^[A-Za-z0-9][A-Za-z0-9_:.\/-]{0,79}$/.test(key);
 }
 

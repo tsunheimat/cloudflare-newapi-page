@@ -8,7 +8,9 @@ import {
   createFixtureAdapter,
   createLiveContentAdapter,
   LIVE_CONTENT_MAX_BODY_BYTES,
+  LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES,
   LIVE_CONTENT_MAX_SERIALIZED_REQUEST_BYTES,
+  LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION,
   LIVE_CONTENT_DOCS_RENDERER_VERSION,
   LIVE_CONTENT_DOCS_SCHEMA_VERSION,
   LIVE_CONTENT_TIMEOUT_MS,
@@ -250,6 +252,19 @@ test('matching live conditional responses preserve verified 304 semantics', asyn
   assert.equal(observed.headers.get('if-none-match'), 'W/"catalog-v1"');
 });
 
+test('live Docs reject upstream 304 responses without a matching browser validator', async () => {
+  for (const ifNoneMatch of [undefined, '"catalog-other"']) {
+    const adapter = createLiveContentAdapter(liveEnv(async () => liveNotModified('"catalog-v1"')));
+    await assert.rejects(
+      () => adapter.getDocsCatalogResponse({ ifNoneMatch }),
+      (error) =>
+        error instanceof HttpError &&
+        error.status === 503 &&
+        error.details.reason === 'invalid_upstream_etag',
+    );
+  }
+});
+
 test('live adapter validates pricing invariants and does not fall back to fixtures', async () => {
   const adapter = createContentAdapter(liveEnv(async () => liveResponse(livePricing)));
   const pricing = await adapter.getPricing();
@@ -290,7 +305,10 @@ test('live pricing retains the current NewAPI model families through a bounded p
     supported_endpoint_types: ['openai-video'],
     endpoint_map: {
       'openai-video': { method: 'POST', path: '/v1/video/generations', private_secret: 'drop' },
+      api_endpoint: { method: 'POST', path: '/v1/public' },
       private_secret: { method: 'POST', path: '/private' },
+      client_secret: 'drop',
+      service_token: 'drop',
     },
     billing_mode: 'video',
     billing_expr: 'v1:tier("base", p * 1 + c * 2)',
@@ -299,7 +317,11 @@ test('live pricing retains the current NewAPI model families through a bounded p
       currency: 'USD',
       unit: 'per_1m_completion_tokens',
       rate_multiplier: 1,
-      resolution_rates: { '720p': { without_video: 2, with_video: 3, private_secret: 'drop' } },
+      resolution_rates: {
+        '720p': { without_video: 2, with_video: 3, private_secret: 'drop' },
+        oauth_secret: 'drop',
+        api_token: 'drop',
+      },
       private_secret: 'drop',
     },
     codex_fast_pricing: { version: 1, mode: 'prices', input_price: 1, cached_input_price: 0.5, output_price: 2, private_secret: 'drop' },
@@ -327,9 +349,14 @@ test('live pricing retains the current NewAPI model families through a bounded p
             allow_auto_duration: true, min_images: 0, max_images: 1,
             min_reference_videos: 0, required_video_roles: [], duration_upstream_validated: false,
           },
+          authorization_header: 'drop',
+          client_secret: 'drop',
         },
       },
-      geometry: { '720p': { '16:9': [1280, 720] } },
+      geometry: {
+        '720p': { '16:9': [1280, 720], oauth_secret: 'drop' },
+        service_token: 'drop',
+      },
       image_size: { max_single_decoded_bytes: 1024, single_limit_exclusive: true, single_limit_label: 'single', max_total_decoded_bytes: 2048, total_limit_label: 'total' },
       max_serialized_request_bytes: 64_000_000,
     },
@@ -340,7 +367,17 @@ test('live pricing retains the current NewAPI model families through a bounded p
     ...livePricing,
     data: [currentModel],
     vendors: [{ id: 7, name: 'Vendor', description: 'Public', icon: 'vendor-icon', private_secret: 'drop' }],
-    supported_endpoint: { openai: { method: 'POST', path: '/v1/chat/completions', private_secret: 'drop' } },
+    group_ratio: { ...livePricing.group_ratio, tokenization: 3, client_secret: 'drop', service_token: 'drop' },
+    supported_endpoint: {
+      openai: { method: 'POST', path: '/v1/chat/completions', private_secret: 'drop' },
+      api_endpoint: { method: 'POST', path: '/v1/public' },
+      oauth_secret: 'drop',
+      authorization_header: 'drop',
+    },
+    video_resolution_dimensions: {
+      '720p': { landscape: { default: [1280, 720], client_secret: 'drop' }, service_token: 'drop' },
+      oauth_secret: 'drop',
+    },
   })));
   const result = await adapter.getPricingResponse();
   const model = result.payload.data[0];
@@ -350,7 +387,10 @@ test('live pricing retains the current NewAPI model families through a bounded p
     image_ratio: 0.3, audio_ratio: 0.4, audio_completion_ratio: 0.5, billing_mode: 'video', billing_expr: 'v1:tier("base", p * 1 + c * 2)',
     codex_fast_base_model: 'base-model', video_geometry_contract: 'geometry-v1', video_route_contract: 'openai-video-generations-v1', video_input_duration_policy: 'included',
     pricing_version: 'model-pricing-v2', image_generation_model: true, video_generation_model: true, enable_groups: ['default'], supported_endpoint_types: ['openai-video'],
-    endpoint_map: { 'openai-video': { method: 'POST', path: '/v1/video/generations' } },
+    endpoint_map: {
+      'openai-video': { method: 'POST', path: '/v1/video/generations' },
+      api_endpoint: { method: 'POST', path: '/v1/public' },
+    },
     video_pricing: { version: 1, currency: 'USD', unit: 'per_1m_completion_tokens', rate_multiplier: 1, resolution_rates: { '720p': { without_video: 2, with_video: 3 } } },
     codex_fast_pricing: { version: 1, mode: 'prices', input_price: 1, cached_input_price: 0.5, output_price: 2 },
     video_capability: {
@@ -366,6 +406,38 @@ test('live pricing retains the current NewAPI model families through a bounded p
   assert.equal(Object.hasOwn(model.endpoint_map, 'private_secret'), false);
   assert.equal(Object.hasOwn(model.video_pricing, 'private_secret'), false);
   assert.equal(Object.hasOwn(result.payload.vendors[0], 'private_secret'), false);
+  assert.deepEqual(result.payload.group_ratio, { default: 10, premium: 2, tokenization: 3 });
+  assert.deepEqual(result.payload.supported_endpoint, {
+    openai: { method: 'POST', path: '/v1/chat/completions' },
+    api_endpoint: { method: 'POST', path: '/v1/public' },
+  });
+  assert.deepEqual(result.payload.video_resolution_dimensions, {
+    '720p': { landscape: { default: [1280, 720] } },
+  });
+  assert.equal(Object.hasOwn(model.video_pricing.resolution_rates, 'oauth_secret'), false);
+  assert.equal(Object.hasOwn(model.video_capability.media.modes, 'authorization_header'), false);
+  assert.equal(Object.hasOwn(model.video_capability.geometry['720p'], 'oauth_secret'), false);
+});
+
+test('live pricing bounds the top-level supported endpoint map before projection', async () => {
+  assert.equal(LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES, 500);
+  const supportedEndpoint = Object.fromEntries(
+    Array.from({ length: LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES + 1 }, (_, index) => [
+      `endpoint-${index}`,
+      { method: 'POST', path: '/v1/test' },
+    ]),
+  );
+  const adapter = createContentAdapter(liveEnv(async () => liveResponse({
+    ...livePricing,
+    supported_endpoint: supportedEndpoint,
+  })));
+  await assert.rejects(
+    () => adapter.getPricing(),
+    (error) =>
+      error instanceof HttpError &&
+      error.status === 503 &&
+      error.details.reason === 'invalid_upstream_schema',
+  );
 });
 
 test('live pricing accepts the exact finite Seedance 2.5 serialized request bound', async () => {
@@ -408,6 +480,36 @@ test('live pricing accepts the exact finite Seedance 2.5 serialized request boun
     () => rejected.getPricing(),
     (error) => error instanceof HttpError && error.status === 503 && error.details.reason === 'invalid_upstream_schema',
   );
+});
+
+test('live pricing bounds every global video resolution dimension', async () => {
+  assert.equal(LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION, 100_000);
+  const accepted = createContentAdapter(liveEnv(async () => liveResponse({
+    ...livePricing,
+    video_resolution_dimensions: {
+      '720p': { landscape: { default: [LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION, 1] } },
+    },
+  })));
+  const acceptedPayload = await accepted.getPricing();
+  assert.deepEqual(acceptedPayload.video_resolution_dimensions, {
+    '720p': { landscape: { default: [100_000, 1] } },
+  });
+
+  for (const oversized of [100_001, 1e100]) {
+    const rejected = createContentAdapter(liveEnv(async () => liveResponse({
+      ...livePricing,
+      video_resolution_dimensions: {
+        '720p': { landscape: { default: [oversized, 1] } },
+      },
+    })));
+    await assert.rejects(
+      () => rejected.getPricing(),
+      (error) =>
+        error instanceof HttpError &&
+        error.status === 503 &&
+        error.details.reason === 'invalid_upstream_schema',
+    );
+  }
 });
 
 test('pricing ETag changes for capability and route-contract-only changes', async () => {

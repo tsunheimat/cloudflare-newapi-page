@@ -414,6 +414,31 @@ test('live Docs and Pricing preserve ETags and upstream conditional 304 response
   ]);
 });
 
+test('Worker fails closed when Docs upstream 304 lacks or mismatches the browser validator', async () => {
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: 'worker-live-content-token-' + 'x'.repeat(32),
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => new Response(null, {
+        status: 304,
+        headers: {
+          'x-newapi-content-contract': 'v1',
+          etag: '"docs-v1"',
+        },
+      }),
+    },
+  };
+
+  for (const init of [undefined, { headers: { 'if-none-match': '"docs-other"' } }]) {
+    const response = await fetchWorker('/api/content/docs', env, init);
+    const body = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(body.error.code, 'integration_unavailable');
+    assert.equal(body.error.details.reason, 'invalid_upstream_etag');
+  }
+});
+
 test('live Docs upstream 200 is not converted to a local 304 by matching ETag', async () => {
   const docsEtag = '"pricing-deadbeef"';
   const token = 'worker-live-content-token-' + 'x'.repeat(32);
