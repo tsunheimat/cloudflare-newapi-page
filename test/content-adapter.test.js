@@ -368,6 +368,54 @@ test('live Docs require the exact supported schema and renderer versions', async
   }
 });
 
+test('live Docs preserve an empty heading text while retaining heading validation', async () => {
+  const liveDocsSlug = 'page-1785606868894-3673ea8d4916890d';
+  const emptyHeading = {
+    type: 'heading',
+    id: 'final-heading',
+    level: 2,
+    text: '',
+  };
+  const pagePayload = (block = emptyHeading) => ({
+    success: true,
+    data: {
+      meta: liveMeta(true),
+      page: {
+        slug: liveDocsSlug,
+        title: 'Live page',
+        summary: 'Live page summary',
+        section: 'Guides',
+        keywords: [],
+        updated_at: 1,
+        blocks: [block],
+      },
+    },
+  });
+
+  const adapter = createLiveContentAdapter(liveEnv(async () => liveResponse(pagePayload())));
+  const page = await adapter.getDocPage(liveDocsSlug);
+  assert.deepEqual(page.page.blocks, [emptyHeading]);
+
+  for (const invalidBlock of [
+    { ...emptyHeading, text: undefined },
+    { ...emptyHeading, text: 0 },
+    { ...emptyHeading, level: 1 },
+    { ...emptyHeading, level: 4 },
+    { ...emptyHeading, id: '' },
+    { ...emptyHeading, id: 123 },
+    { ...emptyHeading, id: undefined },
+  ]) {
+    const invalid = createLiveContentAdapter(liveEnv(async () => liveResponse(pagePayload(invalidBlock))));
+    await assert.rejects(
+      () => invalid.getDocPage(liveDocsSlug),
+      (error) =>
+        error instanceof HttpError &&
+        error.status === 503 &&
+        error.details.reason === 'invalid_upstream_schema',
+    );
+  }
+});
+
 test('unknown fixture document slugs return 404', async () => {
   const adapter = createFixtureAdapter();
   await assert.rejects(

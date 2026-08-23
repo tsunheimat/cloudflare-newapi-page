@@ -626,7 +626,7 @@ function assertDocsBlock(block) {
     case 'heading':
       assertString(block.id, 200);
       if (![2, 3].includes(block.level)) schemaFailure();
-      assertString(block.text, 1_000);
+      assertString(block.text, 1_000, { allowEmpty: true });
       break;
     case 'callout':
       if (!['info', 'warning', 'danger'].includes(block.tone)) schemaFailure();
