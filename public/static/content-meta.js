@@ -45,6 +45,20 @@ export function docsDefaultSlug(catalog, fallback = DEFAULT_DOCS_SLUG) {
   return fallback;
 }
 
+/**
+ * Resolve a safe Docs destination for navigation that may run before the
+ * catalog has been loaded. Live content must use a slug published by NewAPI;
+ * only a validated fixture catalog may use the quickstart fallback.
+ */
+export function docsNavigationSlug(catalogResponse, fallback = DEFAULT_DOCS_SLUG) {
+  const catalog = catalogResponse && typeof catalogResponse === 'object' && Object.hasOwn(catalogResponse, 'data')
+    ? catalogResponse.data
+    : catalogResponse;
+  const slug = docsDefaultSlug(catalog, null);
+  if (slug) return slug;
+  return contentStatus(catalog?.meta).kind === 'fixture' ? fallback : null;
+}
+
 export function docsCatalogHasSlug(catalog, slug) {
   return (catalog?.sections || []).some((section) =>
     (section?.items || []).some((item) => item?.slug === slug),

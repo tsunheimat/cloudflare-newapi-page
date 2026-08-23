@@ -14,7 +14,7 @@ import {
   DEFAULT_DOCS_SLUG,
   contentStatus,
   docsCatalogHasSlug,
-  docsDefaultSlug,
+  docsNavigationSlug,
 } from './content-meta.js';
 
 const PRICING_MOBILE_QUERY = '(max-width: 767px)';
@@ -128,7 +128,8 @@ async function renderRoute() {
   try {
     if (path === '/docs') {
       const catalog = await ensureDocsCatalog();
-      const slug = docsDefaultSlug(catalog.data);
+      const slug = docsNavigationSlug(catalog);
+      if (!slug) throw new Error('Docs catalog has no public pages.');
       path = docsPath(slug);
       window.history.replaceState(window.history.state, '', path);
     } else if (path.startsWith('/docs/')) {
@@ -136,8 +137,8 @@ async function renderRoute() {
       const catalog = await ensureDocsCatalog();
       // Keep old fixture links stable while repairing the live legacy entrypoint.
       if (requestedSlug === DEFAULT_DOCS_SLUG && !docsCatalogHasSlug(catalog.data, requestedSlug)) {
-        const slug = docsDefaultSlug(catalog.data);
-        if (slug !== requestedSlug) {
+        const slug = docsNavigationSlug(catalog);
+        if (slug && slug !== requestedSlug) {
           path = docsPath(slug);
           window.history.replaceState(window.history.state, '', path);
         }
@@ -150,6 +151,7 @@ async function renderRoute() {
     } else if (path === '/pricing') {
       await renderPricing();
     } else {
+      await ensureDocsCatalog();
       renderNotFound();
     }
   } catch (error) {
@@ -165,7 +167,7 @@ async function renderHome() {
     loadContentSurfaces(),
   ]);
   state.integration = integration;
-  const docsHref = docsPath(content.docs.defaultSlug);
+  const docsHref = content.docs.defaultSlug ? docsPath(content.docs.defaultSlug) : '/docs';
   document.title = 'JuAPI 开发者中心';
   const downloads = state.integration.data;
   const fragment = document.createDocumentFragment();
@@ -271,7 +273,7 @@ async function loadContentSurfaces() {
   return {
     docs: {
       ...contentStatus(docsResponse.data.meta),
-      defaultSlug: docsDefaultSlug(docsResponse.data),
+      defaultSlug: docsNavigationSlug(docsResponse),
     },
     pricing: contentStatus(pricingResponse.meta),
   };
@@ -322,8 +324,12 @@ async function renderDocs(slug) {
     class: 'docs-hub-breadcrumbs',
     'aria-label': '面包屑导航',
   });
+  const docsHomeSlug = docsNavigationSlug(catalog);
   breadcrumbs.append(
-    node('a', { href: docsPath(docsDefaultSlug(catalog)), 'data-link': '' }, '开发文档'),
+    node('a', {
+      href: docsHomeSlug ? docsPath(docsHomeSlug) : '/docs',
+      'data-link': '',
+    }, '开发文档'),
     node('span', { 'aria-hidden': 'true' }, '/'),
     node('span', {}, page.section),
     renderDataBadge(response.data.meta),
@@ -1610,11 +1616,12 @@ function replaceMain(content) {
 
 function renderNotFound() {
   document.title = '页面不存在 · JuAPI';
+  const docsSlug = docsNavigationSlug(state.docsCatalog);
   replaceMain(node('section', { class: 'error-page' },
     node('span', {}, '404'),
     node('h1', {}, '没有找到这个页面'),
     node('p', {}, '链接可能已经移动，或者尚未开放。'),
-    linkButton(docsPath(docsDefaultSlug(state.docsCatalog?.data)), '返回文档', 'primary'),
+    docsSlug ? linkButton(docsPath(docsSlug), '返回文档', 'primary') : null,
   ));
 }
 
@@ -1672,7 +1679,7 @@ function normalizePath(path) {
 }
 
 function docsPath(slug) {
-  return `/docs/${encodeURIComponent(slug || DEFAULT_DOCS_SLUG)}`;
+  return slug ? `/docs/${encodeURIComponent(slug)}` : '/docs';
 }
 
 function isTypingTarget(target) {

@@ -5,6 +5,7 @@ import {
   contentStatus,
   docsCatalogHasSlug,
   docsDefaultSlug,
+  docsNavigationSlug,
 } from '../public/static/content-meta.js';
 
 test('content status metadata distinguishes validated live and fixture sources', () => {
@@ -67,4 +68,39 @@ test('Docs navigation selects the first generated live catalog slug', () => {
 
 test('Docs navigation keeps the fixture fallback when a catalog has no pages', () => {
   assert.equal(docsDefaultSlug({ sections: [] }), 'quickstart');
+});
+
+test('Docs 404 navigation uses a generated live slug and never fabricates quickstart', () => {
+  const liveCatalog = {
+    success: true,
+    data: {
+      meta: { source: 'newapi', fixture: false, live: true },
+      sections: [{
+        title: 'Guides',
+        items: [{ slug: 'page-1785606868894-3673ea8d4916890d', title: 'Live page' }],
+      }],
+    },
+  };
+  assert.equal(
+    docsNavigationSlug(liveCatalog),
+    'page-1785606868894-3673ea8d4916890d',
+  );
+  assert.equal(
+    docsNavigationSlug({
+      ...liveCatalog,
+      data: { ...liveCatalog.data, sections: [] },
+    }),
+    null,
+  );
+  assert.equal(docsNavigationSlug(null), null);
+  assert.equal(
+    docsNavigationSlug({
+      success: true,
+      data: {
+        meta: { source: 'fixture', fixture: true, live: false },
+        sections: [],
+      },
+    }),
+    'quickstart',
+  );
 });

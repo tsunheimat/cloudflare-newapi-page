@@ -60,13 +60,19 @@ Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、
 
 Pricing response 保留 NewAPI `/api/pricing` 的主要字段：`data`、`vendors`、`group_ratio`、`usable_group`、`supported_endpoint`、`auto_groups`、`video_resolution_dimensions` 和 `pricing_version`，并增加 public page 的 `meta`、`context` 与 display settings。
 
-Public adapter 必须强制：
+Public adapter 必须强制 ordinary-user presentation context，并且只接受
+NewAPI 上游提供的公开 group ratios：每一个 ratio 都必须是 finite、non-negative
+number。适配器保留 NewAPI 的 group ratios 原值（包括 `default` 和其他公开
+groups），不得 hard-code 任何 ratio 或其他数值，也不得 normalize、clamp、
+substitute、fabricate 或以其他方式改写 ratio。这个 adapter move 只锁定
+presentation context，不重写 NewAPI 的 pricing logic：
 
 ```text
 context.user_group      = default
 context.selected_group  = default
 context.locked          = true
-group_ratio.default     = 1.25
+group_ratio.default     = finite non-negative upstream default value
+group_ratio.*           = NewAPI upstream public map unchanged
 usable_group.default    exists
 ```
 

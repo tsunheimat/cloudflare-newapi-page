@@ -8,6 +8,7 @@ const INDEX_URL = new URL('../public/index.html', import.meta.url);
 const LICENSE_URL = new URL('../LICENSE', import.meta.url);
 const NOTICE_URL = new URL('../THIRD_PARTY_NOTICES.md', import.meta.url);
 const PACKAGE_URL = new URL('../package.json', import.meta.url);
+const ARCHITECTURE_URL = new URL('../docs/architecture.md', import.meta.url);
 
 const sources = Promise.all([
   readFile(APP_URL, 'utf8'),
@@ -35,8 +36,10 @@ test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader state
   assert.match(app, /未找到匹配的文档/);
   assert.match(app, /catalog\.search_index/);
   assert.match(app, /if \(headings\.length > 0\)/);
-  assert.match(app, /docsDefaultSlug\(catalog\.data\)/);
+  assert.match(app, /docsNavigationSlug\(catalog\)/);
   assert.match(app, /docsPath\(slug\)/);
+  assert.match(app, /return slug \? `\/docs\/\$\{encodeURIComponent\(slug\)\}` : '\/docs';/);
+  assert.doesNotMatch(app, /encodeURIComponent\(slug \|\| DEFAULT_DOCS_SLUG\)/);
   assert.doesNotMatch(app, /replaceState\(window\.history\.state, '', '\/docs\/quickstart'\)/);
 
   assert.match(styles, /--docs-sidebar-width:\s*272px/);
@@ -85,6 +88,17 @@ test('Pricing presentation reuses the canonical hierarchy while exposing one loc
   assert.match(styles, /\.pricing-filter-modal-body\s*\{[\s\S]*?overflow-y:\s*auto/);
   assert.match(styles, /\.pricing-card-grid\s*\{[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
   assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.pricing-card-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
+});
+
+test('architecture pricing contract preserves upstream ratios without a fixed substitute', async () => {
+  const architecture = await readFile(ARCHITECTURE_URL, 'utf8');
+
+  assert.match(architecture, /finite、non-negative/);
+  assert.match(architecture, /NewAPI[\s\S]*group ratios 原值/);
+  assert.match(architecture, /hard-code[\s\S]*normalize、clamp、[\s\S]*substitute/);
+  assert.match(architecture, /group_ratio\.default\s+=\s+finite non-negative upstream default value/);
+  assert.match(architecture, /group_ratio\.\*\s+=\s+NewAPI upstream public map unchanged/);
+  assert.doesNotMatch(architecture, /group_ratio\.default\s*=\s*\d/);
 });
 
 test('front-door home/header remain present and content calls stay API-relative', async () => {
