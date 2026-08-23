@@ -115,7 +115,7 @@ function installThemeToggle() {
 }
 
 function handlePricingViewportChange() {
-  if (normalizePath(window.location.pathname) !== '/pricing' || !state.pricing) return;
+  if (!isPricingPath(normalizePath(window.location.pathname)) || !state.pricing) return;
   closeSurfaceOverlay({ restoreFocus: false });
   void renderPricing();
 }
@@ -154,7 +154,7 @@ async function renderRoute() {
       await renderHome();
     } else if (path.startsWith('/docs/')) {
       await renderDocs(path.slice('/docs/'.length));
-    } else if (path === '/pricing') {
+    } else if (isPricingPath(path)) {
       await renderPricing();
     } else {
       await ensureDocsCatalog();
@@ -282,11 +282,9 @@ async function loadContentSurfaces() {
     // status bootstrap; if that snapshot is absent, normalization fails closed
     // rather than inventing exchange rates or labels.
     state.frontDoorPricing = canonicalPricing;
-    if (canonicalPricing && !canonicalPricing.context) {
-      pricingResponse = normalizeFrontDoorPricing(canonicalPricing);
-    } else {
-      pricingResponse = canonicalPricing || await api('/api/content/pricing');
-    }
+    pricingResponse = canonicalPricing
+      ? normalizeFrontDoorPricing(canonicalPricing)
+      : await api('/api/content/pricing');
   }
   if (!state.docsCatalog) state.docsCatalog = docsResponse;
   if (!state.pricing) state.pricing = pricingResponse;
@@ -721,30 +719,33 @@ async function renderPricing() {
       return null;
     });
     state.frontDoorPricing = canonicalPricing;
-    if (canonicalPricing && !canonicalPricing.context) {
-      state.pricing = normalizeFrontDoorPricing(canonicalPricing);
-    } else {
-      state.pricing = canonicalPricing || await api('/api/content/pricing');
-    }
+    state.pricing = canonicalPricing
+      ? normalizeFrontDoorPricing(canonicalPricing)
+      : await api('/api/content/pricing');
     state.currency = state.pricing.display?.default_currency || 'CNY';
     state.showWithRecharge = state.pricing.display?.show_with_recharge === true;
   }
   const payload = state.pricing;
   const models = getOrdinaryUserModels(payload);
   if (!state.selectedGroup || !(state.selectedGroup in (payload.usable_group || {}))) {
-    state.selectedGroup = payload.context.selected_group || Object.keys(payload.usable_group || {})[0] || 'default';
+    state.selectedGroup = payload.context.selected_group || Object.keys(payload.usable_group || {})[0] || '';
   }
   const vendorIds = new Set(models.map((model) => String(model.vendor_id || 'unknown')));
   const vendors = payload.vendors.filter((vendor) => vendorIds.has(String(vendor.id)));
-  if (!vendors.some((vendor) => String(vendor.id) === state.vendor)) {
-    state.vendor = String(vendors[0]?.id || 'unknown');
+  const activeVendorIds = new Set(
+    models
+      .filter((model) => modelSupportsGroup(model, state.selectedGroup))
+      .map((model) => String(model.vendor_id || 'unknown')),
+  );
+  if (!activeVendorIds.has(state.vendor)) {
+    state.vendor = String(vendors.find((vendor) => activeVendorIds.has(String(vendor.id)))?.id || 'unknown');
   }
   document.title = '模型价格 · JuAPI 开发者中心';
   const shell = node('div', {
     class: 'newapi-surface pricing-page-shell',
     'data-pricing-surface': '1',
     'data-user-group': payload.context.user_group,
-    'data-selected-group': payload.context.selected_group,
+    'data-selected-group': state.selectedGroup,
     'data-group-locked': String(payload.context.locked),
   });
   const container = node('div', { class: 'pricing-page-container' });
@@ -767,7 +768,7 @@ async function renderPricing() {
   listHeader.append(listTitle, renderPricingModeSwitch());
   listCard.append(
     listHeader,
-    payload.__frontDoor
+    payload.__frontDoor && payload.context.locked !== true
       ? renderSessionPricingGroups(payload, calculated.length)
       : renderLockedPricingGroup(payload, calculated.length),
   );
@@ -789,30 +790,35 @@ async function renderPricing() {
 
 function normalizeFrontDoorPricing(payload) {
   const status = readBrowserStatus();
-  if (!status || typeof status !== 'object') throw new Error('Canonical normal-user Pricing display status is unavailable.');
+  if ((!status || typeof status !== 'object') && (!payload.display || typeof payload.display !== 'object')) throw new Error('Canonical normal-user Pricing display status is unavailable.');
   const user = readBrowserUser();
   const availableGroups = Object.keys(payload.usable_group || {});
-  const userGroup = availableGroups.includes(user?.group) ? user.group : availableGroups[0] || 'default';
-  const quotaDisplayType = status.quota_display_type || 'USD';
-  const usdExchangeRate = Number(status.usd_exchange_rate ?? status.price ?? 1);
-  const price = Number(status.price ?? usdExchangeRate);
+  const canonicalUserGroup = payload.context?.user_group ?? payload.user_group ?? user?.group;
+  const userGroup = availableGroups.includes(canonicalUserGroup) ? canonicalUserGroup : availableGroups[0] || '';
+  const selectedGroup = payload.context?.selected_group ?? payload.selected_group ?? userGroup;
+  const locked = payload.context?.locked ?? payload.locked ?? false;
+  if (!userGroup || !availableGroups.includes(selectedGroup)) throw new Error('Canonical normal-user Pricing group context is unavailable.');
+  const sourceDisplay = payload.display || status || {};
+  const quotaDisplayType = sourceDisplay.quota_display_type || 'USD';
+  const usdExchangeRate = Number(sourceDisplay.usd_exchange_rate ?? sourceDisplay.price ?? 1);
+  const price = Number(sourceDisplay.price ?? usdExchangeRate);
   return {
     ...payload,
     __frontDoor: true,
-    meta: { source: 'newapi', fixture: false, live: true, label: 'NewAPI', updated_at: null, notice: '' },
+    meta: payload.meta || { source: 'newapi', fixture: false, live: true, label: 'NewAPI', updated_at: null, notice: '' },
     context: {
       user_group: userGroup,
-      selected_group: userGroup,
-      locked: false,
+      selected_group: selectedGroup,
+      locked,
     },
     display: {
       quota_display_type: quotaDisplayType,
-      default_currency: quotaDisplayType === 'TOKENS' ? 'USD' : 'CNY',
+      default_currency: sourceDisplay.default_currency || (quotaDisplayType === 'TOKENS' ? 'USD' : 'CNY'),
       price: Number.isFinite(price) && price > 0 ? price : 1,
       usd_exchange_rate: Number.isFinite(usdExchangeRate) && usdExchangeRate > 0 ? usdExchangeRate : 1,
-      custom_currency_exchange_rate: Number(status.custom_currency_exchange_rate) > 0 ? Number(status.custom_currency_exchange_rate) : 1,
-      custom_currency_symbol: String(status.custom_currency_symbol || '¤'),
-      show_with_recharge: quotaDisplayType !== 'TOKENS',
+      custom_currency_exchange_rate: Number(sourceDisplay.custom_currency_exchange_rate) > 0 ? Number(sourceDisplay.custom_currency_exchange_rate) : 1,
+      custom_currency_symbol: String(sourceDisplay.custom_currency_symbol || '¤'),
+      show_with_recharge: sourceDisplay.show_with_recharge === true || (sourceDisplay.show_with_recharge === undefined && quotaDisplayType !== 'TOKENS'),
     },
   };
 }
@@ -846,6 +852,12 @@ function renderPricingProviders(payload, vendors) {
     );
     button.addEventListener('click', () => {
       state.vendor = vendorId;
+      const vendorModels = models.filter((model) => String(model.vendor_id) === vendorId);
+      if (!vendorModels.some((model) => modelSupportsGroup(model, state.selectedGroup))) {
+        state.selectedGroup = Object.keys(payload.usable_group || {}).find((group) =>
+          vendorModels.some((model) => modelSupportsGroup(model, group)),
+        ) || payload.context.selected_group;
+      }
       state.billing = 'all';
       state.endpoint = 'all';
       state.tag = 'all';
@@ -868,7 +880,7 @@ function renderPricingRule(payload) {
   title.append('计价规则', renderDataBadge(payload.meta));
   const summary = node('div', { class: 'pricing-rule-summary' });
   const source = contentStatus(payload.meta).sourceText;
-  const group = state.selectedGroup || payload.context.selected_group || 'default';
+  const group = state.selectedGroup || payload.context.selected_group || '';
   const ratio = payload.group_ratio[group];
   if (state.pricingMode === 'official') {
     summary.append(
@@ -940,15 +952,16 @@ function renderPricingModeSwitch() {
 
 function renderLockedPricingGroup(payload, count) {
   const list = node('div', { class: 'pricing-group-list', 'aria-label': '可用令牌分组' });
+  const group = payload.context.selected_group;
   const card = surfaceButton('', 'pricing-group-card is-active is-locked');
-  card.setAttribute('data-pricing-group', 'default');
+  card.setAttribute('data-pricing-group', group);
   card.setAttribute('aria-pressed', 'true');
   card.setAttribute('aria-disabled', 'true');
   card.disabled = true;
   card.append(
-    node('span', { class: 'pricing-group-name' }, 'default'),
-    node('span', { class: 'pricing-group-rate' }, '当前普通用户分组（固定）'),
-    node('span', { class: 'pricing-group-formula' }, `官方价 × ${formatNumber(payload.group_ratio.default)}x`),
+    node('span', { class: 'pricing-group-name' }, group),
+    node('span', { class: 'pricing-group-rate' }, `${payload.usable_group[group]}${payload.context.locked ? '（固定）' : ''}`),
+    node('span', { class: 'pricing-group-formula' }, `官方价 × ${formatNumber(payload.group_ratio[group])}x`),
     node('span', { class: 'pricing-group-meter', 'aria-hidden': 'true' },
       node('span', { class: 'pricing-group-meter-fill pricing-group-meter-fill-locked' }),
     ),
@@ -957,8 +970,8 @@ function renderLockedPricingGroup(payload, count) {
   list.append(card);
   const description = node('div', { class: 'pricing-group-description' });
   description.append(
-    node('strong', {}, 'default'),
-    node('span', {}, `${payload.usable_group.default} · user_group=default · selected_group=default · locked=true`),
+    node('strong', {}, group),
+    node('span', {}, `${payload.usable_group[group]} · user_group=${payload.context.user_group} · selected_group=${group} · locked=${payload.context.locked}`),
   );
   const fragment = document.createDocumentFragment();
   fragment.append(list, description);
@@ -979,7 +992,7 @@ function renderSessionPricingGroups(payload, count) {
       node('span', { class: 'pricing-group-count' }, `共 ${getOrdinaryUserModels(payload).filter((model) => modelSupportsGroup(model, group)).length} 个模型`),
     );
     card.addEventListener('click', () => {
-      state.selectedGroup = group;
+      selectPricingGroup(payload, group);
       void renderPricing();
     });
     list.append(card);
@@ -1072,7 +1085,13 @@ function renderPricingAdvancedFilters(payload) {
 
 function renderPricingFilterControls(payload, values, onChange, includeLockedGroup = false) {
   const fragment = document.createDocumentFragment();
-  if (includeLockedGroup) fragment.append(renderLockedPricingFilterGroup(payload));
+  if (includeLockedGroup) {
+    fragment.append(
+      payload.__frontDoor && payload.context.locked !== true
+        ? renderSessionPricingFilterGroup(payload, values.selectedGroup, (value) => onChange('selectedGroup', value))
+        : renderLockedPricingFilterGroup(payload),
+    );
+  }
   const vendorModels = getOrdinaryUserModels(payload).filter((model) => String(model.vendor_id) === state.vendor);
   fragment.append(
     renderPricingFilterGroup('计费类型', [
@@ -1142,14 +1161,32 @@ function renderLockedPricingFilterGroup(payload) {
   group.append(node('div', { class: 'pricing-filter-title' }, '用户分组'));
   const options = node('div', { class: 'pricing-filter-options', role: 'group', 'aria-label': '用户分组' });
   const locked = surfaceButton(
-    `default · 固定 · ${formatNumber(payload.group_ratio.default)}x`,
+    `${state.selectedGroup} · ${payload.context.locked ? '固定' : '可切换'} · ${formatNumber(payload.group_ratio[state.selectedGroup])}x`,
     'pricing-filter-chip is-active is-locked',
   );
-  locked.setAttribute('data-pricing-filter-group', 'default');
+  locked.setAttribute('data-pricing-filter-group', state.selectedGroup);
   locked.setAttribute('aria-pressed', 'true');
   locked.setAttribute('aria-disabled', 'true');
   locked.disabled = true;
   options.append(locked);
+  group.append(options);
+  return group;
+}
+
+function renderSessionPricingFilterGroup(payload, selectedGroup, onChange) {
+  const group = node('section', { class: 'pricing-filter-group' });
+  group.append(node('div', { class: 'pricing-filter-title' }, '用户分组'));
+  const options = node('div', { class: 'pricing-filter-options', role: 'group', 'aria-label': '用户分组' });
+  Object.keys(payload.usable_group || {}).forEach((groupName) => {
+    const button = surfaceButton(
+      `${groupName} · ${formatNumber(payload.group_ratio[groupName])}x`,
+      `pricing-filter-chip${groupName === selectedGroup ? ' is-active' : ''}`,
+    );
+    button.setAttribute('data-pricing-filter-group', groupName);
+    button.setAttribute('aria-pressed', String(groupName === selectedGroup));
+    button.addEventListener('click', () => onChange(groupName));
+    options.append(button);
+  });
   group.append(options);
   return group;
 }
@@ -1162,6 +1199,7 @@ function currentPricingFilters() {
     currency: state.currency,
     tokenUnit: state.tokenUnit,
     showWithRecharge: state.showWithRecharge,
+    selectedGroup: state.selectedGroup,
   };
 }
 
@@ -1173,6 +1211,7 @@ function defaultPricingFilters(payload) {
     currency: payload.display.default_currency || 'CNY',
     tokenUnit: 'M',
     showWithRecharge: payload.display.show_with_recharge === true,
+    selectedGroup: payload.context.selected_group,
   };
 }
 
@@ -1200,7 +1239,8 @@ function openPricingFilterModal(payload, trigger) {
       payload,
       currentPricingFilters(),
       (key, value) => {
-        state[key] = value;
+        if (key === 'selectedGroup') selectPricingGroup(payload, value);
+        else state[key] = value;
         draw(key, value);
       },
       true,
@@ -1253,6 +1293,17 @@ function getFilteredPricing(payload) {
       const matchesTag = state.tag === 'all' || modelTags.includes(state.tag);
       return matchesQuery && matchesBilling && matchesEndpoint && matchesTag;
     });
+}
+
+function selectPricingGroup(payload, group) {
+  state.selectedGroup = group;
+  const selectedVendorHasGroup = getOrdinaryUserModels(payload).some((model) =>
+    String(model.vendor_id) === state.vendor && modelSupportsGroup(model, group),
+  );
+  if (!selectedVendorHasGroup) {
+    const replacement = getOrdinaryUserModels(payload).find((model) => modelSupportsGroup(model, group));
+    state.vendor = String(replacement?.vendor_id || state.vendor);
+  }
 }
 
 function calculatePricingView(model, payload) {
@@ -1346,33 +1397,38 @@ function renderPricingTierCell(price) {
 }
 
 function renderPricingPriceCell(price, keys) {
-  const item = price.items.find((candidate) => keys.includes(candidate.key));
-  if (!item) {
+  const items = price.items.filter((candidate) => keys.includes(candidate.key));
+  if (items.length === 0) {
     if (['tiered_expr', 'codex_fast'].includes(price.kind) && price.parseComplete) {
       return node('span', { class: 'pricing-context-required' }, '需请求上下文');
     }
     return node('span', { class: 'pricing-empty-price' }, '—');
   }
   const cell = node('div', { class: `pricing-price-cell${state.pricingMode === 'official' ? ' is-official' : ''}` });
-  cell.append(
-    node('strong', {}, item.formatted),
-    node('span', { class: 'pricing-price-unit' }, `/ ${price.unit}`),
-    node('span', {}, state.pricingMode === 'official' ? '官方基础价格' : '实付金额'),
-  );
+  items.forEach((item) => cell.append(
+    node('div', { class: 'pricing-price-item' },
+      node('span', { class: 'pricing-tier-extra-label' }, item.label),
+      node('strong', {}, item.formatted),
+      node('span', { class: 'pricing-price-unit' }, `/ ${price.unit}`),
+    ),
+  ));
+  cell.append(node('span', {}, state.pricingMode === 'official' ? '官方基础价格' : '实付金额'));
   return cell;
 }
 
 function renderPricingComparison(payload) {
   const cell = node('div', { class: 'pricing-comparison-cell' });
+  const group = state.selectedGroup || payload.context.selected_group;
+  const locked = payload.context.locked === true;
   if (state.pricingMode === 'official') {
     cell.append(
       node('strong', {}, '官方价格'),
-      node('span', {}, 'default · 官方倍率 1x · 已锁定'),
+      node('span', {}, `${group} · 官方倍率 1x${locked ? ' · 已锁定' : ''}`),
     );
   } else {
     cell.append(
-      node('strong', {}, 'default'),
-      node('span', {}, `${formatNumber(payload.group_ratio.default)}x · 已锁定`),
+      node('strong', {}, group),
+      node('span', {}, `${formatNumber(payload.group_ratio[group])}x${locked ? ' · 已锁定' : ''}`),
       node('span', { class: 'pricing-comparison-formula' }, state.showWithRecharge ? '含充值换算' : '基础价格换算'),
     );
   }
@@ -1418,7 +1474,7 @@ function renderPricingCardPriceLines(price) {
     lines.append(node('p', { class: 'pricing-context-required' }, '需按完整档位与请求上下文计算，不显示单一价格。'));
     return lines;
   }
-  price.items.slice(0, 4).forEach((item) => {
+  price.items.forEach((item) => {
     lines.append(node('div', { class: 'pricing-card-price-row' },
       node('span', {}, item.label),
       node('strong', {}, `${item.formatted} / ${price.unit}`),
@@ -1431,19 +1487,24 @@ function renderPricingCardPriceLines(price) {
 function openPricingDetail(model, price, vendor, payload) {
   closeSurfaceOverlay();
   const dialog = createSurfaceDialog(model.model_name, 'pricing-detail-sheet', true);
+  const group = state.selectedGroup || payload.context.selected_group;
   dialog.content.append(
     node('p', { class: 'pricing-detail-vendor' }, vendor?.name || '未知供应商'),
     node('p', { class: 'pricing-detail-description' }, model.description || ''),
     node('div', { class: 'pricing-detail-context' },
       node('strong', {}, '价格上下文'),
-      node('span', {}, `user_group=default · selected_group=default · locked=true · effective_ratio=${formatNumber(state.pricingMode === 'official' ? 1 : payload.group_ratio.default)}`),
+      node('span', {}, `user_group=${payload.context.user_group} · selected_group=${group} · locked=${payload.context.locked} · effective_ratio=${formatNumber(state.pricingMode === 'official' ? 1 : payload.group_ratio[group])}`),
     ),
     renderPricingCardPriceLines(price),
   );
   if (price.kind === 'tiered_expr' || (price.kind === 'codex_fast' && price.parseComplete)) dialog.content.append(renderTierDetails(price));
   if (price.kind === 'video') dialog.content.append(renderVideoDetails(price));
   const endpoints = node('div', { class: 'pricing-detail-endpoints' });
-  (model.supported_endpoint_types || []).forEach((endpoint) => endpoints.append(node('span', { class: 'surface-tag' }, endpoint)));
+  (model.supported_endpoint_types || []).forEach((endpoint) => {
+    const detail = model.endpoint_map?.[endpoint] || payload.supported_endpoint?.[endpoint];
+    const label = detail ? `${endpoint} · ${detail.method} ${detail.path}` : endpoint;
+    endpoints.append(node('span', { class: 'surface-tag' }, label));
+  });
   dialog.content.append(endpoints);
   document.body.append(dialog.overlay);
   requestAnimationFrame(() => dialog.panel.querySelector('button')?.focus());
@@ -1814,18 +1875,24 @@ function renderError(error) {
 }
 
 async function api(path, options = {}) {
-  const cached = contentApiCache.get(path);
+  const user = options.frontDoor ? readBrowserUser() : null;
+  const cacheKey = options.frontDoor ? `${path}\n${user?.public_id || ''}` : path;
+  const cached = contentApiCache.get(cacheKey);
   const headers = new Headers({ accept: 'application/json' });
   if (cached?.etag) headers.set('if-none-match', cached.etag);
   if (options.frontDoor) {
-    const user = readBrowserUser();
     if (user?.public_id) headers.set('new-api-user', user.public_id);
   }
   const response = await fetch(path, {
     headers,
-    ...(path.startsWith('/api/content/') ? { cache: 'no-cache' } : {}),
+    ...(path.startsWith('/api/content/') || options.frontDoor ? { cache: 'no-cache' } : {}),
   });
-  if (response.status === 304 && cached) return cached.body;
+  if (response.status === 304) {
+    if (!cached || response.headers.get('etag') !== cached.etag) {
+      throw new Error('API 返回了无法验证的缓存响应。');
+    }
+    return cached.body;
+  }
   let body;
   try {
     body = await response.json();
@@ -1835,8 +1902,8 @@ async function api(path, options = {}) {
   if (!response.ok || body.success === false) {
     throw new Error(body?.error?.message || body?.message || `请求失败（${response.status}）。`);
   }
-  if (path.startsWith('/api/content/')) {
-    contentApiCache.set(path, {
+  if (path.startsWith('/api/content/') || options.frontDoor) {
+    contentApiCache.set(cacheKey, {
       body,
       etag: response.headers.get('etag'),
     });
@@ -1859,7 +1926,9 @@ function updateActiveNavigation(path) {
     const active =
       link.dataset.nav === 'home'
         ? path === '/'
-        : path.startsWith(`/${link.dataset.nav}`);
+        : link.dataset.nav === 'pricing'
+          ? isPricingPath(path)
+          : path.startsWith(`/${link.dataset.nav}`);
     link.classList.toggle('active', active);
     if (active) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -1868,6 +1937,10 @@ function updateActiveNavigation(path) {
 
 function normalizePath(path) {
   return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
+}
+
+function isPricingPath(path) {
+  return path === '/console/pricing' || path === '/pricing';
 }
 
 function docsPath(slug) {

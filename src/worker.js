@@ -95,10 +95,6 @@ export async function route(request, env = {}) {
   }
 
   if (request.method === 'GET' && pathname === '/api/content/pricing') {
-    if (request.headers.get('new-api-user')) {
-      const adapter = createFrontDoorSessionAdapter(env, request);
-      return frontDoorResponse(await adapter.getPricingResponse());
-    }
     const adapter = createContentAdapter(env);
     return publicContentResponse(
       await adapter.getPricingResponse({
@@ -173,10 +169,9 @@ function frontDoorResponse(result) {
   }
   const headers = { 'cache-control': 'no-cache' };
   if (result.etag) headers.etag = result.etag;
-  // The response body is the canonical NewAPI front-door envelope.  Do not
-  // add Worker-owned meta/context fields or rewrite labels: the normal-user
-  // SPA must see the exact pricing/navigation contract it would see at
-  // `/api/pricing` and `/api/docs/v2/navigation`.
+  // The adapter has already reconstructed the bounded public subset of the
+  // canonical NewAPI envelope. Do not add Worker-owned labels or rewrite its
+  // normal-user values here.
   return json(result.payload, 200, headers);
 }
 

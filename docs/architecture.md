@@ -4,7 +4,7 @@
 
 ```text
 Browser
-  ├─ /docs/*, /pricing ──> Worker Assets (Phase 1 SPA)
+  ├─ /docs/*, /console/pricing, /pricing ──> Worker Assets (Phase 1 SPA)
   ├─ /api/content/* ─────> ContentAdapter
   │                          └─ FixtureAdapter (Phase 1 only)
   └─ download routes ─────> explicit runtime gate
@@ -25,24 +25,28 @@ Normal-user clone:
     ├─ `/api/front-door/v1/pricing`
     └─ `/api/front-door/v1/docs/v2/navigation?locale=zh`
          └─ NEWAPI_VPC_SERVICE -> canonical NewAPI front-door aliases
+```
 
 The normal-user routes are a distinct session-only boundary. The Worker
-forwards only the signed `session` cookie and the `New-Api-User` identity; it
-does not forward Authorization, API keys, provider credentials, WebSocket
-credentials, credential query parameters, or arbitrary browser headers. The
-canonical Pricing response is returned without a Worker-owned projection. The
-Docs response is the typed recursive `group`/`page` tree; the sidebar renders
-that tree recursively, including nested page descendants. Missing session,
+forwards only the signed `session` cookie, matching `New-Api-User` identity,
+and safe locale/conditional-request headers. It rejects Authorization, API
+keys, provider credentials, WebSocket credentials, credential query
+parameters, malformed/duplicate session cookies, and credential-shaped
+headers. Each canonical response is validated and reconstructed through an
+explicit bounded public projection; unknown/private fields are dropped and
+malformed known fields fail closed. The Docs response is the typed recursive
+`group`/`page` tree; the sidebar renders that tree recursively, including
+nested page descendants. Missing session,
 identity mismatch, administrator/API-key auth, upstream schema drift, timeout,
 or oversized response fails closed. The existing service-token live adapter
 remains a separate public-content compatibility path and is not used to fake
 per-user Pricing or Docs navigation.
 
-Pricing display conversion still consumes the canonical SPA's already-loaded
+`/console/pricing` is the canonical SPA route; `/pricing` remains a compatibility
+alias. Pricing display conversion still consumes the canonical SPA's already-loaded
 `/api/status` snapshot from browser storage; the approved front-door contract
 does not add a second status alias. If that snapshot is unavailable, the
 Worker surface fails closed instead of supplying a guessed currency or rate.
-```
 
 `ContentAdapter` 是唯一可替换资料边界。UI 不读取硬编码的 NewAPI hostname，也不直接访问 private/VPC/Tunnel。Fixture 和 live adapter 必须返回同一个 public display contract。Live adapter 的 secret、schema、failure 和 cutover contract 见 [live-content-adapter.md](live-content-adapter.md)。
 
@@ -81,37 +85,40 @@ Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、
 
 ## Pricing contract 与不变量
 
-Pricing response 保留 NewAPI `/api/pricing` 的主要字段：`data`、`vendors`、`group_ratio`、`usable_group`、`supported_endpoint`、`auto_groups`、`video_resolution_dimensions` 和 `pricing_version`，并增加 public page 的 `meta`、`context` 与 display settings。
+Pricing response 保留 NewAPI `/api/pricing` 的主要字段：`data`、`vendors`、`group_ratio`、`usable_group`、`supported_endpoint`、`auto_groups`、`video_resolution_dimensions` 和 `pricing_version`，并可保留 canonical `user_group`、`selected_group`、`locked`、`context`、`display` 与 `meta` fields。Front-door output is an explicit public projection rather than a raw passthrough。
 
-Public adapter 必须强制 ordinary-user presentation context，并且只接受
-NewAPI 上游提供的公开 group ratios：每一个 ratio 都必须是 finite、non-negative
+`/api/content/pricing` 的 fixture/internal-live adapter 必须强制 locked
+ordinary-user presentation context；front-door session adapter 则保留 canonical
+normal-user `user_group`、`selected_group` 和 `locked` values。两者只接受 NewAPI
+上游提供的公开 group ratios：每一个 ratio 都必须是 finite、non-negative
 number。适配器保留 NewAPI 的 group ratios 原值（包括 `default` 和其他公开
 groups），不得 hard-code 任何 ratio 或其他数值，也不得 normalize、clamp、
-substitute、fabricate 或以其他方式改写 ratio。这个 adapter move 只锁定
-presentation context，不重写 NewAPI 的 pricing logic：
+substitute、fabricate 或以其他方式改写 ratio。这个 adapter move 不重写
+NewAPI 的 pricing logic：
 
 ```text
-context.user_group      = default
-context.selected_group  = default
-context.locked          = true
-group_ratio.default     = finite non-negative upstream default value
-group_ratio.*           = NewAPI upstream public map unchanged
-usable_group.default    exists
+content.context.user_group       = default
+content.context.selected_group   = default
+content.context.locked           = true
+front_door.context.*             = canonical normal-user values
+group_ratio.default              = finite non-negative upstream default value
+group_ratio.*                    = NewAPI upstream public map unchanged
+usable_group.selected            exists
 ```
 
-Pricing presentation 同样复用 pinned NewAPI 的供应商 → 分组 → 价格清单、计价规则、table/card、filter 与 detail-sheet hierarchy。Public surface 只渲染一个 disabled `default` group card；供应商、计费类型、端点、标签、货币、单位与 recharge display 可以筛选或切换，但任何 control 都不能改变 `user_group=default`、`selected_group=default`、`locked=true`。
+Pricing presentation 同样复用 pinned NewAPI 的供应商 → 分组 → 价格清单、计价规则、table/card、filter 与 detail-sheet hierarchy。Locked fixture context 只渲染一个 disabled group card；unlocked front-door context renders every canonical usable group and lets the user switch the selected group。供应商、计费类型、端点、标签、货币、单位与 recharge display 继续使用 canonical payload。
 
 价格模式仍遵循 NewAPI 的 `resolvePricingContext`：`official` 使用
-`usedGroupRatio=1` 和原始美元基础价，`group` 使用当前选中（本 Worker
-锁定为 `default`）的 upstream ratio。这个 effective ratio 同时用于普通、
-按次、tiered、Codex Fast 和 video 分支；不会把 `group_ratio.default` 套到
-official 模式，也不会引入固定倍率。
+`usedGroupRatio=1` 和原始美元基础价，`group` 使用当前 selected group 的
+upstream ratio（locked content adapter 的 selected group 是 `default`）。这个
+effective ratio 同时用于普通、按次、tiered、Codex Fast 和 video 分支；不会把
+任何 group ratio 套到 official 模式，也不会引入固定倍率。
 
-模型可见性沿用 NewAPI group 规则：空 `enable_groups`、`all` 或包含 `default` 才可在普通用户页面显示。`billing_mode` 是 `tiered_expr`、`codex_fast` 与 `video` 的优先判别字段，不能被 legacy `quota_type` 覆盖。
+模型可见性沿用 NewAPI group 规则：空 `enable_groups`、`all` 或包含当前 selected group 才可显示。`billing_mode` 是 `tiered_expr`、`codex_fast` 与 `video` 的优先判别字段，不能被 legacy `quota_type` 覆盖。
 
 Versioned tiered display contract 目前只接受 NewAPI v1 的完整静态单位价格子集：`tier(name, p * price + c * price + ...)`、`p/c/len` 档位条件、完整 v1 variable registry，以及 `|||when(...) * multiplier` 请求规则后缀。任何未覆盖的有效 backend expression 也必须显示为不可计算；public Worker 不会执行 provider request function、取局部 regex 命中或把第一档投影成最终价格。
 
-Video display contract 会保存 `video_pricing.currency` 来源币种，先将 CNY/USD rate 正规化为 USD，再应用真实的 `group_ratio.default`，最后与所有其他 pricing card 共用充值与 USD/CNY/CUSTOM conversion。一个 resolution row 缺少必要字段会使整份 video profile 不可计算，不会用剩余 row 产生起价。
+Video display contract 会保存 `video_pricing.currency` 来源币种，先将 CNY/USD rate 正规化为 USD，再应用真实的 selected group ratio，最后与所有其他 pricing card 共用充值与 USD/CNY/CUSTOM conversion。一个 resolution row 缺少必要字段会使整份 video profile 不可计算，不会用剩余 row 产生起价。
 
 Live adapter 保留结构化 video pricing、capability、route contract、input-duration policy 和 billing expression；Worker 只验证/转发公开 payload，不执行 billing expression。新版或不支持的 contract 必须 fail closed 或由现有页面明确显示不可计算，不能取第一项、最低价或 legacy 字段自行猜测。
 

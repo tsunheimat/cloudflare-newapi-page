@@ -52,8 +52,20 @@ a generic 503. Backend response bodies and messages are never exposed to the
 browser. There is no session-cookie, user API-key, public-origin, or fixture
 fallback path in live mode.
 
-For Docs and Pricing, the Worker forwards only the browser's `If-None-Match`
-validator in addition to its fixed `Accept` and private adapter authorization.
+The separate normal-user front-door adapter calls only the two approved
+session aliases (`/api/front-door/v1/pricing` and
+`/api/front-door/v1/docs/v2/navigation?locale=zh`). It forwards the signed
+`session` cookie and exact `New-Api-User` identity plus safe locale and
+conditional-request headers. It never forwards the internal live adapter token,
+Authorization/API-key/provider credentials, arbitrary credential headers, or
+credential query parameters. Its Pricing and recursive Docs responses use a
+bounded public allowlist; unknown/private fields are omitted and malformed
+known fields fail closed. `/api/content/pricing` remains on this existing
+service-token adapter regardless of `New-Api-User`.
+
+For the service-token live adapter, the Worker forwards only the browser's
+`If-None-Match` validator in addition to its fixed `Accept` and private adapter
+authorization.
 Docs preserve a syntactically valid upstream `ETag` on public `200` responses.
 An upstream Docs `304` becomes an empty public `304` only when this request
 forwarded a browser `If-None-Match` validator and the upstream `ETag` weakly
@@ -68,7 +80,10 @@ public identifier arrays such as `enable_groups` and
 change values or semantics. It derives the public pricing `ETag` from that
 projected payload, so an equivalent upstream `200` with different model,
 vendor, or identifier-array order still returns the same validator and a
-matching browser validator is converted to an empty public `304`. Cookies,
+matching browser validator is converted to an empty public `304`. The separate
+front-door adapter preserves a validated upstream ETag (or derives a stable
+projected-body ETag when absent) and turns an upstream `304` into a public
+`304` only when its ETag exactly equals the forwarded browser validator. Cookies,
 sessions, browser authorization, user API keys, and unrelated headers are not
 forwarded. The five-second deadline covers binding fetch, body streaming,
 UTF-8 decoding, JSON parsing, validation, and projection.

@@ -66,7 +66,7 @@ test('front-door session routes forward only the signed session and New-Api-User
   const seen = [];
   const pricing = {
     success: true,
-    data: [{ model_name: 'gpt-session', enable_groups: ['default'] }],
+    data: [{ model_name: 'gpt-session', quota_type: 0, model_ratio: 1, model_price: 0, owner_by: '', completion_ratio: 1, enable_groups: ['default'], supported_endpoint_types: [] }],
     vendors: [{ id: 7, name: 'Canonical vendor' }],
     group_ratio: { default: 1.2 },
     usable_group: { default: 'default' },
@@ -80,19 +80,26 @@ test('front-door session routes forward only the signed session and New-Api-User
     data: [{
       type: 'group',
       id: 10,
+      slug: 'getting-started',
       title: '开始使用',
+      space_id: 1,
+      locale: 'zh',
       children: [{
         type: 'page',
         id: 11,
         slug: 'setup',
         path: 'setup',
         title: '安装',
+        space_id: 1,
+        locale: 'zh',
         children: [{
           type: 'page',
           id: 12,
           slug: 'windows',
           path: 'setup/windows',
           title: 'Windows',
+          space_id: 1,
+          locale: 'zh',
         }],
       }],
     }],
@@ -108,6 +115,7 @@ test('front-door session routes forward only the signed session and New-Api-User
           cookie: request.headers.get('cookie'),
           identity: request.headers.get('new-api-user'),
           ifNoneMatch: request.headers.get('if-none-match'),
+          acceptLanguage: request.headers.get('accept-language'),
           authorization: request.headers.get('authorization'),
           random: request.headers.get('x-random'),
         });
@@ -126,6 +134,7 @@ test('front-door session routes forward only the signed session and New-Api-User
       'New-Api-User': 'public-user-1',
       'X-Random': 'must-not-forward',
       'If-None-Match': '"browser-validator"',
+      'Accept-Language': 'zh-CN,zh;q=0.9',
     },
   };
   const pricingResponse = await fetchWorker('/api/front-door/v1/pricing', env, init);
@@ -134,7 +143,7 @@ test('front-door session routes forward only the signed session and New-Api-User
   const docsResponse = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', env, init);
   assert.equal(docsResponse.status, 200);
   assert.deepEqual(await docsResponse.json(), navigation);
-  assert.deepEqual(seen.map(({ path, query, method, cookie, identity, authorization, random, ifNoneMatch }) => ({ path, query, method, cookie, identity, authorization, random, ifNoneMatch })), [
+  assert.deepEqual(seen.map(({ path, query, method, cookie, identity, authorization, random, ifNoneMatch, acceptLanguage }) => ({ path, query, method, cookie, identity, authorization, random, ifNoneMatch, acceptLanguage })), [
     {
       path: '/api/front-door/v1/pricing',
       query: '',
@@ -143,7 +152,8 @@ test('front-door session routes forward only the signed session and New-Api-User
       identity: 'public-user-1',
       authorization: null,
       random: null,
-      ifNoneMatch: null,
+      ifNoneMatch: '"browser-validator"',
+      acceptLanguage: 'zh-CN,zh;q=0.9',
     },
     {
       path: '/api/front-door/v1/docs/v2/navigation',
@@ -153,7 +163,8 @@ test('front-door session routes forward only the signed session and New-Api-User
       identity: 'public-user-1',
       authorization: null,
       random: null,
-      ifNoneMatch: null,
+      ifNoneMatch: '"browser-validator"',
+      acceptLanguage: 'zh-CN,zh;q=0.9',
     },
   ]);
 });
@@ -205,6 +216,206 @@ test('front-door session routes reject credentials and incomplete browser sessio
     assert.equal((await response.json()).error.code, 'unauthorized');
   }
   assert.equal(calls, 0);
+});
+
+test('front-door rejects credential-shaped headers, cookie variants, and query credentials', async () => {
+  let calls = 0;
+  const env = {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: { fetch: async () => { calls += 1; throw new Error('must not forward'); } },
+  };
+  const headers = [
+    { 'X-Provider-Key': 'provider-secret' },
+    { 'X-Service-Key': 'service-secret' },
+    { 'X-Provider-Auth': 'provider-auth' },
+    { 'X-Client-Secret': 'client-secret' },
+    { 'X-Access-Token': 'access-token' },
+    { 'X-Credential': 'credential' },
+  ];
+  for (const extra of headers) {
+    const response = await fetchWorker('/api/front-door/v1/pricing', env, {
+      headers: { cookie: 'session=signed', 'New-Api-User': 'user', ...extra },
+    });
+    assert.equal(response.status, 401, Object.keys(extra)[0]);
+  }
+  for (const cookie of [
+    'session=one; session=two',
+    'session=one; session =two',
+    'session =one',
+    'session=one, session=two',
+    'session= one',
+    'session=one; key=provider-secret',
+  ]) {
+    const response = await fetchWorker('/api/front-door/v1/pricing', env, {
+      headers: { cookie, 'New-Api-User': 'user' },
+    });
+    assert.equal(response.status, 401, cookie);
+  }
+  for (const name of ['client_secret', 'client_id', 'secret', 'token', 'key', 'api-key', 'api_key', 'access_token', 'provider_credential']) {
+    const response = await fetchWorker(`/api/front-door/v1/pricing?${name}=redacted`, env, {
+      headers: { cookie: 'session=signed', 'New-Api-User': 'user' },
+    });
+    assert.equal(response.status, 401, name);
+  }
+  assert.equal(calls, 0);
+});
+
+test('front-door projection preserves canonical fields and drops private or unknown fields', async () => {
+  const payload = {
+    success: true,
+    user_group: 'premium',
+    selected_group: 'premium',
+    locked: false,
+    context: { user_group: 'premium', selected_group: 'premium', locked: false, private_secret: 'drop' },
+    data: [{
+      model_name: 'canonical-model', description: 'Public', vendor_id: 4,
+      model_ratio: 1, model_price: 0, completion_ratio: 2, quota_type: 0, owner_by: '',
+      enable_groups: ['premium'], supported_endpoint_types: ['openai'],
+      endpoint_map: { openai: { method: 'POST', path: '/v1/chat/completions', private_secret: 'drop' }, private_key: { method: 'GET', path: '/private' } },
+      private_secret: 'drop', unknown_admin_field: 'drop',
+    }],
+    vendors: [{ id: 4, name: 'Vendor', description: 'Public', private_secret: 'drop' }],
+    group_ratio: { premium: 0.8, private_secret: 'drop' },
+    usable_group: { premium: 'Premium', private_secret: 'drop' },
+    supported_endpoint: { openai: { method: 'POST', path: '/v1/chat/completions', private_secret: 'drop' }, private_secret: { method: 'GET', path: '/private' } },
+    auto_groups: ['premium'],
+    video_resolution_dimensions: {},
+    pricing_version: 'canonical-v1',
+    private_secret: 'drop',
+  };
+  const response = await fetchWorker('/api/front-door/v1/pricing', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: { fetch: async () => new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } }) },
+  }, { headers: { cookie: 'session=signed', 'New-Api-User': 'user' } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.context, { user_group: 'premium', selected_group: 'premium', locked: false });
+  assert.deepEqual(body.group_ratio, { premium: 0.8 });
+  assert.deepEqual(body.usable_group, { premium: 'Premium' });
+  assert.deepEqual(body.data[0].endpoint_map, { openai: { method: 'POST', path: '/v1/chat/completions' } });
+  assert.deepEqual(body.supported_endpoint, { openai: { method: 'POST', path: '/v1/chat/completions' } });
+  assert.doesNotMatch(JSON.stringify(body), /private_secret|unknown_admin_field/);
+});
+
+test('front-door Docs projection preserves recursive folder/layer fields and drops private fields', async () => {
+  const payload = {
+    success: true,
+    data: [{
+      type: 'group', id: 1, slug: 'guides', title: 'Guides', description: 'Public folder',
+      icon_key: 'book', space_id: 2, parent_id: 0, sort_key: 1, locale: 'zh', enabled: true,
+      private_secret: 'drop',
+      children: [{
+        type: 'page', id: 2, slug: 'quickstart', path: 'guides/quickstart', title: 'Quickstart',
+        description: 'Public page', space_id: 2, parent_id: 1, sort_key: 2, locale: 'zh', enabled: true,
+        children: [{ type: 'page', id: 3, slug: 'nested', path: 'guides/quickstart/nested', title: 'Nested', space_id: 2, locale: 'zh', private_secret: 'drop' }],
+        private_secret: 'drop',
+      }],
+    }],
+    private_secret: 'drop',
+  };
+  const response = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: { fetch: async () => new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } }) },
+  }, { headers: { cookie: 'session=signed', 'New-Api-User': 'user' } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.data[0].children[0].children[0].path, 'guides/quickstart/nested');
+  assert.equal(body.data[0].description, 'Public folder');
+  assert.doesNotMatch(JSON.stringify(body), /private_secret/);
+});
+
+test('front-door fails closed on malformed canonical public fields', async () => {
+  const base = {
+    success: true, data: [], vendors: [], group_ratio: { default: 1 }, usable_group: { default: 'Default' },
+    supported_endpoint: {}, auto_groups: [], video_resolution_dimensions: {}, pricing_version: 'v1',
+  };
+  for (const payload of [
+    { ...base, group_ratio: { default: '1' } },
+    { ...base, usable_group: { default: '' } },
+    { ...base, supported_endpoint: { openai: { method: 'POST', path: 'not-absolute' } } },
+    { ...base, context: { user_group: 'default', selected_group: 'missing', locked: true } },
+  ]) {
+    const response = await fetchWorker('/api/front-door/v1/pricing', {
+      ...fixtureEnv,
+      NEWAPI_VPC_SERVICE: { fetch: async () => new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } }) },
+    }, { headers: { cookie: 'session=signed', 'New-Api-User': 'user' } });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).error.details.reason, 'invalid_upstream_schema');
+  }
+});
+
+test('front-door conditional requests forward and verify an exact browser validator', async () => {
+  const seen = [];
+  const env = {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        seen.push(request.headers.get('if-none-match'));
+        return new Response(null, { status: 304, headers: { etag: '"front-v1"', 'content-type': 'application/json' } });
+      },
+    },
+  };
+  const matched = await fetchWorker('/api/front-door/v1/pricing', env, { headers: { cookie: 'session=signed', 'New-Api-User': 'user', 'If-None-Match': '"front-v1"' } });
+  assert.equal(matched.status, 304);
+  assert.equal(matched.headers.get('etag'), '"front-v1"');
+  assert.equal(await matched.text(), '');
+
+  const mismatched = await fetchWorker('/api/front-door/v1/pricing', {
+    ...env,
+    NEWAPI_VPC_SERVICE: { fetch: async () => new Response(null, { status: 304, headers: { etag: '"other"' } }) },
+  }, { headers: { cookie: 'session=signed', 'New-Api-User': 'user', 'If-None-Match': '"front-v1"' } });
+  assert.equal(mismatched.status, 503);
+  assert.equal(seen[0], '"front-v1"');
+});
+
+test('front-door ETags are stable and participate in the complete upstream 304 round trip', async () => {
+  const payload = {
+    success: true, data: [], vendors: [], group_ratio: { default: 1 }, usable_group: { default: 'Default' },
+    supported_endpoint: {}, auto_groups: [], video_resolution_dimensions: {}, pricing_version: 'v1', private_secret: 'drop',
+  };
+  const seen = [];
+  const env = {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        const validator = request.headers.get('if-none-match');
+        seen.push(validator);
+        if (validator === '"canonical-v1"') return new Response(null, { status: 304, headers: { etag: validator } });
+        return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json', etag: '"canonical-v1"' } });
+      },
+    },
+  };
+  const headers = { cookie: 'session=signed', 'New-Api-User': 'user' };
+  const fresh = await fetchWorker('/api/front-door/v1/pricing', env, { headers });
+  assert.equal(fresh.status, 200);
+  assert.equal(fresh.headers.get('etag'), '"canonical-v1"');
+  assert.doesNotMatch(JSON.stringify(await fresh.json()), /private_secret/);
+
+  const conditional = await fetchWorker('/api/front-door/v1/pricing', env, {
+    headers: { ...headers, 'If-None-Match': fresh.headers.get('etag') },
+  });
+  assert.equal(conditional.status, 304);
+  assert.equal(conditional.headers.get('etag'), '"canonical-v1"');
+  assert.deepEqual(seen, [null, '"canonical-v1"']);
+
+  const withoutUpstreamEtag = async (privateSecret) => fetchWorker('/api/front-door/v1/pricing', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: { fetch: async () => new Response(JSON.stringify({ ...payload, private_secret: privateSecret }), { headers: { 'content-type': 'application/json' } }) },
+  }, { headers });
+  const projectedA = await withoutUpstreamEtag('first');
+  const projectedB = await withoutUpstreamEtag('second');
+  assert.match(projectedA.headers.get('etag'), /^"front-door-pricing-/);
+  assert.equal(projectedB.headers.get('etag'), projectedA.headers.get('etag'));
+});
+
+test('content pricing remains on its configured adapter even with New-Api-User', async () => {
+  const response = await fetchWorker('/api/content/pricing', fixtureEnv, {
+    headers: { 'New-Api-User': 'session-user' },
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.meta.live, false);
+  assert.equal(body.context.user_group, 'default');
 });
 
 test('invalid or missing content paths return bounded JSON errors', async () => {
@@ -632,18 +843,20 @@ test('live Docs upstream 200 is not converted to a local 304 by matching ETag', 
 });
 
 test('SPA routes pass through the asset binding with security headers', async () => {
-  const response = await fetchWorker('/docs/quickstart', fixtureEnv);
-  assert.equal(response.status, 200);
-  assert.equal(await response.text(), 'asset:/docs/quickstart');
-  assert.equal(response.headers.get('x-frame-options'), 'DENY');
-  assert.match(
-    response.headers.get('content-security-policy'),
-    /style-src 'self'(?:;|$)/,
-  );
-  assert.doesNotMatch(
-    response.headers.get('content-security-policy'),
-    /'unsafe-inline'/,
-  );
+  for (const path of ['/docs/quickstart', '/console/pricing', '/pricing']) {
+    const response = await fetchWorker(path, fixtureEnv);
+    assert.equal(response.status, 200, path);
+    assert.equal(await response.text(), `asset:${path}`);
+    assert.equal(response.headers.get('x-frame-options'), 'DENY');
+    assert.match(
+      response.headers.get('content-security-policy'),
+      /style-src 'self'(?:;|$)/,
+    );
+    assert.doesNotMatch(
+      response.headers.get('content-security-policy'),
+      /'unsafe-inline'/,
+    );
+  }
 });
 
 test('download routes fail closed while service binding is absent', async () => {

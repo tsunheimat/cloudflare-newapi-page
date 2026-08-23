@@ -54,8 +54,8 @@ test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader state
   assert.match(styles, /\.docs-code-group\s*\{[\s\S]*?--docs-code-bg:\s*#0f1218/);
 });
 
-test('Pricing presentation reuses the canonical hierarchy while exposing one locked default group', async () => {
-  const [app, styles] = await sources;
+test('Pricing presentation reuses canonical session groups, fields, and both compatible routes', async () => {
+  const [app, styles, index] = await sources;
 
   for (const contract of [
     "class: 'newapi-surface pricing-page-shell'",
@@ -70,14 +70,21 @@ test('Pricing presentation reuses the canonical hierarchy while exposing one loc
     assert.ok(app.includes(contract), contract);
   }
 
-  assert.equal((app.match(/'data-pricing-group'/g) || []).length, 1);
-  assert.match(app, /card\.setAttribute\('data-pricing-group', 'default'\)/);
+  assert.match(index, /href="\/console\/pricing" data-link data-nav="pricing"/);
+  assert.match(app, /path === '\/console\/pricing' \|\| path === '\/pricing'/);
+  assert.match(app, /card\.setAttribute\('data-pricing-group', group\)/);
   assert.match(app, /card\.disabled = true/);
   assert.match(app, /data-user-group/);
   assert.match(app, /data-selected-group/);
   assert.match(app, /data-group-locked/);
   assert.match(app, /front-door\/v1\/pricing/);
-  assert.match(app, /user_group=default · selected_group=default · locked=true/);
+  assert.match(app, /payload\.context\.user_group/);
+  assert.match(app, /payload\.context\.selected_group/);
+  assert.match(app, /payload\.context\.locked/);
+  assert.match(app, /price\.items\.forEach/);
+  assert.doesNotMatch(app, /price\.items\.slice\(0, 4\)/);
+  assert.match(app, /detail\.method/);
+  assert.match(app, /detail\.path/);
   assert.match(app, /\['group', '分组价格'\]/);
   assert.match(app, /\['official', '官方价格'\]/);
   assert.match(app, /\['table', '表格视图', 'table'\]/);
@@ -85,7 +92,7 @@ test('Pricing presentation reuses the canonical hierarchy while exposing one loc
   assert.match(app, /openPricingFilterModal\(payload, filter\)/);
   assert.match(app, /class: 'pricing-filter-modal-body'/);
   assert.match(app, /class: 'pricing-filter-modal-footer'/);
-  assert.match(app, /data-pricing-filter-group', 'default'/);
+  assert.match(app, /data-pricing-filter-group', state\.selectedGroup/);
 
   assert.match(styles, /\.pricing-page-container\s*\{[\s\S]*?1500px/);
   assert.match(styles, /\.pricing-vendor-list\s*\{[\s\S]*?overflow-x:\s*auto/);
@@ -99,7 +106,7 @@ test('architecture pricing contract preserves upstream ratios without a fixed su
   const architecture = await readFile(ARCHITECTURE_URL, 'utf8');
 
   assert.match(architecture, /finite、non-negative/);
-  assert.match(architecture, /NewAPI[\s\S]*group ratios 原值/);
+  assert.match(architecture, /适配器保留 NewAPI 的 group ratios[\s\S]*原值/);
   assert.match(architecture, /hard-code[\s\S]*normalize、clamp、[\s\S]*substitute/);
   assert.match(architecture, /group_ratio\.default\s+=\s+finite non-negative upstream default value/);
   assert.match(architecture, /group_ratio\.\*\s+=\s+NewAPI upstream public map unchanged/);

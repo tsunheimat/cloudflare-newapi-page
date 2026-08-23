@@ -25,6 +25,10 @@ export const FRONT_DOOR_CONTENT_TIMEOUT_MS = LIVE_CONTENT_TIMEOUT_MS;
 export const FRONT_DOOR_CONTENT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 export const FRONT_DOOR_DOCS_NAVIGATION_PATH = '/api/front-door/v1/docs/v2/navigation?locale=zh';
 export const FRONT_DOOR_PRICING_PATH = '/api/front-door/v1/pricing';
+export const FRONT_DOOR_MAX_NAVIGATION_NODES = 50_000;
+export const FRONT_DOOR_MAX_NAVIGATION_DEPTH = 100;
+export const FRONT_DOOR_MAX_ENDPOINT_MAP_ENTRIES = 1_000;
+export const FRONT_DOOR_MAX_QUERY_LENGTH = 2_048;
 export const LOCKED_PRICING_CONTEXT = Object.freeze({
   user_group: 'default',
   selected_group: 'default',
@@ -107,12 +111,24 @@ export function extractFrontDoorCredentials(request) {
       throw new HttpError(401, 'Browser session is required.');
     }
   }
-  const cookie = extractSessionCookie(request.headers.get('cookie'));
-  const identity = String(request.headers.get('new-api-user') || '').trim();
-  if (!cookie || !identity || identity.length > 255 || /[\u0000-\u001f\u007f]/.test(identity)) {
+  if (hasCredentialBearingHeader(request)) {
     throw new HttpError(401, 'Browser session is required.');
   }
-  return Object.freeze({ cookie, identity });
+  const cookie = extractSessionCookie(request.headers.get('cookie'));
+  const identityHeader = request.headers.get('new-api-user');
+  const identity = typeof identityHeader === 'string' ? identityHeader.trim() : '';
+  const ifNoneMatch = extractSafeValidator(request.headers.get('if-none-match'));
+  const acceptLanguage = extractSafeAcceptLanguage(request.headers.get('accept-language'));
+  if (
+    !cookie ||
+    !identity ||
+    identity.length > 255 ||
+    identity !== identityHeader ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$/.test(identity)
+  ) {
+    throw new HttpError(401, 'Browser session is required.');
+  }
+  return Object.freeze({ cookie, identity, ifNoneMatch, acceptLanguage });
 }
 
 const FRONT_DOOR_REJECTED_HEADERS = Object.freeze([
@@ -127,13 +143,33 @@ const FRONT_DOOR_REJECTED_HEADERS = Object.freeze([
 ]);
 
 function extractSessionCookie(header) {
-  if (typeof header !== 'string' || header.length > 16_384) return '';
-  const pairs = header.split(';').map((part) => part.trim());
-  const sessionPairs = pairs.filter((part) => part.startsWith('session='));
-  if (sessionPairs.length !== 1) return '';
-  const pair = sessionPairs[0];
-  const value = pair.slice('session='.length).trim();
-  if (!value || /[\u0000-\u001f\u007f;]/.test(value)) return '';
+  if (
+    typeof header !== 'string' ||
+    header.length > 16_384 ||
+    header.includes(',') ||
+    /[\u0000-\u001f\u007f]/.test(header)
+  ) return '';
+  const pairs = header.split(';');
+  const sessionValues = [];
+  for (const rawPair of pairs) {
+    const pair = rawPair.trim();
+    if (!pair) return '';
+    const separator = pair.indexOf('=');
+    if (separator <= 0) return '';
+    const name = pair.slice(0, separator);
+    // Whitespace/case variants of the session name are malformed rather than
+    // an unrelated cookie. This also catches duplicate forms such as
+    // `session=a; session =b`.
+    if (/^session\s*=/i.test(pair)) {
+      if (!pair.startsWith('session=')) return '';
+      sessionValues.push(pair.slice('session='.length));
+    } else if (isCredentialIdentifier(name, { rejectBareKey: true })) {
+      return '';
+    }
+  }
+  if (sessionValues.length !== 1) return '';
+  const value = sessionValues[0];
+  if (!value || value !== value.trim() || /[;\s,"]/g.test(value)) return '';
   return `session=${value}`;
 }
 
@@ -144,9 +180,49 @@ function hasFrontDoorCredentialQuery(rawUrl) {
   } catch {
     return true;
   }
-  return [...url.searchParams.keys()].some((key) => [
-    'key', 'api_key', 'api-key', 'access_token', 'token', 'authorization',
-  ].includes(key.toLowerCase()));
+  return [...url.searchParams.keys()].some((key) => {
+    return isCredentialIdentifier(key, { rejectBareKey: true });
+  });
+}
+
+function hasCredentialBearingHeader(request) {
+  for (const [name, value] of request.headers.entries()) {
+    const lower = name.toLowerCase();
+    if (FRONT_DOOR_REJECTED_HEADERS.includes(lower)) continue;
+    if (lower === 'cookie' || lower === 'new-api-user') continue;
+    if (String(value).trim() !== '' && isCredentialIdentifier(name)) return true;
+  }
+  return false;
+}
+
+function isCredentialIdentifier(value, { rejectBareKey = false } = {}) {
+  if (typeof value !== 'string') return false;
+  const normalized = value
+    .trim()
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase();
+  const compact = normalized.replace(/_/g, '');
+  if (rejectBareKey && ['key', 'apikey', 'clientid'].includes(compact)) return true;
+  if (/(?:^|_)(?:auth|authorization|bearer|password|passwd|credential|credentials|key|secret|signature|token)(?:_|$)/.test(normalized)) return true;
+  if (/(?:^|_)(?:api|access|client|provider|signing|private|admin)[_-]?(?:key|token|secret|credential|id)(?:_|$)/.test(normalized)) return true;
+  return /^(?:authorization|proxyauthorization|accesstoken|clientsecret|clientid|providerkey|apikey|newapikey)$/.test(compact);
+}
+
+function extractSafeValidator(value) {
+  if (typeof value !== 'string' || value.length > FRONT_DOOR_MAX_QUERY_LENGTH || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed === '*') return trimmed || null;
+  return parseEntityTagList(trimmed).every((candidate) => Boolean(verifiedEtag(candidate)))
+    ? trimmed
+    : null;
+}
+
+function extractSafeAcceptLanguage(value) {
+  if (typeof value !== 'string' || value.length > 256 || /[\u0000-\u001f\u007f]/.test(value)) return null;
+  return value.trim() || null;
 }
 
 async function fetchFrontDoorPayload(
@@ -172,6 +248,8 @@ async function fetchFrontDoorPayload(
     Cookie: credentials.cookie,
     'New-Api-User': credentials.identity,
   });
+  if (credentials.acceptLanguage) headers.set('Accept-Language', credentials.acceptLanguage);
+  if (credentials.ifNoneMatch) headers.set('If-None-Match', credentials.ifNoneMatch);
   try {
     let response;
     try {
@@ -193,12 +271,16 @@ async function fetchFrontDoorPayload(
       }
       throw frontDoorUnavailable('upstream_status');
     }
-    const etag = response.headers.get('etag');
-    if (etag !== null && !verifiedEtag(etag)) {
+    const rawEtag = response.headers.get('etag');
+    const etag = verifiedEtag(rawEtag);
+    if (rawEtag !== null && !etag) {
       throw frontDoorUnavailable('invalid_upstream_etag');
     }
     if (response.status === 304) {
-      if (!etag) {
+      // A front-door 304 is meaningful only when the upstream echoed the
+      // exact browser validator that the Worker forwarded. Weak-equivalent or
+      // unrelated validators are not accepted across this auth boundary.
+      if (!etag || !credentials.ifNoneMatch || etag !== credentials.ifNoneMatch) {
         throw frontDoorUnavailable('invalid_upstream_etag');
       }
       return { status: 304, payload: null, etag };
@@ -231,52 +313,283 @@ async function fetchFrontDoorPayload(
     if (!payload || payload.success !== true || !Object.hasOwn(payload, 'data')) {
       throw frontDoorUnavailable('invalid_upstream_schema');
     }
-    if (kind === 'pricing') assertFrontDoorPricing(payload);
-    else if (kind === 'docs_navigation') assertFrontDoorNavigation(payload);
+    let projected;
+    if (kind === 'pricing') projected = assertFrontDoorPricing(payload);
+    else if (kind === 'docs_navigation') projected = assertFrontDoorNavigation(payload);
     else throw frontDoorUnavailable('invalid_upstream_schema');
-    return { status: 200, payload: clone(payload), etag: verifiedEtag(etag) };
+    // Preserve a validated canonical validator when NewAPI supplies one so a
+    // browser's next request can participate in the upstream 304 contract.
+    // If it is absent, derive a deterministic Worker-owned validator from the
+    // projected body instead of emitting an unstable or arbitrary value.
+    const responseEtag = etag || stableFrontDoorEtag(kind, projected);
+    if (credentials.ifNoneMatch && responseEtag === credentials.ifNoneMatch) {
+      return { status: 304, payload: null, etag: responseEtag };
+    }
+    return { status: 200, payload: projected, etag: responseEtag };
   } finally {
     clearTimeout(timer);
   }
 }
 
 function assertFrontDoorPricing(payload) {
-  if (!Array.isArray(payload.data) || !isRecord(payload.group_ratio) || !isRecord(payload.usable_group)) {
+  if (!isRecord(payload) || payload.success !== true || !Array.isArray(payload.data) || payload.data.length > 5_000 || !isRecord(payload.group_ratio) || !isRecord(payload.usable_group)) {
     throw frontDoorUnavailable('invalid_upstream_schema');
   }
-  if (Object.keys(payload.group_ratio).length === 0 || Object.keys(payload.usable_group).length === 0) {
+  if (Object.keys(payload.group_ratio).length === 0 || Object.keys(payload.usable_group).length === 0 || Object.keys(payload.group_ratio).length > 500 || Object.keys(payload.usable_group).length > 500) {
     throw frontDoorUnavailable('invalid_upstream_schema');
   }
-  for (const ratio of Object.values(payload.group_ratio)) {
+  for (const [key, ratio] of Object.entries(payload.group_ratio)) {
+    if (!isPublicMapKey(key)) continue;
     if (!isFiniteNumber(ratio) || ratio < 0) throw frontDoorUnavailable('invalid_upstream_schema');
   }
+  for (const [key, label] of Object.entries(payload.usable_group)) {
+    if (!isPublicMapKey(key)) continue;
+    if (typeof label !== 'string' || label.length > 300 || label.trim() === '') throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  const publicGroupRatios = projectFrontDoorMap(payload.group_ratio, (value) => value);
+  const publicUsableGroups = projectFrontDoorMap(payload.usable_group, (value) => value);
+  if (Object.keys(publicGroupRatios).length === 0 || Object.keys(publicUsableGroups).length === 0) throw frontDoorUnavailable('invalid_upstream_schema');
+  for (const group of Object.keys(publicUsableGroups)) {
+    if (!Object.hasOwn(publicGroupRatios, group)) throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  payload.data.forEach(assertFrontDoorPricingModel);
+  if (!Array.isArray(payload.vendors) || payload.vendors.length > 1_000) throw frontDoorUnavailable('invalid_upstream_schema');
+  payload.vendors.forEach(assertFrontDoorVendor);
+  if (!isRecord(payload.supported_endpoint) || Object.keys(payload.supported_endpoint).length > FRONT_DOOR_MAX_ENDPOINT_MAP_ENTRIES) throw frontDoorUnavailable('invalid_upstream_schema');
+  assertFrontDoorEndpointMap(payload.supported_endpoint);
+  if (!Array.isArray(payload.auto_groups) || payload.auto_groups.length > 500) throw frontDoorUnavailable('invalid_upstream_schema');
+  assertFrontDoorIdentifierArray(payload.auto_groups);
+  if (!isRecord(payload.video_resolution_dimensions)) throw frontDoorUnavailable('invalid_upstream_schema');
+  assertFrontDoorVideoDimensions(payload.video_resolution_dimensions);
+  if (typeof payload.pricing_version !== 'string' || payload.pricing_version.length > 300 || payload.pricing_version.trim() === '') throw frontDoorUnavailable('invalid_upstream_schema');
+  const projected = {
+    success: true,
+    data: payload.data.map((model) => projectPricingModel(model, { preserveIdentifierOrder: true })),
+    vendors: payload.vendors.map(projectFrontDoorVendor),
+    group_ratio: publicGroupRatios,
+    usable_group: publicUsableGroups,
+    supported_endpoint: projectFrontDoorEndpointMap(payload.supported_endpoint),
+    auto_groups: projectFrontDoorIdentifierArray(payload.auto_groups),
+    video_resolution_dimensions: projectFrontDoorVideoDimensions(payload.video_resolution_dimensions),
+    pricing_version: payload.pricing_version,
+  };
+  projectOptionalFrontDoorPricingFields(payload, projected);
+  return projected;
 }
 
 
 function assertFrontDoorNavigation(payload) {
-  if (!Array.isArray(payload.data) || payload.data.length > 5_000) {
+  if (!isRecord(payload) || payload.success !== true || !Array.isArray(payload.data) || payload.data.length > 5_000) {
     throw frontDoorUnavailable('invalid_upstream_schema');
   }
+  let nodeCount = 0;
   const visit = (nodes, depth = 0) => {
-    if (depth > 100 || !Array.isArray(nodes) || nodes.length > 5_000) {
+    if (depth > FRONT_DOOR_MAX_NAVIGATION_DEPTH || !Array.isArray(nodes) || nodes.length > 5_000 || nodeCount + nodes.length > FRONT_DOOR_MAX_NAVIGATION_NODES) {
       throw frontDoorUnavailable('invalid_upstream_schema');
     }
+    nodeCount += nodes.length;
     for (const node of nodes) {
-      if (!isRecord(node) || !['group', 'page'].includes(node.type) || !Number.isInteger(node.id) || node.id <= 0) {
+      if (!isRecord(node) || !['group', 'page'].includes(node.type) || !Number.isInteger(node.id) || node.id <= 0 || node.id > 2_147_483_647) {
         throw frontDoorUnavailable('invalid_upstream_schema');
       }
       if (typeof node.title !== 'string' || node.title.trim() === '' || node.title.length > 300) {
         throw frontDoorUnavailable('invalid_upstream_schema');
       }
-      if (node.type === 'page') {
-        if (typeof node.slug !== 'string' || !/^[a-z0-9][a-z0-9-]{0,199}(?:\/[a-z0-9][a-z0-9-]{0,199})*$/.test(node.path || node.slug)) {
-          throw frontDoorUnavailable('invalid_upstream_schema');
-        }
+      if (typeof node.slug !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,199}$/.test(node.slug)) {
+        throw frontDoorUnavailable('invalid_upstream_schema');
       }
+      if (!Number.isInteger(node.space_id) || node.space_id <= 0 || typeof node.locale !== 'string' || node.locale.length > 40 || node.locale.trim() === '') throw frontDoorUnavailable('invalid_upstream_schema');
+      if (node.type === 'page' && (typeof node.path !== 'string' || node.path === '')) throw frontDoorUnavailable('invalid_upstream_schema');
+      if (node.path !== undefined && (typeof node.path !== 'string' || node.path.length > 500 || !/^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/.test(node.path))) {
+        throw frontDoorUnavailable('invalid_upstream_schema');
+      }
+      for (const field of ['description', 'icon_key', 'locale']) {
+        if (node[field] !== undefined && (typeof node[field] !== 'string' || node[field].length > 1_000)) throw frontDoorUnavailable('invalid_upstream_schema');
+      }
+      for (const field of ['space_id', 'parent_id', 'sort_key']) {
+        if (node[field] !== undefined && (!Number.isInteger(node[field]) || node[field] < 0)) throw frontDoorUnavailable('invalid_upstream_schema');
+      }
+      if (node.enabled !== undefined && typeof node.enabled !== 'boolean') throw frontDoorUnavailable('invalid_upstream_schema');
       visit(node.children || [], depth + 1);
     }
   };
   visit(payload.data);
+  return { success: true, data: projectFrontDoorNavigationNodes(payload.data) };
+}
+
+function assertFrontDoorPricingModel(model) {
+  if (!isRecord(model) || typeof model.model_name !== 'string' || model.model_name.length > 300 || model.model_name.trim() === '') {
+    throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  const stringFields = ['description', 'icon', 'tags', 'owner_by', 'billing_mode', 'billing_expr', 'codex_fast_base_model', 'video_geometry_contract', 'video_route_contract', 'video_input_duration_policy', 'pricing_version'];
+  for (const field of stringFields) {
+    if (model[field] !== undefined && (typeof model[field] !== 'string' || model[field].length > (field === 'billing_expr' ? 50_000 : 5_000))) throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  for (const field of ['quota_type', 'model_ratio', 'model_price', 'owner_by', 'completion_ratio', 'enable_groups', 'supported_endpoint_types']) {
+    if (!Object.hasOwn(model, field)) throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  if (model.vendor_id !== undefined && (!Number.isInteger(model.vendor_id) || model.vendor_id < 0)) throw frontDoorUnavailable('invalid_upstream_schema');
+  if (model.quota_type !== undefined && !Number.isInteger(model.quota_type)) throw frontDoorUnavailable('invalid_upstream_schema');
+  for (const field of ['model_ratio', 'model_price', 'completion_ratio', 'cache_ratio', 'create_cache_ratio', 'image_ratio', 'audio_ratio', 'audio_completion_ratio']) {
+    if (model[field] !== undefined && (!isFiniteNumber(model[field]) || model[field] < 0)) throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  for (const field of ['image_generation_model', 'video_generation_model']) {
+    if (model[field] !== undefined && typeof model[field] !== 'boolean') throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  if (model.enable_groups !== undefined) assertFrontDoorIdentifierArray(model.enable_groups);
+  if (model.supported_endpoint_types !== undefined) assertFrontDoorIdentifierArray(model.supported_endpoint_types);
+  if (model.endpoint_map !== undefined) assertFrontDoorEndpointMap(model.endpoint_map);
+  if (model.video_pricing !== undefined) assertFrontDoorVideoPricing(model.video_pricing);
+  if (model.codex_fast_pricing !== undefined) assertFrontDoorCodexPricing(model.codex_fast_pricing);
+  if (model.video_capability !== undefined) assertFrontDoorVideoCapability(model.video_capability);
+}
+
+function assertFrontDoorVendor(vendor) {
+  if (!isRecord(vendor) || !Number.isInteger(vendor.id) || vendor.id < 0 || typeof vendor.name !== 'string' || vendor.name.length > 300 || vendor.name.trim() === '') throw frontDoorUnavailable('invalid_upstream_schema');
+  for (const field of ['description', 'icon']) {
+    if (vendor[field] !== undefined && (typeof vendor[field] !== 'string' || vendor[field].length > 5_000)) throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+}
+
+function assertFrontDoorIdentifierArray(value) {
+  if (!Array.isArray(value) || value.length > 1_000 || value.some((entry) => typeof entry !== 'string' || entry.length > 300 || !isPublicMapKey(entry))) throw frontDoorUnavailable('invalid_upstream_schema');
+}
+
+function assertFrontDoorEndpointMap(value) {
+  if (!isRecord(value) || Object.keys(value).length > FRONT_DOOR_MAX_ENDPOINT_MAP_ENTRIES) throw frontDoorUnavailable('invalid_upstream_schema');
+  for (const [key, endpoint] of Object.entries(value)) {
+    if (!isPublicMapKey(key)) continue;
+    if (!isRecord(endpoint) || typeof endpoint.method !== 'string' || !/^[A-Za-z][A-Za-z0-9-]{0,19}$/.test(endpoint.method) || typeof endpoint.path !== 'string' || endpoint.path.length > 500 || !endpoint.path.startsWith('/')) throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+}
+
+function assertFrontDoorVideoPricing(profile) {
+  if (!isRecord(profile) || profile.version !== 1 || !['USD', 'CNY'].includes(profile.currency) || profile.unit !== 'per_1m_completion_tokens' || !isFiniteNumber(profile.rate_multiplier) || profile.rate_multiplier <= 0 || !isRecord(profile.resolution_rates)) throw frontDoorUnavailable('invalid_upstream_schema');
+  for (const [key, rates] of Object.entries(profile.resolution_rates)) {
+    if (!isPublicMapKey(key)) continue;
+    if (!isRecord(rates) || !isFiniteNumber(rates.without_video) || rates.without_video < 0 || !isFiniteNumber(rates.with_video) || rates.with_video < 0) throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+}
+
+function assertFrontDoorCodexPricing(profile) {
+  if (!isRecord(profile) || profile.version !== 1 || !['multiplier', 'prices'].includes(profile.mode)) throw frontDoorUnavailable('invalid_upstream_schema');
+  if (profile.mode === 'multiplier') {
+    if (!isFiniteNumber(profile.multiplier) || profile.multiplier <= 0 || Object.hasOwn(profile, 'input_price') || Object.hasOwn(profile, 'output_price') || Object.hasOwn(profile, 'cached_input_price')) throw frontDoorUnavailable('invalid_upstream_schema');
+  } else if (Object.hasOwn(profile, 'multiplier') || ['input_price', 'cached_input_price', 'output_price'].some((field) => !isFiniteNumber(profile[field]) || profile[field] < 0)) throw frontDoorUnavailable('invalid_upstream_schema');
+}
+
+function assertFrontDoorVideoCapability(value) {
+  // The live-content schema validators are deliberately shared here: both
+  // contracts expose the same bounded capability fields. Convert any failure
+  // to the front-door's generic integration error below.
+  try {
+    assertLiveVideoCapability(value);
+  } catch {
+    throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+}
+
+function assertFrontDoorVideoDimensions(value) {
+  try {
+    assertVideoResolutionDimensions(value);
+  } catch {
+    throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+}
+
+function projectFrontDoorVendor(vendor) {
+  const result = { id: vendor.id, name: vendor.name };
+  if (vendor.description !== undefined) result.description = vendor.description;
+  if (vendor.icon !== undefined) result.icon = vendor.icon;
+  return result;
+}
+
+function projectFrontDoorMap(value, projectValue) {
+  const projected = {};
+  Object.entries(value).forEach(([key, item]) => {
+    if (!isPublicMapKey(key)) return;
+    projected[key] = projectValue(item);
+  });
+  return projected;
+}
+
+function projectFrontDoorIdentifierArray(values) {
+  return values.filter((value) => isPublicMapKey(value)).slice();
+}
+
+function projectFrontDoorEndpointMap(value) {
+  return projectFrontDoorMap(value, (endpoint) => ({ method: endpoint.method, path: endpoint.path }));
+}
+
+function projectFrontDoorVideoDimensions(value) {
+  return projectFrontDoorMap(value, (resolutionSet) => projectFrontDoorMap(resolutionSet, (geometrySet) => projectFrontDoorMap(geometrySet, (dimensions) => [...dimensions])));
+}
+
+function projectFrontDoorNavigationNodes(nodes) {
+  return nodes.map((node) => {
+    const projected = { type: node.type, id: node.id, slug: node.slug, title: node.title };
+    ['path', 'description', 'icon_key', 'space_id', 'parent_id', 'sort_key', 'locale', 'enabled'].forEach((field) => {
+      if (node[field] !== undefined) projected[field] = node[field];
+    });
+    if (Array.isArray(node.children)) projected.children = projectFrontDoorNavigationNodes(node.children);
+    return projected;
+  });
+}
+
+function projectOptionalFrontDoorPricingFields(payload, projected) {
+  const topLevelContextFields = ['user_group', 'selected_group', 'locked'];
+  const topLevelContextCount = topLevelContextFields.filter((field) => Object.hasOwn(payload, field)).length;
+  if (topLevelContextCount > 0 && topLevelContextCount < topLevelContextFields.length) throw frontDoorUnavailable('invalid_upstream_schema');
+  if (isRecord(payload.context)) {
+    if (typeof payload.context.user_group !== 'string' || typeof payload.context.selected_group !== 'string' || typeof payload.context.locked !== 'boolean') throw frontDoorUnavailable('invalid_upstream_schema');
+    projected.context = { user_group: payload.context.user_group, selected_group: payload.context.selected_group, locked: payload.context.locked };
+  }
+  for (const field of ['user_group', 'selected_group']) {
+    if (payload[field] !== undefined && (typeof payload[field] !== 'string' || payload[field].length > 300)) throw frontDoorUnavailable('invalid_upstream_schema');
+    if (payload[field] !== undefined) projected[field] = payload[field];
+  }
+  if (payload.locked !== undefined) {
+    if (typeof payload.locked !== 'boolean') throw frontDoorUnavailable('invalid_upstream_schema');
+    projected.locked = payload.locked;
+  }
+  if (projected.user_group !== undefined && !Object.hasOwn(projected.usable_group, projected.user_group)) throw frontDoorUnavailable('invalid_upstream_schema');
+  if (projected.selected_group !== undefined && (!Object.hasOwn(projected.usable_group, projected.selected_group) || !Object.hasOwn(projected.group_ratio, projected.selected_group))) throw frontDoorUnavailable('invalid_upstream_schema');
+  const context = projected.context;
+  if (context) {
+    if (!Object.hasOwn(projected.usable_group, context.user_group) || !Object.hasOwn(projected.usable_group, context.selected_group) || !Object.hasOwn(projected.group_ratio, context.selected_group)) throw frontDoorUnavailable('invalid_upstream_schema');
+    if (projected.user_group !== undefined && projected.user_group !== context.user_group) throw frontDoorUnavailable('invalid_upstream_schema');
+    if (projected.selected_group !== undefined && projected.selected_group !== context.selected_group) throw frontDoorUnavailable('invalid_upstream_schema');
+    if (projected.locked !== undefined && projected.locked !== context.locked) throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  if (isRecord(payload.display)) {
+    const display = {};
+    for (const field of ['quota_display_type', 'default_currency', 'custom_currency_symbol']) {
+      if (payload.display[field] !== undefined && typeof payload.display[field] !== 'string') throw frontDoorUnavailable('invalid_upstream_schema');
+      if (payload.display[field] !== undefined) display[field] = payload.display[field];
+    }
+    for (const field of ['price', 'usd_exchange_rate', 'custom_currency_exchange_rate']) {
+      if (payload.display[field] !== undefined && !isFiniteNumber(payload.display[field])) throw frontDoorUnavailable('invalid_upstream_schema');
+      if (payload.display[field] !== undefined) display[field] = payload.display[field];
+    }
+    if (payload.display.show_with_recharge !== undefined) {
+      if (typeof payload.display.show_with_recharge !== 'boolean') throw frontDoorUnavailable('invalid_upstream_schema');
+      display.show_with_recharge = payload.display.show_with_recharge;
+    }
+    projected.display = display;
+  }
+  if (isRecord(payload.meta)) {
+    if (payload.meta.source !== 'newapi' || payload.meta.fixture !== false || payload.meta.live !== true) throw frontDoorUnavailable('invalid_upstream_schema');
+    const meta = {};
+    ['source', 'fixture', 'live', 'label', 'updated_at', 'contract_version', 'notice'].forEach((field) => {
+      if (payload.meta[field] !== undefined && (typeof payload.meta[field] !== 'string' && typeof payload.meta[field] !== 'boolean' && typeof payload.meta[field] !== 'number' && payload.meta[field] !== null)) throw frontDoorUnavailable('invalid_upstream_schema');
+      if (payload.meta[field] !== undefined) meta[field] = payload.meta[field];
+    });
+    projected.meta = meta;
+  }
+}
+
+function stableFrontDoorEtag(kind, payload) {
+  return `"front-door-${kind}-${fnv1a64(canonicalJson(payload))}"`;
 }
 
 
@@ -1302,12 +1615,15 @@ function fnv1a64(value) {
   return hash.toString(16).padStart(16, '0');
 }
 
-function projectPricingModel(model) {
+function projectPricingModel(model, { preserveIdentifierOrder = false } = {}) {
   const projected = {};
+  const projectIdentifiers = preserveIdentifierOrder
+    ? projectFrontDoorIdentifierArray
+    : projectPublicIdentifierArray;
   PUBLIC_PRICING_MODEL_FIELDS.forEach((field) => {
     if (!Object.hasOwn(model, field)) return;
     if (field === 'enable_groups' || field === 'supported_endpoint_types') {
-      projected[field] = projectPublicIdentifierArray(model[field]);
+      projected[field] = projectIdentifiers(model[field]);
     } else {
       projected[field] = model[field];
     }
@@ -1322,7 +1638,7 @@ function projectPricingModel(model) {
     projected.endpoint_map = projectEndpointMap(model.endpoint_map);
   }
   if (Object.hasOwn(model, 'video_capability')) {
-    projected.video_capability = projectVideoCapability(model.video_capability);
+    projected.video_capability = projectVideoCapability(model.video_capability, projectIdentifiers);
   }
   return projected;
 }
@@ -1361,10 +1677,10 @@ function projectCodexFastPricing(profile) {
   return projected;
 }
 
-function projectVideoCapability(value) {
+function projectVideoCapability(value, projectIdentifiers = projectPublicIdentifierArray) {
   const projected = {
     model: value.model,
-    mapped_upstream_models: projectPublicIdentifierArray(value.mapped_upstream_models),
+    mapped_upstream_models: projectIdentifiers(value.mapped_upstream_models),
     schema_version: value.schema_version,
     profile: {
       name: value.profile.name,
@@ -1373,15 +1689,15 @@ function projectVideoCapability(value) {
       checksum: value.profile.checksum,
     },
     output: {
-      resolutions: projectPublicIdentifierArray(value.output.resolutions),
+      resolutions: projectIdentifiers(value.output.resolutions),
       default_resolution: value.output.default_resolution,
-      ratios: projectPublicIdentifierArray(value.output.ratios),
+      ratios: projectIdentifiers(value.output.ratios),
       default_ratio: value.output.default_ratio,
       duration_min: value.output.duration_min,
       duration_max: value.output.duration_max,
       allow_auto_duration: value.output.allow_auto_duration,
       default_duration: value.output.default_duration,
-      output_formats: projectPublicIdentifierArray(value.output.output_formats),
+      output_formats: projectIdentifiers(value.output.output_formats),
     },
     audio: {
       generate_audio_supported: value.audio.generate_audio_supported,
@@ -1392,10 +1708,10 @@ function projectVideoCapability(value) {
       max_audios: value.media.max_audios,
       allow_video_only_reference: value.media.allow_video_only_reference,
       allow_audio_only_reference: value.media.allow_audio_only_reference,
-      modes: projectPublicMap(value.media.modes, projectVideoCapabilityMode),
+      modes: projectPublicMap(value.media.modes, (mode) => projectVideoCapabilityMode(mode, projectIdentifiers)),
     },
   };
-  if (value.output.known_unsupported_resolutions !== undefined) projected.output.known_unsupported_resolutions = projectPublicIdentifierArray(value.output.known_unsupported_resolutions);
+  if (value.output.known_unsupported_resolutions !== undefined) projected.output.known_unsupported_resolutions = projectIdentifiers(value.output.known_unsupported_resolutions);
   if (value.output.default_output_format !== undefined) projected.output.default_output_format = value.output.default_output_format;
   if (Object.hasOwn(value.audio, 'generate_audio_default')) projected.audio.generate_audio_default = value.audio.generate_audio_default;
   if (value.geometry !== undefined) projected.geometry = projectVideoCapabilityGeometry(value.geometry);
@@ -1412,17 +1728,17 @@ function projectVideoCapability(value) {
   return projected;
 }
 
-function projectVideoCapabilityMode(mode) {
+function projectVideoCapabilityMode(mode, projectIdentifiers = projectPublicIdentifierArray) {
   const projected = {
     selectable: mode.selectable,
-    ratios: projectPublicIdentifierArray(mode.ratios),
+    ratios: projectIdentifiers(mode.ratios),
     min_images: mode.min_images,
     max_images: mode.max_images,
   };
   ['duration_min', 'duration_max', 'allow_auto_duration', 'min_reference_videos', 'duration_upstream_validated'].forEach((field) => {
     if (Object.hasOwn(mode, field)) projected[field] = mode[field];
   });
-  if (mode.required_video_roles !== undefined) projected.required_video_roles = projectPublicIdentifierArray(mode.required_video_roles);
+  if (mode.required_video_roles !== undefined) projected.required_video_roles = projectIdentifiers(mode.required_video_roles);
   return projected;
 }
 

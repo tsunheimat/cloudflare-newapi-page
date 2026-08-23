@@ -176,7 +176,8 @@ test('single-heading TOC occupies a column only at the desktop breakpoint', { ti
 test('phone Pricing keeps live modal changes across Escape, backdrop, close, and Confirm', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await newPage(context);
-  await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${baseUrl}/console/pricing`, { waitUntil: 'domcontentloaded' });
+  assert.equal(new URL(page.url()).pathname, '/console/pricing');
   const trigger = page.locator('[data-pricing-filter-trigger]');
   await trigger.waitFor();
   assert.equal(await page.locator('.pricing-advanced-filters').count(), 0);
@@ -257,6 +258,7 @@ test('Pricing switches between desktop inline filters and the mobile modal at 76
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await newPage(context);
   await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
+  assert.equal(new URL(page.url()).pathname, '/pricing');
   const trigger = page.locator('[data-pricing-filter-trigger]');
   await trigger.click();
   const inline = page.locator('.pricing-advanced-filters');
