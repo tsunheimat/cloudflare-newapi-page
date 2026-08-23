@@ -364,7 +364,7 @@ test('live Docs and Pricing preserve ETags and upstream conditional 304 response
       fetch: async (request) => {
         const path = new URL(request.url).pathname;
         calls.push({ path, ifNoneMatch: request.headers.get('if-none-match'), cookie: request.headers.get('cookie') });
-        if (request.headers.get('if-none-match') === '"pricing-v1"' || request.headers.get('if-none-match') === '"docs-v1"') {
+        if (request.headers.get('if-none-match') === '"docs-v1"' || (path.endsWith('/pricing') && request.headers.get('if-none-match'))) {
           return new Response(null, {
             status: 304,
             headers: { 'x-newapi-content-contract': 'v1', etag: request.headers.get('if-none-match') },
@@ -384,29 +384,33 @@ test('live Docs and Pricing preserve ETags and upstream conditional 304 response
     },
   };
 
+  let pricingPublicEtag;
   for (const [path, etag] of [['/api/content/docs', '"docs-v1"'], ['/api/content/pricing', '"pricing-v1"']]) {
     const fresh = await fetchWorker(path, env);
     assert.equal(fresh.status, 200);
-    assert.equal(fresh.headers.get('etag'), etag);
+    const publicEtag = path.endsWith('/pricing') ? fresh.headers.get('etag') : etag;
+    if (path.endsWith('/pricing')) pricingPublicEtag = publicEtag;
+    assert.ok(publicEtag);
+    assert.equal(fresh.headers.get('etag'), publicEtag);
     assert.equal(fresh.headers.get('cache-control'), 'no-cache');
     assert.equal((await fresh.json()).success, true);
 
     const conditional = await fetchWorker(path, env, {
       headers: {
-        'if-none-match': etag,
+        'if-none-match': publicEtag,
         cookie: 'session=must-not-forward',
         authorization: 'Bearer user-key-must-not-forward',
       },
     });
     assert.equal(conditional.status, 304);
-    assert.equal(conditional.headers.get('etag'), etag);
+    assert.equal(conditional.headers.get('etag'), publicEtag);
     assert.equal(await conditional.text(), '');
   }
   assert.deepEqual(calls.map(({ path, ifNoneMatch, cookie }) => ({ path, ifNoneMatch, cookie })), [
     { path: '/api/internal/live-content/v1/docs', ifNoneMatch: null, cookie: null },
     { path: '/api/internal/live-content/v1/docs', ifNoneMatch: '"docs-v1"', cookie: null },
     { path: '/api/internal/live-content/v1/pricing', ifNoneMatch: null, cookie: null },
-    { path: '/api/internal/live-content/v1/pricing', ifNoneMatch: '"pricing-v1"', cookie: null },
+    { path: '/api/internal/live-content/v1/pricing', ifNoneMatch: pricingPublicEtag, cookie: null },
   ]);
 });
 
@@ -622,6 +626,66 @@ test('download binding preserves relative, root-relative, and external redirects
       assert.equal(response.headers.get('location'), location, path);
     }
   }
+});
+
+test('live pricing returns 304 after an order-only upstream ETag change', async () => {
+  const token = 'worker-live-content-token-' + 'x'.repeat(32);
+  const models = [
+    { model_name: 'zeta-model', description: 'Zeta', model_ratio: 2, enable_groups: ['default'] },
+    { model_name: 'alpha-model', description: 'Alpha', model_ratio: 1, enable_groups: ['default'] },
+  ];
+  let requestCount = 0;
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        assert.equal(new URL(request.url).pathname, '/api/internal/live-content/v1/pricing');
+        const data = requestCount++ === 0 ? models : [...models].reverse();
+        const rawEtag = requestCount === 1 ? '"raw-order-a"' : '"raw-order-b"';
+        return new Response(JSON.stringify({
+          success: true,
+          meta: { source: 'newapi', fixture: false, live: true, label: 'NewAPI live content', updated_at: null, contract_version: 'v1' },
+          context: { user_group: 'default', selected_group: 'default', locked: true },
+          display: { quota_display_type: 'USD', default_currency: 'CNY', price: 7.2, usd_exchange_rate: 7.2, custom_currency_exchange_rate: 1, custom_currency_symbol: '¤', show_with_recharge: true },
+          data,
+          vendors: [],
+          group_ratio: { default: 10 },
+          usable_group: { default: '普通用户' },
+          supported_endpoint: {},
+          auto_groups: [],
+          video_resolution_dimensions: {},
+          pricing_version: 'live-v1',
+        }), {
+          headers: {
+            'content-type': 'application/json',
+            'x-newapi-content-contract': 'v1',
+            etag: rawEtag,
+          },
+        });
+      },
+    },
+  };
+
+  const first = await fetchWorker('/api/content/pricing', env);
+  const firstBody = await first.json();
+  const second = await fetchWorker('/api/content/pricing', env);
+  const secondBody = await second.json();
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.deepEqual(secondBody, firstBody);
+  assert.equal(second.headers.get('etag'), first.headers.get('etag'));
+  assert.deepEqual(firstBody.context, { user_group: 'default', selected_group: 'default', locked: true });
+  assert.equal(firstBody.group_ratio.default, 10);
+  assert.deepEqual(firstBody.data.map((model) => model.model_name), ['alpha-model', 'zeta-model']);
+
+  const conditional = await fetchWorker('/api/content/pricing', env, {
+    headers: { 'if-none-match': first.headers.get('etag') },
+  });
+  assert.equal(conditional.status, 304);
+  assert.equal(conditional.headers.get('etag'), first.headers.get('etag'));
+  assert.equal(await conditional.text(), '');
 });
 
 test('downstream inline-style HTML does not receive the SPA CSP', async () => {

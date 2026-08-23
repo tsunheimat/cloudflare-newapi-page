@@ -54,9 +54,15 @@ fallback path in live mode.
 
 For Docs and Pricing, the Worker forwards only the browser's `If-None-Match`
 validator in addition to its fixed `Accept` and private adapter authorization.
-It preserves a syntactically valid upstream `ETag` on public `200` responses
-and returns an empty public `304` when the verified upstream does. Cookies,
-sessions, browser authorization, user API keys, and unrelated headers are not
+Docs preserve a syntactically valid upstream `ETag` on public `200` responses
+and return an empty public `304` when the verified upstream does. Pricing
+projects models in deterministic ascending code-unit order by the public
+`model_name` key (using the canonical projected model as a duplicate-name
+tie-breaker), without changing any model field or value. It derives the public
+pricing `ETag` from that projected payload, so an equivalent upstream `200`
+with a different model order still returns the same validator and a matching
+browser validator is converted to an empty public `304`. Cookies, sessions,
+browser authorization, user API keys, and unrelated headers are not
 forwarded. The five-second deadline covers binding fetch, body streaming,
 UTF-8 decoding, JSON parsing, validation, and projection.
 

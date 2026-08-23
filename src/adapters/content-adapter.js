@@ -118,6 +118,7 @@ export function createLiveContentAdapter(
       maxBodyBytes,
       ifNoneMatch: options.ifNoneMatch,
       transform: options.transform,
+      etag: options.etag,
     });
   const getDocsCatalogResponse = (options = {}) => fetchAndValidate(
     '/api/internal/live-content/v1/docs?locale=zh',
@@ -139,6 +140,7 @@ export function createLiveContentAdapter(
     'pricing',
     options,
     assertLivePricing,
+    stablePricingEtag,
   );
   return {
     name: CONTENT_ADAPTER_LIVE,
@@ -177,10 +179,11 @@ export function createLiveContentAdapter(
     },
   };
 
-  async function fetchAndValidate(path, kind, options, validator) {
+  async function fetchAndValidate(path, kind, options, validator, etag) {
     return fetchPayload(path, kind, {
       ...options,
       transform: (payload) => clone(validator(payload)),
+      etag,
     });
   }
 }
@@ -218,7 +221,13 @@ function fetchLivePayload(
   token,
   path,
   kind,
-  { timeoutMs, maxBodyBytes, ifNoneMatch = undefined, transform = (value) => value },
+  {
+    timeoutMs,
+    maxBodyBytes,
+    ifNoneMatch = undefined,
+    transform = (value) => value,
+    etag: projectEtag = undefined,
+  },
 ) {
   const binding = env[LIVE_CONTENT_VPC_BINDING];
   const controller = new AbortController();
@@ -285,6 +294,9 @@ function fetchLivePayload(
       }
       if (response.status === 304) {
         if (!etag) throw liveUnavailable('invalid_upstream_etag');
+        if (projectEtag && !etagMatches(ifNoneMatch, etag)) {
+          throw liveUnavailable('invalid_upstream_etag');
+        }
         return { status: 304, payload: null, etag };
       }
       const contentType = response.headers.get('content-type') || '';
@@ -331,7 +343,12 @@ function fetchLivePayload(
         throw error;
       }
       assertBeforeDeadline(deadline, controller);
-      return { status: 200, payload: validated, etag };
+      const publicEtag = projectEtag ? projectEtag(validated) : etag;
+      assertBeforeDeadline(deadline, controller);
+      if (publicEtag && etagMatches(ifNoneMatch, publicEtag)) {
+        return { status: 304, payload: null, etag: publicEtag };
+      }
+      return { status: 200, payload: validated, etag: publicEtag };
     })();
   return Promise.race([operation, timeout])
     .catch((error) => {
@@ -408,6 +425,16 @@ function verifiedEtag(value) {
   return /^(?:W\/)?"(?:[\x21\x23-\x7e\x80-\xff])*"$/.test(value)
     ? value
     : null;
+}
+
+function etagMatches(value, current) {
+  if (typeof value !== 'string' || !current) return false;
+  return value.split(',').some((candidate) => {
+    const trimmed = candidate.trim();
+    if (trimmed === '*') return true;
+    if (!verifiedEtag(trimmed)) return false;
+    return trimmed.replace(/^W\//, '') === current.replace(/^W\//, '');
+  });
 }
 
 function liveUnavailable(reason) {
@@ -790,6 +817,8 @@ function projectDocsBlock(block) {
 }
 
 function projectLivePricing(payload) {
+  const models = payload.data.map(projectPricingModel);
+  models.sort(comparePricingModels);
   return {
     success: true,
     meta: projectLiveMeta(payload.meta, false),
@@ -807,7 +836,7 @@ function projectLivePricing(payload) {
       custom_currency_symbol: payload.display.custom_currency_symbol,
       show_with_recharge: payload.display.show_with_recharge,
     },
-    data: payload.data.map(projectPricingModel),
+    data: models,
     vendors: payload.vendors.map((vendor) => {
       const projected = { id: vendor.id, name: vendor.name };
       if (vendor.description !== undefined) projected.description = vendor.description;
@@ -823,6 +852,49 @@ function projectLivePricing(payload) {
     ),
     pricing_version: payload.pricing_version,
   };
+}
+
+// NewAPI may serialize equivalent model sets in different array orders. Use
+// the public model_name as the primary, locale-independent ordering key; the
+// canonical projected model is only a deterministic tie-breaker for duplicate
+// names. Neither step changes a model field or value.
+function comparePricingModels(left, right) {
+  const byName = compareStableStrings(left.model_name, right.model_name);
+  if (byName !== 0) return byName;
+  return compareStableStrings(canonicalJson(left), canonicalJson(right));
+}
+
+function compareStableStrings(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function stablePricingEtag(payload) {
+  return `"pricing-${fnv1a64(canonicalJson(payload))}"`;
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort(compareStableStrings)
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(',')}}`;
+  }
+  const serialized = JSON.stringify(value);
+  return serialized === undefined ? 'null' : serialized;
+}
+
+function fnv1a64(value) {
+  let hash = 14695981039346656037n;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= BigInt(value.charCodeAt(index));
+    hash = BigInt.asUintN(64, hash * 1099511628211n);
+  }
+  return hash.toString(16).padStart(16, '0');
 }
 
 function projectPricingModel(model) {

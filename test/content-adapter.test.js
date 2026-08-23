@@ -242,6 +242,52 @@ test('live adapter validates pricing invariants and does not fall back to fixtur
   );
 });
 
+test('live pricing uses deterministic model ordering and canonical ETags', async () => {
+  const models = [
+    { model_name: 'zeta-model', description: 'Zeta', model_ratio: 2, enable_groups: ['default'] },
+    { model_name: 'alpha-model', description: 'Alpha', model_ratio: 1, enable_groups: ['default'] },
+  ];
+  const payloads = [
+    { ...livePricing, data: models },
+    { ...livePricing, data: [...models].reverse() },
+  ];
+  const calls = [];
+  let requestCount = 0;
+  const adapter = createLiveContentAdapter(liveEnv(async (request) => {
+    calls.push(request);
+    const payload = payloads[Math.min(requestCount, payloads.length - 1)];
+    const rawEtag = requestCount++ === 0 ? '"raw-order-a"' : '"raw-order-b"';
+    return liveResponse(payload, 200, { etag: rawEtag });
+  }));
+
+  const first = await adapter.getPricingResponse();
+  const second = await adapter.getPricingResponse();
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.deepEqual(first.payload.context, {
+    user_group: 'default',
+    selected_group: 'default',
+    locked: true,
+  });
+  assert.equal(first.payload.group_ratio.default, 10);
+  assert.deepEqual(
+    first.payload.data.map((model) => model.model_name),
+    ['alpha-model', 'zeta-model'],
+  );
+  assert.deepEqual(first.payload.data, [
+    { model_name: 'alpha-model', description: 'Alpha', model_ratio: 1, enable_groups: ['default'] },
+    { model_name: 'zeta-model', description: 'Zeta', model_ratio: 2, enable_groups: ['default'] },
+  ]);
+  assert.deepEqual(second.payload, first.payload);
+  assert.equal(second.etag, first.etag);
+  assert.notEqual(first.etag, '"raw-order-a"');
+  assert.notEqual(second.etag, '"raw-order-b"');
+
+  const conditional = await adapter.getPricingResponse({ ifNoneMatch: first.etag });
+  assert.deepEqual(conditional, { status: 304, payload: null, etag: first.etag });
+  assert.equal(calls[2].headers.get('if-none-match'), first.etag);
+});
+
 test('live adapter bounds upstream failures and redacts backend responses', async () => {
   for (const response of [
     liveResponse({ success: false, message: 'secret backend details' }, 503),
