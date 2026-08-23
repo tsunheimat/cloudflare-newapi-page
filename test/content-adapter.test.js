@@ -8,6 +8,7 @@ import {
   createFixtureAdapter,
   createLiveContentAdapter,
   LIVE_CONTENT_MAX_BODY_BYTES,
+  LIVE_CONTENT_MAX_SERIALIZED_REQUEST_BYTES,
   LIVE_CONTENT_DOCS_RENDERER_VERSION,
   LIVE_CONTENT_DOCS_SCHEMA_VERSION,
   LIVE_CONTENT_TIMEOUT_MS,
@@ -330,7 +331,7 @@ test('live pricing retains the current NewAPI model families through a bounded p
       },
       geometry: { '720p': { '16:9': [1280, 720] } },
       image_size: { max_single_decoded_bytes: 1024, single_limit_exclusive: true, single_limit_label: 'single', max_total_decoded_bytes: 2048, total_limit_label: 'total' },
-      max_serialized_request_bytes: 4096,
+      max_serialized_request_bytes: 64_000_000,
     },
     pricing_version: 'model-pricing-v2',
     private_secret: 'drop',
@@ -358,13 +359,55 @@ test('live pricing retains the current NewAPI model families through a bounded p
       output: { resolutions: ['720p'], default_resolution: '720p', ratios: ['16:9'], default_ratio: '16:9', duration_min: 1, duration_max: 10, allow_auto_duration: true, default_duration: 5, output_formats: ['mp4'], known_unsupported_resolutions: ['4k'], default_output_format: 'mp4' },
       audio: { generate_audio_supported: true, generate_audio_default: false },
       media: { max_images: 2, max_videos: 1, max_audios: 1, allow_video_only_reference: true, allow_audio_only_reference: false, modes: { text_generate: { selectable: true, ratios: ['16:9'], min_images: 0, max_images: 1, duration_min: 1, duration_max: 10, allow_auto_duration: true, min_reference_videos: 0, required_video_roles: [], duration_upstream_validated: false } } },
-      geometry: { '720p': { '16:9': [1280, 720] } }, image_size: { max_single_decoded_bytes: 1024, single_limit_exclusive: true, single_limit_label: 'single', max_total_decoded_bytes: 2048, total_limit_label: 'total' }, max_serialized_request_bytes: 4096,
+      geometry: { '720p': { '16:9': [1280, 720] } }, image_size: { max_single_decoded_bytes: 1024, single_limit_exclusive: true, single_limit_label: 'single', max_total_decoded_bytes: 2048, total_limit_label: 'total' }, max_serialized_request_bytes: 64_000_000,
     },
   });
   assert.equal(Object.hasOwn(model, 'private_secret'), false);
   assert.equal(Object.hasOwn(model.endpoint_map, 'private_secret'), false);
   assert.equal(Object.hasOwn(model.video_pricing, 'private_secret'), false);
   assert.equal(Object.hasOwn(result.payload.vendors[0], 'private_secret'), false);
+});
+
+test('live pricing accepts the exact finite Seedance 2.5 serialized request bound', async () => {
+  assert.equal(LIVE_CONTENT_MAX_SERIALIZED_REQUEST_BYTES, 64_000_000);
+  const capability = {
+    model: 'live-model',
+    mapped_upstream_models: ['upstream'],
+    schema_version: 1,
+    profile: { name: 'profile', label: 'Profile', revision: 1, checksum: 'sum' },
+    output: {
+      resolutions: ['720p'], default_resolution: '720p', ratios: ['16:9'],
+      default_ratio: '16:9', duration_min: 1, duration_max: 10,
+      allow_auto_duration: true, default_duration: 5, output_formats: ['mp4'],
+    },
+    audio: { generate_audio_supported: true },
+    media: {
+      max_images: 1, max_videos: 1, max_audios: 0,
+      allow_video_only_reference: false, allow_audio_only_reference: false,
+      modes: {
+        text_generate: { selectable: true, ratios: ['16:9'], min_images: 0, max_images: 1 },
+      },
+    },
+    max_serialized_request_bytes: 64_000_000,
+  };
+  const accepted = createContentAdapter(liveEnv(async () => liveResponse({
+    ...livePricing,
+    data: [{ ...livePricing.data[0], video_capability: capability }],
+  })));
+  const payload = await accepted.getPricing();
+  assert.equal(payload.data[0].video_capability.max_serialized_request_bytes, 64_000_000);
+
+  const rejected = createContentAdapter(liveEnv(async () => liveResponse({
+    ...livePricing,
+    data: [{
+      ...livePricing.data[0],
+      video_capability: { ...capability, max_serialized_request_bytes: 64_000_001 },
+    }],
+  })));
+  await assert.rejects(
+    () => rejected.getPricing(),
+    (error) => error instanceof HttpError && error.status === 503 && error.details.reason === 'invalid_upstream_schema',
+  );
 });
 
 test('pricing ETag changes for capability and route-contract-only changes', async () => {
@@ -451,6 +494,59 @@ test('live pricing uses deterministic model ordering and canonical ETags', async
   const conditional = await adapter.getPricingResponse({ ifNoneMatch: first.etag });
   assert.deepEqual(conditional, { status: 304, payload: null, etag: first.etag });
   assert.equal(calls[2].headers.get('if-none-match'), first.etag);
+});
+
+test('live pricing canonical ETags ignore vendor and identifier-array order but retain value changes', async () => {
+  const base = {
+    ...livePricing,
+    data: [{
+      ...livePricing.data[0],
+      model_name: 'order-sensitive-model',
+      enable_groups: ['premium', 'default'],
+      supported_endpoint_types: ['responses', 'openai'],
+    }],
+    vendors: [
+      { id: 2, name: 'Vendor B' },
+      { id: 1, name: 'Vendor A' },
+    ],
+  };
+  const reordered = {
+    ...base,
+    data: [{
+      ...base.data[0],
+      enable_groups: [...base.data[0].enable_groups].reverse(),
+      supported_endpoint_types: [...base.data[0].supported_endpoint_types].reverse(),
+    }],
+    vendors: [...base.vendors].reverse(),
+  };
+  const changed = {
+    ...reordered,
+    data: [{
+      ...reordered.data[0],
+      supported_endpoint_types: ['openai', 'chat'],
+    }],
+    vendors: [{ ...reordered.vendors[0], name: 'Vendor A changed' }, { ...reordered.vendors[1] }],
+  };
+  const payloads = [base, reordered, changed];
+  let requestCount = 0;
+  const adapter = createLiveContentAdapter(liveEnv(async () => {
+    const payload = payloads[Math.min(requestCount, payloads.length - 1)];
+    requestCount += 1;
+    return liveResponse(payload, 200, { etag: `"raw-canonical-${requestCount}"` });
+  }));
+
+  const first = await adapter.getPricingResponse();
+  const reorderedResult = await adapter.getPricingResponse();
+  const changedResult = await adapter.getPricingResponse();
+
+  assert.deepEqual(first.payload.vendors.map(({ id }) => id), [1, 2]);
+  assert.deepEqual(first.payload.data[0].enable_groups, ['default', 'premium']);
+  assert.deepEqual(first.payload.data[0].supported_endpoint_types, ['openai', 'responses']);
+  assert.deepEqual(reorderedResult.payload, first.payload);
+  assert.equal(reorderedResult.etag, first.etag);
+  assert.notEqual(changedResult.etag, first.etag);
+  assert.deepEqual(changedResult.payload.data[0].supported_endpoint_types, ['chat', 'openai']);
+  assert.equal(changedResult.payload.vendors[0].name, 'Vendor A changed');
 });
 
 test('live pricing matches quoted, wildcard, strong, and weak validators correctly', async () => {

@@ -58,11 +58,14 @@ Docs preserve a syntactically valid upstream `ETag` on public `200` responses
 and return an empty public `304` when the verified upstream does. Pricing
 projects models in deterministic ascending code-unit order by the public
 `model_name` key (using the canonical projected model as a duplicate-name
-tie-breaker), without changing any model field or value. It derives the public
-pricing `ETag` from that projected payload, so an equivalent upstream `200`
-with a different model order still returns the same validator and a matching
-browser validator is converted to an empty public `304`. Cookies, sessions,
-browser authorization, user API keys, and unrelated headers are not
+tie-breaker), sorts vendors by their stable public `id`, and sorts projected
+public identifier arrays such as `enable_groups` and
+`supported_endpoint_types`. These order-only canonicalization steps do not
+change values or semantics. It derives the public pricing `ETag` from that
+projected payload, so an equivalent upstream `200` with different model,
+vendor, or identifier-array order still returns the same validator and a
+matching browser validator is converted to an empty public `304`. Cookies,
+sessions, browser authorization, user API keys, and unrelated headers are not
 forwarded. The five-second deadline covers binding fetch, body streaming,
 UTF-8 decoding, JSON parsing, validation, and projection.
 
@@ -94,7 +97,10 @@ schema-validated with finite numeric, identifier, depth/entry, and byte-size
 bounds. Only their documented public fields are projected; secret-like or
 unknown keys are redacted. The canonical projected payload (including every
 retained nested field) is the input to the stable pricing ETag, so a capability
-or route-contract-only change cannot produce a false `304`.
+or route-contract-only change cannot produce a false `304`. The
+`video_capability.max_serialized_request_bytes` field has an inclusive finite
+upper bound of `64,000,000` bytes, matching the current Seedance 2.5 public
+contract; larger or non-integer values fail closed.
 
 The browser keeps NewAPI's two pricing modes: official mode uses effective
 ratio `1` and raw/base official USD prices, while ordinary group mode uses the

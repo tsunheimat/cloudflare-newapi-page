@@ -12,6 +12,10 @@ export const LIVE_CONTENT_DOCS_RENDERER_VERSION = 1;
 export const LIVE_CONTENT_ORIGIN = 'http://newapi-api.newapi:3000';
 export const LIVE_CONTENT_TIMEOUT_MS = 5_000;
 export const LIVE_CONTENT_MAX_BODY_BYTES = 2 * 1024 * 1024;
+// Seedance 2.5 currently publishes this inclusive request-size bound. Keep
+// the compatibility limit finite so an upstream value cannot disable
+// Worker-side validation entirely.
+export const LIVE_CONTENT_MAX_SERIALIZED_REQUEST_BYTES = 64_000_000;
 export const LOCKED_PRICING_CONTEXT = Object.freeze({
   user_group: 'default',
   selected_group: 'default',
@@ -656,7 +660,12 @@ function assertLiveVideoCapability(value) {
     if (image.max_total_decoded_bytes !== undefined && (!Number.isInteger(image.max_total_decoded_bytes) || image.max_total_decoded_bytes < 0 || image.max_total_decoded_bytes > 500 * 1024 * 1024)) schemaFailure();
     if (image.total_limit_label !== undefined) assertString(image.total_limit_label, 200, { allowEmpty: true });
   }
-  if (value.max_serialized_request_bytes !== undefined && (!Number.isInteger(value.max_serialized_request_bytes) || value.max_serialized_request_bytes < 0 || value.max_serialized_request_bytes > 10 * 1024 * 1024)) schemaFailure();
+  if (
+    value.max_serialized_request_bytes !== undefined &&
+    (!Number.isInteger(value.max_serialized_request_bytes) ||
+      value.max_serialized_request_bytes < 0 ||
+      value.max_serialized_request_bytes > LIVE_CONTENT_MAX_SERIALIZED_REQUEST_BYTES)
+  ) schemaFailure();
 }
 
 function assertLiveVideoCapabilityOutput(value) {
@@ -956,6 +965,13 @@ function projectDocsBlock(block) {
 function projectLivePricing(payload) {
   const models = payload.data.map(projectPricingModel);
   models.sort(comparePricingModels);
+  const vendors = payload.vendors.map((vendor) => {
+    const projected = { id: vendor.id, name: vendor.name };
+    if (vendor.description !== undefined) projected.description = vendor.description;
+    if (vendor.icon !== undefined) projected.icon = vendor.icon;
+    return projected;
+  });
+  vendors.sort(comparePricingVendors);
   return {
     success: true,
     meta: projectLiveMeta(payload.meta, false),
@@ -974,12 +990,7 @@ function projectLivePricing(payload) {
       show_with_recharge: payload.display.show_with_recharge,
     },
     data: models,
-    vendors: payload.vendors.map((vendor) => {
-      const projected = { id: vendor.id, name: vendor.name };
-      if (vendor.description !== undefined) projected.description = vendor.description;
-      if (vendor.icon !== undefined) projected.icon = vendor.icon;
-      return projected;
-    }),
+    vendors,
     group_ratio: projectPublicMap(payload.group_ratio, (ratio) => ratio),
     usable_group: { default: payload.usable_group.default },
     supported_endpoint: projectEndpointMap(payload.supported_endpoint),
@@ -998,6 +1009,15 @@ function projectLivePricing(payload) {
 // names. Neither step changes a model field or value.
 function comparePricingModels(left, right) {
   const byName = compareStableStrings(left.model_name, right.model_name);
+  if (byName !== 0) return byName;
+  return compareStableStrings(canonicalJson(left), canonicalJson(right));
+}
+
+// Vendor ids are the stable public identity. The remaining comparisons make
+// duplicate or malformed identities deterministic without changing values.
+function comparePricingVendors(left, right) {
+  if (left.id !== right.id) return left.id < right.id ? -1 : 1;
+  const byName = compareStableStrings(left.name, right.name);
   if (byName !== 0) return byName;
   return compareStableStrings(canonicalJson(left), canonicalJson(right));
 }
@@ -1061,7 +1081,9 @@ function projectPricingModel(model) {
 }
 
 function projectPublicIdentifierArray(values) {
-  return values.filter((value) => isPublicMapKey(value));
+  return values
+    .filter((value) => isPublicMapKey(value))
+    .sort(compareStableStrings);
 }
 
 function projectVideoPricing(profile) {
