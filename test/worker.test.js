@@ -62,6 +62,151 @@ test('content routes serve fixture docs and pricing', async () => {
   assert.equal(pricing.meta.live, false);
 });
 
+test('front-door session routes forward only the signed session and New-Api-User identity', async () => {
+  const seen = [];
+  const pricing = {
+    success: true,
+    data: [{ model_name: 'gpt-session', enable_groups: ['default'] }],
+    vendors: [{ id: 7, name: 'Canonical vendor' }],
+    group_ratio: { default: 1.2 },
+    usable_group: { default: 'default' },
+    supported_endpoint: {},
+    auto_groups: [],
+    video_resolution_dimensions: {},
+    pricing_version: 'canonical',
+  };
+  const navigation = {
+    success: true,
+    data: [{
+      type: 'group',
+      id: 10,
+      title: '开始使用',
+      children: [{
+        type: 'page',
+        id: 11,
+        slug: 'setup',
+        path: 'setup',
+        title: '安装',
+        children: [{
+          type: 'page',
+          id: 12,
+          slug: 'windows',
+          path: 'setup/windows',
+          title: 'Windows',
+        }],
+      }],
+    }],
+  };
+  const env = {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        seen.push({
+          path: new URL(request.url).pathname,
+          query: new URL(request.url).search,
+          method: request.method,
+          cookie: request.headers.get('cookie'),
+          identity: request.headers.get('new-api-user'),
+          ifNoneMatch: request.headers.get('if-none-match'),
+          authorization: request.headers.get('authorization'),
+          random: request.headers.get('x-random'),
+        });
+        const body = new URL(request.url).pathname.endsWith('/pricing')
+          ? pricing
+          : navigation;
+        return new Response(JSON.stringify(body), {
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        });
+      },
+    },
+  };
+  const init = {
+    headers: {
+      cookie: 'session=signed-cookie; preference=compact',
+      'New-Api-User': 'public-user-1',
+      'X-Random': 'must-not-forward',
+      'If-None-Match': '"browser-validator"',
+    },
+  };
+  const pricingResponse = await fetchWorker('/api/front-door/v1/pricing', env, init);
+  assert.equal(pricingResponse.status, 200);
+  assert.deepEqual(await pricingResponse.json(), pricing);
+  const docsResponse = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', env, init);
+  assert.equal(docsResponse.status, 200);
+  assert.deepEqual(await docsResponse.json(), navigation);
+  assert.deepEqual(seen.map(({ path, query, method, cookie, identity, authorization, random, ifNoneMatch }) => ({ path, query, method, cookie, identity, authorization, random, ifNoneMatch })), [
+    {
+      path: '/api/front-door/v1/pricing',
+      query: '',
+      method: 'GET',
+      cookie: 'session=signed-cookie',
+      identity: 'public-user-1',
+      authorization: null,
+      random: null,
+      ifNoneMatch: null,
+    },
+    {
+      path: '/api/front-door/v1/docs/v2/navigation',
+      query: '?locale=zh',
+      method: 'GET',
+      cookie: 'session=signed-cookie',
+      identity: 'public-user-1',
+      authorization: null,
+      random: null,
+      ifNoneMatch: null,
+    },
+  ]);
+});
+
+test('front-door Pricing preserves a non-default usable user group from canonical NewAPI', async () => {
+  const payload = {
+    success: true,
+    data: [],
+    vendors: [],
+    group_ratio: { vip: 0.8 },
+    usable_group: { vip: 'VIP' },
+    supported_endpoint: {},
+    auto_groups: [],
+    video_resolution_dimensions: {},
+    pricing_version: 'canonical',
+  };
+  const response = await fetchWorker('/api/front-door/v1/pricing', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => new Response(JSON.stringify(payload), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    },
+  }, {
+    headers: { cookie: 'session=signed', 'New-Api-User': 'vip-user' },
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), payload);
+});
+
+test('front-door session routes reject credentials and incomplete browser sessions before VPC forwarding', async () => {
+  let calls = 0;
+  const env = {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: { fetch: async () => { calls += 1; throw new Error('must not forward'); } },
+  };
+  const rejected = [
+    { headers: { cookie: 'session=signed', 'New-Api-User': 'u', authorization: 'Bearer key' } },
+    { headers: { cookie: 'session=signed', 'New-Api-User': 'u', 'X-Api-Key': 'key' } },
+    { headers: { cookie: 'session=signed', 'New-Api-User': 'u', 'Proxy-Authorization': 'Basic key' } },
+    { headers: { cookie: 'session=signed', 'New-Api-User': 'u', 'Sec-WebSocket-Protocol': 'bearer key' } },
+    { headers: { cookie: 'session=signed', 'New-Api-User': 'u' }, url: '/api/front-door/v1/pricing?api_key=key' },
+    { headers: { 'New-Api-User': 'u' } },
+    { headers: { cookie: 'session=signed' } },
+  ];
+  for (const candidate of rejected) {
+    const response = await fetchWorker(candidate.url || '/api/front-door/v1/pricing', env, { headers: candidate.headers });
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).error.code, 'unauthorized');
+  }
+  assert.equal(calls, 0);
+});
+
 test('invalid or missing content paths return bounded JSON errors', async () => {
   const badSlug = await fetchWorker('/api/content/docs/%2Fescape', fixtureEnv);
   assert.equal(badSlug.status, 400);

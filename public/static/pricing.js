@@ -38,6 +38,22 @@ const JSON_STRING_SOURCE = '"(?:[^"\\\\]|\\\\.)*"';
 const DISPLAY_CURRENCIES = new Set(['USD', 'CNY', 'CUSTOM']);
 
 export function assertOrdinaryPricingPayload(payload) {
+  if (payload?.__frontDoor === true) {
+    if (
+      typeof payload?.context?.user_group !== 'string' ||
+      typeof payload?.context?.selected_group !== 'string' ||
+      typeof payload?.context?.locked !== 'boolean'
+    ) {
+      throw new Error('Canonical Pricing payload has no user context.');
+    }
+    if (!(payload.context.selected_group in (payload?.group_ratio || {}))) {
+      throw new Error('Canonical Pricing payload has no selected group ratio.');
+    }
+    if (!(payload.context.selected_group in (payload?.usable_group || {}))) {
+      throw new Error('Canonical Pricing payload has no selected usable group.');
+    }
+    return payload;
+  }
   if (
     payload?.context?.user_group !== ORDINARY_USER_GROUP ||
     payload?.context?.selected_group !== ORDINARY_SELECTED_GROUP ||
@@ -69,6 +85,9 @@ export function modelSupportsGroup(model, group = ORDINARY_SELECTED_GROUP) {
 
 export function getOrdinaryUserModels(payload) {
   assertOrdinaryPricingPayload(payload);
+  if (payload?.__frontDoor === true) {
+    return Array.isArray(payload.data) ? payload.data : [];
+  }
   return (Array.isArray(payload.data) ? payload.data : []).filter((model) =>
     modelSupportsGroup(model, ORDINARY_SELECTED_GROUP),
   );
@@ -156,12 +175,13 @@ export function normalizeSourcePriceToUSD({
 
 export function calculateModelPricing(model, payload, options = {}) {
   assertOrdinaryPricingPayload(payload);
-  if (!modelSupportsGroup(model, ORDINARY_SELECTED_GROUP)) return null;
+  const selectedGroup = options.selectedGroup || payload.context?.selected_group || ORDINARY_SELECTED_GROUP;
+  if (!modelSupportsGroup(model, selectedGroup)) return null;
 
   const pricingMode = options.pricingMode || PRICING_MODE_GROUP;
   const pricingContext = resolvePricingContext({
     model,
-    selectedGroup: ORDINARY_SELECTED_GROUP,
+    selectedGroup,
     groupRatio: payload.group_ratio,
     pricingMode,
   });

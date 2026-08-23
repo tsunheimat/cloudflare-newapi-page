@@ -19,6 +19,12 @@ export const LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION = 100_000;
 // the compatibility limit finite so an upstream value cannot disable
 // Worker-side validation entirely.
 export const LIVE_CONTENT_MAX_SERIALIZED_REQUEST_BYTES = 64_000_000;
+export const FRONT_DOOR_CONTENT_VPC_BINDING = LIVE_CONTENT_VPC_BINDING;
+export const FRONT_DOOR_CONTENT_ORIGIN = LIVE_CONTENT_ORIGIN;
+export const FRONT_DOOR_CONTENT_TIMEOUT_MS = LIVE_CONTENT_TIMEOUT_MS;
+export const FRONT_DOOR_CONTENT_MAX_BODY_BYTES = 8 * 1024 * 1024;
+export const FRONT_DOOR_DOCS_NAVIGATION_PATH = '/api/front-door/v1/docs/v2/navigation?locale=zh';
+export const FRONT_DOOR_PRICING_PATH = '/api/front-door/v1/pricing';
 export const LOCKED_PRICING_CONTEXT = Object.freeze({
   user_group: 'default',
   selected_group: 'default',
@@ -45,6 +51,242 @@ export function createContentAdapter(env = {}) {
       live_integration: false,
     },
   );
+}
+
+/**
+ * Browser-session-only adapter for the approved normal-user front door.
+ *
+ * The private service binding is the only origin selector.  The upstream
+ * request is deliberately assembled from the signed `session` cookie and the
+ * matching `New-Api-User` identity; browser Authorization/API-key/provider
+ * credentials and arbitrary browser headers never cross this boundary.
+ */
+export function createFrontDoorSessionAdapter(
+  env = {},
+  request,
+  {
+    timeoutMs = FRONT_DOOR_CONTENT_TIMEOUT_MS,
+    maxBodyBytes = FRONT_DOOR_CONTENT_MAX_BODY_BYTES,
+  } = {},
+) {
+  if (typeof env[FRONT_DOOR_CONTENT_VPC_BINDING]?.fetch !== 'function') {
+    throw frontDoorUnavailable('missing_vpc_binding');
+  }
+  const credentials = extractFrontDoorCredentials(request);
+  const fetchResponse = (path, kind) => fetchFrontDoorPayload(
+    env,
+    credentials,
+    path,
+    kind,
+    { timeoutMs, maxBodyBytes },
+  );
+  return {
+    name: 'front-door-session',
+    live: true,
+    async getPricingResponse() {
+      return fetchResponse(FRONT_DOOR_PRICING_PATH, 'pricing');
+    },
+    async getDocsNavigationResponse() {
+      return fetchResponse(
+        FRONT_DOOR_DOCS_NAVIGATION_PATH,
+        'docs_navigation',
+      );
+    },
+  };
+}
+
+export function extractFrontDoorCredentials(request) {
+  if (!(request instanceof Request)) {
+    throw new HttpError(401, 'Browser session is required.');
+  }
+  if (hasFrontDoorCredentialQuery(request.url)) {
+    throw new HttpError(401, 'Browser session is required.');
+  }
+  for (const header of FRONT_DOOR_REJECTED_HEADERS) {
+    if (String(request.headers.get(header) || '').trim() !== '') {
+      throw new HttpError(401, 'Browser session is required.');
+    }
+  }
+  const cookie = extractSessionCookie(request.headers.get('cookie'));
+  const identity = String(request.headers.get('new-api-user') || '').trim();
+  if (!cookie || !identity || identity.length > 255 || /[\u0000-\u001f\u007f]/.test(identity)) {
+    throw new HttpError(401, 'Browser session is required.');
+  }
+  return Object.freeze({ cookie, identity });
+}
+
+const FRONT_DOOR_REJECTED_HEADERS = Object.freeze([
+  'authorization',
+  'proxy-authorization',
+  'x-api-key',
+  'x-goog-api-key',
+  'api-key',
+  'new-api-key',
+  'x-newapi-live-content-token',
+  'sec-websocket-protocol',
+]);
+
+function extractSessionCookie(header) {
+  if (typeof header !== 'string' || header.length > 16_384) return '';
+  const pairs = header.split(';').map((part) => part.trim());
+  const sessionPairs = pairs.filter((part) => part.startsWith('session='));
+  if (sessionPairs.length !== 1) return '';
+  const pair = sessionPairs[0];
+  const value = pair.slice('session='.length).trim();
+  if (!value || /[\u0000-\u001f\u007f;]/.test(value)) return '';
+  return `session=${value}`;
+}
+
+function hasFrontDoorCredentialQuery(rawUrl) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return true;
+  }
+  return [...url.searchParams.keys()].some((key) => [
+    'key', 'api_key', 'api-key', 'access_token', 'token', 'authorization',
+  ].includes(key.toLowerCase()));
+}
+
+async function fetchFrontDoorPayload(
+  env,
+  credentials,
+  path,
+  kind,
+  { timeoutMs, maxBodyBytes },
+) {
+  const binding = env[FRONT_DOOR_CONTENT_VPC_BINDING];
+  const controller = new AbortController();
+  const deadline = Date.now() + timeoutMs;
+  let rejectTimeout;
+  const timeout = new Promise((_, reject) => {
+    rejectTimeout = reject;
+  });
+  const timer = setTimeout(() => {
+    controller.abort();
+    rejectTimeout(frontDoorUnavailable('upstream_timeout'));
+  }, timeoutMs);
+  const headers = new Headers({
+    Accept: 'application/json',
+    Cookie: credentials.cookie,
+    'New-Api-User': credentials.identity,
+  });
+  try {
+    let response;
+    try {
+      const operation = binding.fetch(new Request(`${FRONT_DOOR_CONTENT_ORIGIN}${path}`, {
+          method: 'GET',
+          headers,
+          signal: controller.signal,
+        }));
+      response = await Promise.race([operation, timeout]);
+    } catch {
+      if (controller.signal.aborted || Date.now() >= deadline) {
+        throw frontDoorUnavailable('upstream_timeout');
+      }
+      throw frontDoorUnavailable('upstream_transport');
+    }
+    if (!response || !response.headers || ![200, 304].includes(response.status)) {
+      if (response?.status === 401 || response?.status === 403) {
+        throw new HttpError(401, 'Browser session is required.');
+      }
+      throw frontDoorUnavailable('upstream_status');
+    }
+    const etag = response.headers.get('etag');
+    if (etag !== null && !verifiedEtag(etag)) {
+      throw frontDoorUnavailable('invalid_upstream_etag');
+    }
+    if (response.status === 304) {
+      if (!etag) {
+        throw frontDoorUnavailable('invalid_upstream_etag');
+      }
+      return { status: 304, payload: null, etag };
+    }
+    if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || '')) {
+      throw frontDoorUnavailable('invalid_upstream_content_type');
+    }
+    let raw;
+    try {
+      raw = await readBoundedBody(
+        response,
+        maxBodyBytes,
+        controller.signal,
+        deadline,
+      );
+    } catch (error) {
+      if (controller.signal.aborted) throw frontDoorUnavailable('upstream_timeout');
+      throw frontDoorUnavailable(
+        error?.message === 'upstream response too large'
+          ? 'upstream_body_too_large'
+          : 'invalid_upstream_body',
+      );
+    }
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      throw frontDoorUnavailable('invalid_upstream_json');
+    }
+    if (!payload || payload.success !== true || !Object.hasOwn(payload, 'data')) {
+      throw frontDoorUnavailable('invalid_upstream_schema');
+    }
+    if (kind === 'pricing') assertFrontDoorPricing(payload);
+    else if (kind === 'docs_navigation') assertFrontDoorNavigation(payload);
+    else throw frontDoorUnavailable('invalid_upstream_schema');
+    return { status: 200, payload: clone(payload), etag: verifiedEtag(etag) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function assertFrontDoorPricing(payload) {
+  if (!Array.isArray(payload.data) || !isRecord(payload.group_ratio) || !isRecord(payload.usable_group)) {
+    throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  if (Object.keys(payload.group_ratio).length === 0 || Object.keys(payload.usable_group).length === 0) {
+    throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  for (const ratio of Object.values(payload.group_ratio)) {
+    if (!isFiniteNumber(ratio) || ratio < 0) throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+}
+
+
+function assertFrontDoorNavigation(payload) {
+  if (!Array.isArray(payload.data) || payload.data.length > 5_000) {
+    throw frontDoorUnavailable('invalid_upstream_schema');
+  }
+  const visit = (nodes, depth = 0) => {
+    if (depth > 100 || !Array.isArray(nodes) || nodes.length > 5_000) {
+      throw frontDoorUnavailable('invalid_upstream_schema');
+    }
+    for (const node of nodes) {
+      if (!isRecord(node) || !['group', 'page'].includes(node.type) || !Number.isInteger(node.id) || node.id <= 0) {
+        throw frontDoorUnavailable('invalid_upstream_schema');
+      }
+      if (typeof node.title !== 'string' || node.title.trim() === '' || node.title.length > 300) {
+        throw frontDoorUnavailable('invalid_upstream_schema');
+      }
+      if (node.type === 'page') {
+        if (typeof node.slug !== 'string' || !/^[a-z0-9][a-z0-9-]{0,199}(?:\/[a-z0-9][a-z0-9-]{0,199})*$/.test(node.path || node.slug)) {
+          throw frontDoorUnavailable('invalid_upstream_schema');
+        }
+      }
+      visit(node.children || [], depth + 1);
+    }
+  };
+  visit(payload.data);
+}
+
+
+
+function frontDoorUnavailable(reason) {
+  return new HttpError(503, 'Live content is temporarily unavailable.', {
+    configured_adapter: 'front-door-session',
+    live_integration: true,
+    reason,
+  });
 }
 
 export function createFixtureAdapter() {

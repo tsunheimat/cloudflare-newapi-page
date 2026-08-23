@@ -42,6 +42,8 @@ export function docsDefaultSlug(catalog, fallback = DEFAULT_DOCS_SLUG) {
       if (isDocsSlug(item?.slug)) return item.slug;
     }
   }
+  const navigationSlug = firstNavigationPage(catalog?.navigation);
+  if (navigationSlug) return navigationSlug;
   return fallback;
 }
 
@@ -60,8 +62,27 @@ export function docsNavigationSlug(catalogResponse, fallback = DEFAULT_DOCS_SLUG
 }
 
 export function docsCatalogHasSlug(catalog, slug) {
+  if (navigationHasSlug(catalog?.navigation, slug)) return true;
   return (catalog?.sections || []).some((section) =>
     (section?.items || []).some((item) => item?.slug === slug),
+  );
+}
+
+function firstNavigationPage(nodes) {
+  for (const node of nodes || []) {
+    if (node?.type === 'page' && typeof (node.path || node.slug) === 'string') {
+      return node.path || node.slug;
+    }
+    const nested = firstNavigationPage(node?.children);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function navigationHasSlug(nodes, slug) {
+  return (nodes || []).some((node) =>
+    (node?.type === 'page' && (node.path === slug || node.slug === slug)) ||
+    navigationHasSlug(node?.children, slug),
   );
 }
 

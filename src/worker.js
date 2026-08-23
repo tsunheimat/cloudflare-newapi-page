@@ -1,6 +1,7 @@
 import {
   createContentAdapter,
   CONTENT_ADAPTER_LIVE,
+  createFrontDoorSessionAdapter,
   LOCKED_PRICING_CONTEXT,
 } from './adapters/content-adapter.js';
 import {
@@ -54,6 +55,24 @@ export async function route(request, env = {}) {
     return json({ success: true, data: downloadServiceStatus(env) });
   }
 
+  // The normal-user clone is a separate browser-session boundary.  It is
+  // intentionally not implemented by the internal service-token adapter:
+  // NewAPI must evaluate the signed session, user identity, role, status,
+  // usable groups, country filtering, and recursive Docs navigation itself.
+  if (request.method === 'GET' && pathname === '/api/front-door/v1/pricing') {
+    const adapter = createFrontDoorSessionAdapter(env, request);
+    return frontDoorResponse(await adapter.getPricingResponse());
+  }
+
+  if (
+    request.method === 'GET' &&
+    pathname === '/api/front-door/v1/docs/v2/navigation'
+  ) {
+    const adapter = createFrontDoorSessionAdapter(env, request);
+    return frontDoorResponse(await adapter.getDocsNavigationResponse());
+  }
+
+
   if (request.method === 'GET' && pathname === '/api/content/docs') {
     const adapter = createContentAdapter(env);
     return publicContentResponse(
@@ -76,6 +95,10 @@ export async function route(request, env = {}) {
   }
 
   if (request.method === 'GET' && pathname === '/api/content/pricing') {
+    if (request.headers.get('new-api-user')) {
+      const adapter = createFrontDoorSessionAdapter(env, request);
+      return frontDoorResponse(await adapter.getPricingResponse());
+    }
     const adapter = createContentAdapter(env);
     return publicContentResponse(
       await adapter.getPricingResponse({
@@ -84,6 +107,7 @@ export async function route(request, env = {}) {
       (payload) => payload,
     );
   }
+
 
   if (pathname.startsWith('/api/content/')) {
     throw new HttpError(404, 'Content API route not found.');
@@ -137,6 +161,25 @@ function publicContentResponse(result, envelope) {
   if (result.etag) headers.etag = result.etag;
   return json(envelope(result.payload), 200, headers);
 }
+
+function frontDoorResponse(result) {
+  if (result?.status === 304) {
+    const headers = new Headers({ 'cache-control': 'no-cache' });
+    if (result.etag) headers.set('etag', result.etag);
+    return withSecurityHeaders(new Response(null, { status: 304, headers }));
+  }
+  if (!result || result.status !== 200) {
+    throw new HttpError(503, 'Live content is temporarily unavailable.');
+  }
+  const headers = { 'cache-control': 'no-cache' };
+  if (result.etag) headers.etag = result.etag;
+  // The response body is the canonical NewAPI front-door envelope.  Do not
+  // add Worker-owned meta/context fields or rewrite labels: the normal-user
+  // SPA must see the exact pricing/navigation contract it would see at
+  // `/api/pricing` and `/api/docs/v2/navigation`.
+  return json(result.payload, 200, headers);
+}
+
 
 function conditionalValidator(request) {
   const value = request.headers.get('if-none-match');

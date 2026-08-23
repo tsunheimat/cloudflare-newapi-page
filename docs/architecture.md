@@ -19,6 +19,29 @@ Future/live:
     ├─ FixtureAdapter (default safety mode)
     └─ NewAPI live adapter (explicit `CONTENT_ADAPTER="newapi"`)
          └─ NEWAPI_VPC_SERVICE -> newapi-api.newapi:3000
+
+Normal-user clone:
+  Browser session (`session` cookie + `New-Api-User`)
+    ├─ `/api/front-door/v1/pricing`
+    └─ `/api/front-door/v1/docs/v2/navigation?locale=zh`
+         └─ NEWAPI_VPC_SERVICE -> canonical NewAPI front-door aliases
+
+The normal-user routes are a distinct session-only boundary. The Worker
+forwards only the signed `session` cookie and the `New-Api-User` identity; it
+does not forward Authorization, API keys, provider credentials, WebSocket
+credentials, credential query parameters, or arbitrary browser headers. The
+canonical Pricing response is returned without a Worker-owned projection. The
+Docs response is the typed recursive `group`/`page` tree; the sidebar renders
+that tree recursively, including nested page descendants. Missing session,
+identity mismatch, administrator/API-key auth, upstream schema drift, timeout,
+or oversized response fails closed. The existing service-token live adapter
+remains a separate public-content compatibility path and is not used to fake
+per-user Pricing or Docs navigation.
+
+Pricing display conversion still consumes the canonical SPA's already-loaded
+`/api/status` snapshot from browser storage; the approved front-door contract
+does not add a second status alias. If that snapshot is unavailable, the
+Worker surface fails closed instead of supplying a guessed currency or rate.
 ```
 
 `ContentAdapter` 是唯一可替换资料边界。UI 不读取硬编码的 NewAPI hostname，也不直接访问 private/VPC/Tunnel。Fixture 和 live adapter 必须返回同一个 public display contract。Live adapter 的 secret、schema、failure 和 cutover contract 见 [live-content-adapter.md](live-content-adapter.md)。

@@ -95,6 +95,8 @@ function statusCodeName(status) {
   switch (status) {
     case 400:
       return 'bad_request';
+    case 401:
+      return 'unauthorized';
     case 404:
       return 'not_found';
     case 405:

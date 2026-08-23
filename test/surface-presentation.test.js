@@ -38,6 +38,10 @@ test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader state
   assert.match(app, /if \(headings\.length > 0\)/);
   assert.match(app, /docsNavigationSlug\(catalog\)/);
   assert.match(app, /docsPath\(slug\)/);
+  assert.match(app, /front-door\/v1\/docs\/v2\/navigation\?locale=zh/);
+  assert.match(app, /renderDocsNavigationNodes/);
+  assert.match(app, /item\?\.type === 'group'/);
+  assert.match(app, /item\.children/);
   assert.match(app, /return slug \? `\/docs\/\$\{encodeURIComponent\(slug\)\}` : '\/docs';/);
   assert.doesNotMatch(app, /encodeURIComponent\(slug \|\| DEFAULT_DOCS_SLUG\)/);
   assert.doesNotMatch(app, /replaceState\(window\.history\.state, '', '\/docs\/quickstart'\)/);
@@ -72,6 +76,7 @@ test('Pricing presentation reuses the canonical hierarchy while exposing one loc
   assert.match(app, /data-user-group/);
   assert.match(app, /data-selected-group/);
   assert.match(app, /data-group-locked/);
+  assert.match(app, /front-door\/v1\/pricing/);
   assert.match(app, /user_group=default · selected_group=default · locked=true/);
   assert.match(app, /\['group', '分组价格'\]/);
   assert.match(app, /\['official', '官方价格'\]/);

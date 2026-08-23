@@ -66,6 +66,23 @@ test('Docs navigation selects the first generated live catalog slug', () => {
   assert.equal(docsCatalogHasSlug(catalog, 'quickstart'), false);
 });
 
+test('Docs navigation preserves recursive page paths and group descendants', () => {
+  const navigation = {
+    navigation: [{
+      type: 'group', id: 1, title: 'Guides', children: [{
+        type: 'page', id: 2, slug: 'setup', path: 'setup', title: 'Setup', children: [{
+          type: 'page', id: 3, slug: 'windows', path: 'setup/windows', title: 'Windows',
+        }],
+      }],
+    }],
+    sections: [],
+    meta: { source: 'newapi', fixture: false, live: true },
+  };
+  assert.equal(docsDefaultSlug(navigation), 'setup');
+  assert.equal(docsCatalogHasSlug(navigation, 'setup/windows'), true);
+  assert.equal(docsCatalogHasSlug(navigation, 'windows'), true);
+});
+
 test('Docs navigation keeps the fixture fallback when a catalog has no pages', () => {
   assert.equal(docsDefaultSlug({ sections: [] }), 'quickstart');
 });
