@@ -328,6 +328,10 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
   });
   await page.route('**/api/front-door/v1/pricing', async (route) => {
     assert.equal(route.request().headers()['new-api-user'], 'canonical-browser-user');
+    assert.equal(route.request().headers()['cookie'], undefined);
+    assert.equal(route.request().headers()['authorization'], undefined);
+    assert.equal(route.request().headers()['x-api-key'], undefined);
+    assert.equal(route.request().headers()['if-none-match'], undefined);
     await route.fulfill({
       status: 200,
       contentType: 'application/json',

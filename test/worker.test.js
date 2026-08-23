@@ -101,7 +101,6 @@ test('/api/status forwards a fixed anonymous GET and projects canonical display 
     },
   }, {
     headers: {
-      cookie: 'session=browser-secret',
       authorization: 'Bearer browser-secret',
       'x-api-key': 'browser-secret',
       'x-provider-credential': 'browser-secret',
@@ -134,6 +133,31 @@ test('/api/status forwards a fixed anonymous GET and projects canonical display 
   assert.equal(new URL(seen[0].url).search, '');
   assert.equal(seen[0].method, 'GET');
   assert.deepEqual(seen[0].headers, { accept: 'application/json' });
+});
+
+test('/api/status uses a front-door projection for a session cookie', async () => {
+  const response = await fetchWorker('/api/status', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => new Response(JSON.stringify({
+        success: true,
+        data: {
+          secure_api_enabled: true,
+          secure_api_key_id: 'private-key-id',
+          secure_api_public_key: 'private-public-key',
+          secure_api_timestamp_window_seconds: 30,
+          server_time: 1_725_000_000,
+          quota_display_type: 'USD',
+        },
+      }), { headers: { 'content-type': 'application/json' } }),
+    },
+  }, { headers: { cookie: 'session=signed-only' } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.data.secure_api_enabled, false);
+  assert.equal(Object.hasOwn(body.data, 'secure_api_public_key'), false);
+  assert.equal(Object.hasOwn(body.data, 'secure_api_key_id'), false);
+  assert.equal(Object.hasOwn(body.data, 'secure_api_timestamp_window_seconds'), false);
 });
 
 test('/api/status preserves the canonical anonymous bootstrap shape without fabricating display settings', async () => {
@@ -213,7 +237,7 @@ test('/console/pricing is an asset route and never falls back to fixture pricing
   assert.equal((await missingSession.json()).error.code, 'unauthorized');
 });
 
-test('front-door session routes forward only the signed session and New-Api-User identity', async () => {
+test('front-door session routes forward only the signed session cookie', async () => {
   const seen = [];
   const pricing = {
     success: true,
@@ -300,22 +324,22 @@ test('front-door session routes forward only the signed session and New-Api-User
       query: '',
       method: 'GET',
       cookie: 'session=signed-cookie',
-      identity: 'public-user-1',
+      identity: null,
       authorization: null,
       random: null,
-      ifNoneMatch: '"browser-validator"',
-      acceptLanguage: 'zh-CN,zh;q=0.9',
+      ifNoneMatch: null,
+      acceptLanguage: null,
     },
     {
       path: '/api/front-door/v1/docs/v2/navigation',
       query: '?locale=zh',
       method: 'GET',
       cookie: 'session=signed-cookie',
-      identity: 'public-user-1',
+      identity: null,
       authorization: null,
       random: null,
-      ifNoneMatch: '"browser-validator"',
-      acceptLanguage: 'zh-CN,zh;q=0.9',
+      ifNoneMatch: null,
+      acceptLanguage: null,
     },
   ]);
 });
@@ -406,6 +430,49 @@ test('front-door keeps legal token-like public groups, endpoint identifiers, and
   assert.deepEqual(body.data[0], model);
 });
 
+test('front-door drops credential-shaped public identifiers across case, separator, camel, and acronym variants', async () => {
+  const rejected = [
+    'access_token', 'ACCESS-TOKEN', 'accessToken', 'ACCESS__TOKEN',
+    'private_token', 'PrivateToken', 'privatetoken', 'admin-token', 'ADMIN_TOKEN', 'admintoken',
+    'client_private_key', 'clientPrivateKey', 'clientprivatekey', 'clientAPIKey', 'CLIENT_API_KEY', 'clientapikey',
+  ];
+  const legal = ['token', 'tokenrouter', 'token-group', 'api_endpoint', 'vendor-name'];
+  const groupRatio = { default: 1, ...Object.fromEntries(rejected.map((key, index) => [key, index + 2])), ...Object.fromEntries(legal.map((key) => [key, 2])) };
+  const usableGroup = { default: 'Default', ...Object.fromEntries(rejected.map((key) => [key, 'drop'])), ...Object.fromEntries(legal.map((key) => [key, 'Legal'])) };
+  const endpoint = { method: 'POST', path: '/v1/public' };
+  const payload = {
+    success: true,
+    data: [{
+      model_name: 'identifier-regression-model', quota_type: 0, model_ratio: 1, model_price: 0,
+      owner_by: '', completion_ratio: 1,
+      enable_groups: [...rejected, ...legal],
+      supported_endpoint_types: [...rejected, ...legal],
+      endpoint_map: Object.fromEntries([...rejected, ...legal].map((key) => [key, endpoint])),
+    }],
+    vendors: [], group_ratio: groupRatio, usable_group: usableGroup,
+    supported_endpoint: Object.fromEntries([...rejected, ...legal].map((key) => [key, endpoint])),
+    auto_groups: [...rejected, ...legal], video_resolution_dimensions: {}, pricing_version: 'v1',
+  };
+  const response = await fetchWorker('/api/front-door/v1/pricing', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: { fetch: async () => new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } }) },
+  }, { headers: { cookie: 'session=signed' } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  for (const key of rejected) {
+    assert.equal(Object.hasOwn(body.group_ratio, key), false, key);
+    assert.equal(Object.hasOwn(body.usable_group, key), false, key);
+    assert.equal(Object.hasOwn(body.supported_endpoint, key), false, key);
+    assert.equal(body.auto_groups.includes(key), false, key);
+    assert.equal(Object.hasOwn(body.data[0].endpoint_map, key), false, key);
+  }
+  assert.deepEqual(body.auto_groups, legal);
+  assert.deepEqual(body.group_ratio.default, 1);
+  for (const key of legal) assert.equal(Object.hasOwn(body.group_ratio, key), true, key);
+  assert.deepEqual(body.data[0].enable_groups, legal);
+  assert.deepEqual(body.data[0].supported_endpoint_types, legal);
+});
+
 test('front-door session routes reject credentials and incomplete browser sessions before VPC forwarding', async () => {
   let calls = 0;
   const env = {
@@ -417,16 +484,44 @@ test('front-door session routes reject credentials and incomplete browser sessio
     { headers: { cookie: 'session=signed', 'New-Api-User': 'u', 'X-Api-Key': 'key' } },
     { headers: { cookie: 'session=signed', 'New-Api-User': 'u', 'Proxy-Authorization': 'Basic key' } },
     { headers: { cookie: 'session=signed', 'New-Api-User': 'u', 'Sec-WebSocket-Protocol': 'bearer key' } },
+    { headers: { cookie: 'session=signed', 'New-Api-User': 'u', 'X-Secure-Api': 'v1' } },
+    { headers: { cookie: 'session=signed', 'New-Api-User': 'u', 'X-Admin-Token': 'admin-secret' } },
     { headers: { cookie: 'session=signed', 'New-Api-User': 'u' }, url: '/api/front-door/v1/pricing?api_key=key' },
     { headers: { 'New-Api-User': 'u' } },
-    { headers: { cookie: 'session=signed' } },
   ];
   for (const candidate of rejected) {
     const response = await fetchWorker(candidate.url || '/api/front-door/v1/pricing', env, { headers: candidate.headers });
     assert.equal(response.status, 401);
-    assert.equal((await response.json()).error.code, 'unauthorized');
+    const body = await response.json();
+    assert.equal(body.error.code, 'unauthorized');
+    assert.doesNotMatch(JSON.stringify(body), /session=signed|admin-secret|browser-secret/);
   }
   assert.equal(calls, 0);
+});
+
+test('front-door accepts the session cookie alone and never forwards browser identity or validators', async () => {
+  const seen = [];
+  const response = await fetchWorker('/api/front-door/v1/pricing', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        seen.push(Object.fromEntries(request.headers));
+        return new Response(JSON.stringify({
+          success: true, data: [], vendors: [], group_ratio: { default: 1 },
+          usable_group: { default: 'Default' }, supported_endpoint: {},
+          auto_groups: [], video_resolution_dimensions: {}, pricing_version: 'v1',
+        }), { headers: { 'content-type': 'application/json', etag: '"upstream-secret"' } });
+      },
+    },
+  }, { headers: {
+    cookie: 'session=session-only',
+    'New-Api-User': 'browser-identity-must-not-cross',
+    'If-None-Match': '"browser-validator"',
+  } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'private, no-store');
+  assert.equal(response.headers.get('etag'), null);
+  assert.deepEqual(seen, [{ accept: 'application/json', cookie: 'session=session-only' }]);
 });
 
 test('front-door rejects credential-shaped headers, cookie variants, and query credentials', async () => {
@@ -555,7 +650,7 @@ test('front-door fails closed on malformed canonical public fields', async () =>
   }
 });
 
-test('front-door conditional requests forward and verify an exact browser validator', async () => {
+test('front-door rejects upstream 304 and ignores browser conditional validators', async () => {
   const seen = [];
   const env = {
     ...fixtureEnv,
@@ -566,20 +661,15 @@ test('front-door conditional requests forward and verify an exact browser valida
       },
     },
   };
-  const matched = await fetchWorker('/api/front-door/v1/pricing', env, { headers: { cookie: 'session=signed', 'New-Api-User': 'user', 'If-None-Match': '"front-v1"' } });
-  assert.equal(matched.status, 304);
-  assert.equal(matched.headers.get('etag'), '"front-v1"');
-  assert.equal(await matched.text(), '');
-
-  const mismatched = await fetchWorker('/api/front-door/v1/pricing', {
+  const rejected = await fetchWorker('/api/front-door/v1/pricing', {
     ...env,
     NEWAPI_VPC_SERVICE: { fetch: async () => new Response(null, { status: 304, headers: { etag: '"other"' } }) },
   }, { headers: { cookie: 'session=signed', 'New-Api-User': 'user', 'If-None-Match': '"front-v1"' } });
-  assert.equal(mismatched.status, 503);
-  assert.equal(seen[0], '"front-v1"');
+  assert.equal(rejected.status, 503);
+  assert.equal(seen[0], undefined);
 });
 
-test('front-door ETags are stable and participate in the complete upstream 304 round trip', async () => {
+test('front-door Pricing responses isolate sessions and never emit ETags', async () => {
   const payload = {
     success: true, data: [], vendors: [], group_ratio: { default: 1 }, usable_group: { default: 'Default' },
     supported_endpoint: {}, auto_groups: [], video_resolution_dimensions: {}, pricing_version: 'v1', private_secret: 'drop',
@@ -589,34 +679,49 @@ test('front-door ETags are stable and participate in the complete upstream 304 r
     ...fixtureEnv,
     NEWAPI_VPC_SERVICE: {
       fetch: async (request) => {
-        const validator = request.headers.get('if-none-match');
-        seen.push(validator);
-        if (validator === '"canonical-v1"') return new Response(null, { status: 304, headers: { etag: validator } });
-        return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json', etag: '"canonical-v1"' } });
+        const cookie = request.headers.get('cookie');
+        seen.push({ cookie, validator: request.headers.get('if-none-match') });
+        return new Response(JSON.stringify({ ...payload, data: [{ model_name: cookie, quota_type: 0, model_ratio: 1, model_price: 0, owner_by: '', completion_ratio: 1, enable_groups: ['default'], supported_endpoint_types: [] }] }), { headers: { 'content-type': 'application/json', etag: '"canonical-v1"' } });
       },
     },
   };
-  const headers = { cookie: 'session=signed', 'New-Api-User': 'user' };
-  const fresh = await fetchWorker('/api/front-door/v1/pricing', env, { headers });
-  assert.equal(fresh.status, 200);
-  assert.equal(fresh.headers.get('etag'), '"canonical-v1"');
-  assert.doesNotMatch(JSON.stringify(await fresh.json()), /private_secret/);
+  const responseA = await fetchWorker('/api/front-door/v1/pricing', env, { headers: { cookie: 'session=a', 'New-Api-User': 'user', 'If-None-Match': '"same"' } });
+  const responseB = await fetchWorker('/api/front-door/v1/pricing', env, { headers: { cookie: 'session=b', 'New-Api-User': 'user', 'If-None-Match': '"same"' } });
+  assert.equal(responseA.status, 200);
+  assert.equal(responseB.status, 200);
+  assert.equal(responseA.headers.get('cache-control'), 'private, no-store');
+  assert.equal(responseB.headers.get('cache-control'), 'private, no-store');
+  assert.equal(responseA.headers.get('etag'), null);
+  assert.equal(responseB.headers.get('etag'), null);
+  assert.notDeepEqual(await responseA.json(), await responseB.json());
+  assert.deepEqual(seen, [{ cookie: 'session=a', validator: null }, { cookie: 'session=b', validator: null }]);
+});
 
-  const conditional = await fetchWorker('/api/front-door/v1/pricing', env, {
-    headers: { ...headers, 'If-None-Match': fresh.headers.get('etag') },
-  });
-  assert.equal(conditional.status, 304);
-  assert.equal(conditional.headers.get('etag'), '"canonical-v1"');
-  assert.deepEqual(seen, [null, '"canonical-v1"']);
-
-  const withoutUpstreamEtag = async (privateSecret) => fetchWorker('/api/front-door/v1/pricing', {
+test('front-door recursive Docs responses are private and session-isolated without validators', async () => {
+  const seen = [];
+  const env = {
     ...fixtureEnv,
-    NEWAPI_VPC_SERVICE: { fetch: async () => new Response(JSON.stringify({ ...payload, private_secret: privateSecret }), { headers: { 'content-type': 'application/json' } }) },
-  }, { headers });
-  const projectedA = await withoutUpstreamEtag('first');
-  const projectedB = await withoutUpstreamEtag('second');
-  assert.match(projectedA.headers.get('etag'), /^"front-door-pricing-/);
-  assert.equal(projectedB.headers.get('etag'), projectedA.headers.get('etag'));
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        const cookie = request.headers.get('cookie');
+        seen.push({ cookie, validator: request.headers.get('if-none-match') });
+        return new Response(JSON.stringify({
+          success: true,
+          data: [{ type: 'group', id: 1, slug: 'guides', title: cookie, space_id: 1, locale: 'zh', children: [] }],
+        }), { headers: { 'content-type': 'application/json', etag: '"docs-upstream"' } });
+      },
+    },
+  };
+  const responseA = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', env, { headers: { cookie: 'session=a', 'If-None-Match': '"same"' } });
+  const responseB = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', env, { headers: { cookie: 'session=b', 'If-None-Match': '"same"' } });
+  assert.equal(responseA.status, 200);
+  assert.equal(responseB.status, 200);
+  assert.equal(responseA.headers.get('cache-control'), 'private, no-store');
+  assert.equal(responseB.headers.get('cache-control'), 'private, no-store');
+  assert.equal(responseA.headers.get('etag'), null);
+  assert.equal(responseB.headers.get('etag'), null);
+  assert.notDeepEqual(await responseA.json(), await responseB.json());
+  assert.deepEqual(seen, [{ cookie: 'session=a', validator: null }, { cookie: 'session=b', validator: null }]);
 });
 
 test('content pricing remains on its configured adapter even with New-Api-User', async () => {

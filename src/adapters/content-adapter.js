@@ -28,7 +28,6 @@ export const FRONT_DOOR_PRICING_PATH = '/api/front-door/v1/pricing';
 export const FRONT_DOOR_MAX_NAVIGATION_NODES = 50_000;
 export const FRONT_DOOR_MAX_NAVIGATION_DEPTH = 100;
 export const FRONT_DOOR_MAX_ENDPOINT_MAP_ENTRIES = 1_000;
-export const FRONT_DOOR_MAX_QUERY_LENGTH = 2_048;
 export const LOCKED_PRICING_CONTEXT = Object.freeze({
   user_group: 'default',
   selected_group: 'default',
@@ -60,10 +59,10 @@ export function createContentAdapter(env = {}) {
 /**
  * Browser-session-only adapter for the approved normal-user front door.
  *
- * The private service binding is the only origin selector.  The upstream
- * request is deliberately assembled from the signed `session` cookie and the
- * matching `New-Api-User` identity; browser Authorization/API-key/provider
- * credentials and arbitrary browser headers never cross this boundary.
+ * The private service binding is the only origin selector. The upstream
+ * request is deliberately assembled from the signed `session` cookie alone;
+ * browser identity, validators, secure-API headers, Authorization/API-key/
+ * provider credentials, and arbitrary browser headers never cross this boundary.
  */
 export function createFrontDoorSessionAdapter(
   env = {},
@@ -115,20 +114,10 @@ export function extractFrontDoorCredentials(request) {
     throw new HttpError(401, 'Browser session is required.');
   }
   const cookie = extractSessionCookie(request.headers.get('cookie'));
-  const identityHeader = request.headers.get('new-api-user');
-  const identity = typeof identityHeader === 'string' ? identityHeader.trim() : '';
-  const ifNoneMatch = extractSafeValidator(request.headers.get('if-none-match'));
-  const acceptLanguage = extractSafeAcceptLanguage(request.headers.get('accept-language'));
-  if (
-    !cookie ||
-    !identity ||
-    identity.length > 255 ||
-    identity !== identityHeader ||
-    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$/.test(identity)
-  ) {
+  if (!cookie) {
     throw new HttpError(401, 'Browser session is required.');
   }
-  return Object.freeze({ cookie, identity, ifNoneMatch, acceptLanguage });
+  return Object.freeze({ cookie });
 }
 
 const FRONT_DOOR_REJECTED_HEADERS = Object.freeze([
@@ -190,6 +179,7 @@ function hasCredentialBearingHeader(request) {
     const lower = name.toLowerCase();
     if (FRONT_DOOR_REJECTED_HEADERS.includes(lower)) continue;
     if (lower === 'cookie' || lower === 'new-api-user') continue;
+    if (lower.startsWith('x-secure-')) return true;
     if (String(value).trim() !== '' && isCredentialIdentifier(name)) return true;
   }
   return false;
@@ -197,32 +187,55 @@ function hasCredentialBearingHeader(request) {
 
 function isCredentialIdentifier(value, { rejectBareKey = false } = {}) {
   if (typeof value !== 'string') return false;
-  const normalized = value
+  const normalized = normalizePublicIdentifier(value);
+  const compact = normalized.replace(/_/g, '');
+  if (rejectBareKey && ['key', 'apikey', 'clientid'].includes(compact)) return true;
+  if (isCredentialPublicIdentifier(value)) return true;
+  if (/(?:^|_)(?:auth|authorization|bearer|password|passwd|credential|credentials|key|secret|signature|token)(?:_|$)/.test(normalized)) return true;
+  if (/(?:^|_)(?:api|access|client|provider|signing|private|admin)[_-]?(?:key|token|secret|credential|id)(?:_|$)/.test(normalized)) return true;
+  return /^(?:authorization|proxyauthorization|accesstoken|clientsecret|clientid|providerkey|apikey|newapikey)$/.test(compact);
+}
+
+function normalizePublicIdentifier(value) {
+  return value
     .trim()
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .replace(/[^A-Za-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .toLowerCase();
-  const compact = normalized.replace(/_/g, '');
-  if (rejectBareKey && ['key', 'apikey', 'clientid'].includes(compact)) return true;
-  if (/(?:^|_)(?:auth|authorization|bearer|password|passwd|credential|credentials|key|secret|signature|token)(?:_|$)/.test(normalized)) return true;
-  if (/(?:^|_)(?:api|access|client|provider|signing|private|admin)[_-]?(?:key|token|secret|credential|id)(?:_|$)/.test(normalized)) return true;
-  return /^(?:authorization|proxyauthorization|accesstoken|clientsecret|clientid|providerkey|apikey|newapikey)$/.test(compact);
 }
 
-function extractSafeValidator(value) {
-  if (typeof value !== 'string' || value.length > FRONT_DOOR_MAX_QUERY_LENGTH || /[\u0000-\u001f\u007f]/.test(value)) return null;
-  const trimmed = value.trim();
-  if (trimmed === '' || trimmed === '*') return trimmed || null;
-  return parseEntityTagList(trimmed).every((candidate) => Boolean(verifiedEtag(candidate)))
-    ? trimmed
-    : null;
-}
-
-function extractSafeAcceptLanguage(value) {
-  if (typeof value !== 'string' || value.length > 256 || /[\u0000-\u001f\u007f]/.test(value)) return null;
-  return value.trim() || null;
+// Public map keys are identifiers, but NewAPI can serialize credentials into
+// those same maps. Reject qualifier + secret pairs while retaining ordinary
+// public names such as `token`, `tokenrouter`, and `token-group`.
+function isCredentialPublicIdentifier(value) {
+  if (typeof value !== 'string') return false;
+  const segments = normalizePublicIdentifier(value).split('_').filter(Boolean);
+  if (segments.length === 0) return true;
+  const bareCredentialWords = new Set([
+    'authorization', 'cookie', 'password', 'passwd', 'credential',
+    'credentials', 'secret', 'privatekey', 'privatesecret', 'apikey',
+    'apitoken', 'accesstoken', 'privatetoken', 'admintoken', 'clientid',
+    'clientkey', 'clientsecret', 'clienttoken', 'clientprivatekey',
+    'clientapikey',
+    'providercredential', 'providerkey', 'providertoken', 'servicecredential',
+    'servicekey', 'servicetoken', 'signingprivatekey', 'oauthsecret',
+    'oauthkey', 'oauthtoken',
+  ]);
+  if (segments.length === 1 && bareCredentialWords.has(segments[0])) return true;
+  const qualifiers = new Set([
+    'access', 'admin', 'api', 'auth', 'authorization', 'bearer', 'client',
+    'oauth', 'private', 'provider', 'service', 'signing',
+  ]);
+  const secrets = new Set([
+    'credential', 'credentials', 'id', 'key', 'password', 'passwd',
+    'secret', 'signature', 'token', 'header',
+  ]);
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    if (qualifiers.has(segments[index]) && secrets.has(segments[index + 1])) return true;
+  }
+  return false;
 }
 
 async function fetchFrontDoorPayload(
@@ -243,13 +256,7 @@ async function fetchFrontDoorPayload(
     controller.abort();
     rejectTimeout(frontDoorUnavailable('upstream_timeout'));
   }, timeoutMs);
-  const headers = new Headers({
-    Accept: 'application/json',
-    Cookie: credentials.cookie,
-    'New-Api-User': credentials.identity,
-  });
-  if (credentials.acceptLanguage) headers.set('Accept-Language', credentials.acceptLanguage);
-  if (credentials.ifNoneMatch) headers.set('If-None-Match', credentials.ifNoneMatch);
+  const headers = new Headers({ Accept: 'application/json', Cookie: credentials.cookie });
   try {
     let response;
     try {
@@ -265,25 +272,11 @@ async function fetchFrontDoorPayload(
       }
       throw frontDoorUnavailable('upstream_transport');
     }
-    if (!response || !response.headers || ![200, 304].includes(response.status)) {
+    if (!response || !response.headers || response.status !== 200) {
       if (response?.status === 401 || response?.status === 403) {
         throw new HttpError(401, 'Browser session is required.');
       }
       throw frontDoorUnavailable('upstream_status');
-    }
-    const rawEtag = response.headers.get('etag');
-    const etag = verifiedEtag(rawEtag);
-    if (rawEtag !== null && !etag) {
-      throw frontDoorUnavailable('invalid_upstream_etag');
-    }
-    if (response.status === 304) {
-      // A front-door 304 is meaningful only when the upstream echoed the
-      // exact browser validator that the Worker forwarded. Weak-equivalent or
-      // unrelated validators are not accepted across this auth boundary.
-      if (!etag || !credentials.ifNoneMatch || etag !== credentials.ifNoneMatch) {
-        throw frontDoorUnavailable('invalid_upstream_etag');
-      }
-      return { status: 304, payload: null, etag };
     }
     if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || '')) {
       throw frontDoorUnavailable('invalid_upstream_content_type');
@@ -317,15 +310,9 @@ async function fetchFrontDoorPayload(
     if (kind === 'pricing') projected = assertFrontDoorPricing(payload);
     else if (kind === 'docs_navigation') projected = assertFrontDoorNavigation(payload);
     else throw frontDoorUnavailable('invalid_upstream_schema');
-    // Preserve a validated canonical validator when NewAPI supplies one so a
-    // browser's next request can participate in the upstream 304 contract.
-    // If it is absent, derive a deterministic Worker-owned validator from the
-    // projected body instead of emitting an unstable or arbitrary value.
-    const responseEtag = etag || stableFrontDoorEtag(kind, projected);
-    if (credentials.ifNoneMatch && responseEtag === credentials.ifNoneMatch) {
-      return { status: 304, payload: null, etag: responseEtag };
-    }
-    return { status: 200, payload: projected, etag: responseEtag };
+    // Authenticated payloads are session-specific. Do not reflect upstream
+    // validators or derive a reusable identity-free ETag at this boundary.
+    return { status: 200, payload: projected };
   } finally {
     clearTimeout(timer);
   }
@@ -452,7 +439,7 @@ function assertFrontDoorVendor(vendor) {
 }
 
 function assertFrontDoorIdentifierArray(value) {
-  if (!Array.isArray(value) || value.length > 1_000 || value.some((entry) => typeof entry !== 'string' || entry.length > 300 || !isCanonicalPublicIdentifier(entry))) throw frontDoorUnavailable('invalid_upstream_schema');
+  if (!Array.isArray(value) || value.length > 1_000 || value.some((entry) => typeof entry !== 'string' || entry.length > 300 || !/^[A-Za-z0-9][A-Za-z0-9_:.\/\-]{0,299}$/.test(entry))) throw frontDoorUnavailable('invalid_upstream_schema');
 }
 
 function assertFrontDoorEndpointMap(value) {
@@ -592,12 +579,6 @@ function projectOptionalFrontDoorPricingFields(payload, projected) {
     projected.meta = meta;
   }
 }
-
-function stableFrontDoorEtag(kind, payload) {
-  return `"front-door-${kind}-${fnv1a64(canonicalJson(payload))}"`;
-}
-
-
 
 function frontDoorUnavailable(reason) {
   return new HttpError(503, 'Live content is temporarily unavailable.', {
@@ -1788,24 +1769,7 @@ function projectPublicMap(value, projectValue) {
 
 function isPublicMapKey(key) {
   if (typeof key !== 'string' || key.startsWith('__')) return false;
-  // Treat secret-bearing words as separator-delimited identifier segments,
-  // including acronym-style and ordinary camel-case segments, without
-  // rejecting public names such as tokenization or api_endpoint.
-  // Split an acronym run before its final capitalized segment (`APIKey` ->
-  // `API_Key`) before applying the ordinary lower-to-upper boundary.
-  const normalized = key
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .replace(/[-:.\/]+/g, '_')
-    .toLowerCase();
-  const compact = normalized.replace(/_/g, '');
-  if (/(?:^|_)(?:authorization|cookie|password|credential|secret|private_key)(?:_|$)/.test(normalized)) return false;
-  if (/(?:^|_)(?:service|client|provider)_(?:secret|token|key)(?:_|$)/.test(normalized)) return false;
-  if (/(?:^|_)api_(?:key|token)(?:_|$)/.test(normalized)) return false;
-  // Preserve the previous exact-name coverage for historical spellings such
-  // as `apikey` and `privatesecret`, while also covering their token/key
-  // equivalents.
-  if (/^(?:api(?:key|token)|private(?:key|secret))$/.test(compact)) return false;
+  if (isCredentialPublicIdentifier(key)) return false;
   return /^[A-Za-z0-9][A-Za-z0-9_:.\/-]{0,79}$/.test(key);
 }
 
@@ -1815,19 +1779,7 @@ function isPublicMapKey(key) {
 // credential/private classification limited to the reviewed field names above.
 function isCanonicalPublicIdentifier(key) {
   if (typeof key !== 'string' || key.startsWith('__')) return false;
-  const normalized = key
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .replace(/[-:.\/]+/g, '_')
-    .toLowerCase();
-  const compact = normalized.replace(/_/g, '');
-  if (new Set([
-    'authorization', 'authorizationheader', 'cookie', 'password', 'passwd',
-    'credential', 'credentials', 'secret', 'privatesecret', 'privatekey',
-    'apikey', 'apitoken', 'clientsecret', 'clientkey', 'clienttoken',
-    'providersecret', 'providerkey', 'providertoken', 'servicesecret',
-    'servicekey', 'servicetoken', 'oauthsecret', 'oauthkey', 'oauthtoken',
-  ]).has(compact)) return false;
+  if (isCredentialPublicIdentifier(key)) return false;
   return /^[A-Za-z0-9][A-Za-z0-9_:.\/-]{0,299}$/.test(key);
 }
 

@@ -51,16 +51,17 @@ export function createStatusAdapter(
   return {
     name: 'newapi-status',
     live: true,
-    async getResponse() {
+    async getResponse(options = {}) {
       return fetchStatusPayload(env, {
         timeoutMs: boundedTimeoutMs,
         maxBodyBytes: boundedBodyBytes,
+        frontDoor: options.frontDoor === true,
       });
     },
   };
 }
 
-async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes }) {
+async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes, frontDoor = false }) {
   const binding = env.NEWAPI_VPC_SERVICE;
   const controller = new AbortController();
   const deadline = Date.now() + timeoutMs;
@@ -120,7 +121,7 @@ async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes }) {
     } catch {
       throw statusUnavailable('invalid_upstream_json');
     }
-    return projectStatusPayload(payload);
+    return projectStatusPayload(payload, { frontDoor });
   })();
 
   return Promise.race([operation, timeout])
@@ -131,7 +132,7 @@ async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes }) {
     .finally(() => clearTimeout(timer));
 }
 
-function projectStatusPayload(payload) {
+function projectStatusPayload(payload, { frontDoor = false } = {}) {
   if (!isRecord(payload) || payload.success !== true || !isRecord(payload.data)) {
     throw statusUnavailable('invalid_upstream_schema');
   }
@@ -141,6 +142,12 @@ function projectStatusPayload(payload) {
   const data = {};
   for (const [field, value] of Object.entries(payload.data)) {
     if (!STATUS_PUBLIC_FIELDS.has(field)) continue;
+    if (frontDoor && (
+      field === 'secure_api_enabled' ||
+      field === 'secure_api_public_key' ||
+      field === 'secure_api_key_id' ||
+      field === 'secure_api_timestamp_window_seconds'
+    )) continue;
     if (STATUS_STRING_LIMITS[field] !== undefined) {
       if (typeof value !== 'string' || value.length > STATUS_STRING_LIMITS[field]) {
         throw statusUnavailable('invalid_upstream_schema');
@@ -174,6 +181,12 @@ function projectStatusPayload(payload) {
       throw statusUnavailable('invalid_upstream_schema');
     }
     response.message = payload.message;
+  }
+  if (frontDoor) {
+    // The canonical same-origin bundle consumes this public bootstrap before
+    // calling the authenticated front door. Explicitly disable its secure-API
+    // interceptor and never expose key material or signing windows here.
+    data.secure_api_enabled = false;
   }
   response.data = data;
   return { status: 200, payload: response };

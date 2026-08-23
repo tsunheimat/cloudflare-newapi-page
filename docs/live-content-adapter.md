@@ -54,21 +54,25 @@ fallback path in live mode.
 
 The separate normal-user front-door adapter calls only the two approved
 session aliases (`/api/front-door/v1/pricing` and
-`/api/front-door/v1/docs/v2/navigation?locale=zh`). It forwards the signed
-`session` cookie and exact `New-Api-User` identity plus safe locale and
-conditional-request headers. It never forwards the internal live adapter token,
-Authorization/API-key/provider credentials, arbitrary credential headers, or
-credential query parameters. Its Pricing and recursive Docs responses use a
+`/api/front-door/v1/docs/v2/navigation?locale=zh`). It forwards only the signed
+`session` cookie. Browser identity, conditional-request validators, secure-API
+headers, the internal live adapter token, Authorization/API-key/provider
+credentials, arbitrary credential headers, and credential query parameters
+never cross this boundary. Its Pricing and recursive Docs responses use a
 bounded public allowlist; unknown/private fields are omitted, malformed known
 fields fail closed, and legitimate public identifiers are retained even when
-their values contain words such as `token`. `/api/content/pricing` remains on this existing
-service-token adapter regardless of `New-Api-User`.
+their values contain words such as `token`. Authenticated responses are
+`private, no-store` with no ETag/304 path. `/api/content/pricing` remains on
+this existing service-token adapter regardless of `New-Api-User`.
 
 The canonical `/console/pricing` bundle separately calls the public same-origin
 `/api/status` bootstrap. This is a read-only fixed `GET /api/status` through
 `NEWAPI_VPC_SERVICE`; it sends only `Accept: application/json` and never copies
 browser cookies, Authorization, API keys, provider credentials, or arbitrary
-headers. The Worker bounds the response to 256 KiB and five seconds, requires a
+headers. When the request carries the normal-user session cookie, the Worker
+uses a front-door-specific status projection that sets `secure_api_enabled` to
+false and omits secure-API public keys, key ids, and signing windows. The Worker
+bounds the response to 256 KiB and five seconds, requires a
 JSON `{ success: true, data: object }` envelope, validates any canonical display
 settings that are present, projects only the reviewed public status fields, and
 returns a generic 503 on any upstream, body, timeout, or schema failure. It has
@@ -93,11 +97,11 @@ change values or semantics. It derives the public pricing `ETag` from that
 projected payload, so an equivalent upstream `200` with different model,
 vendor, or identifier-array order still returns the same validator and a
 matching browser validator is converted to an empty public `304`. The separate
-front-door adapter preserves a validated upstream ETag (or derives a stable
-projected-body ETag when absent) and turns an upstream `304` into a public
-`304` only when its ETag exactly equals the forwarded browser validator. Cookies,
-sessions, browser authorization, user API keys, and unrelated headers are not
-forwarded. The five-second deadline covers binding fetch, body streaming,
+front-door adapter strips upstream validators and rejects upstream `304`
+responses; its authenticated responses are `private, no-store` with no ETag or
+304 reuse. Cookies, sessions, browser authorization, user API keys, and
+unrelated headers are not forwarded. The five-second deadline covers binding
+fetch, body streaming,
 UTF-8 decoding, JSON parsing, validation, and projection.
 
 The live Docs projection must provide the existing catalog/page block contract.

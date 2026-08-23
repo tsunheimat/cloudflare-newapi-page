@@ -61,7 +61,9 @@ export async function route(request, env = {}) {
   // arbitrary headers to the private service binding.
   if (request.method === 'GET' && pathname === '/api/status') {
     const adapter = createStatusAdapter(env);
-    const result = await adapter.getResponse();
+    const result = await adapter.getResponse({
+      frontDoor: hasSessionCookie(request.headers.get('cookie')),
+    });
     if (!result || result.status !== 200) {
       throw new HttpError(503, 'Status is temporarily unavailable.');
     }
@@ -172,16 +174,10 @@ function publicContentResponse(result, envelope) {
 }
 
 function frontDoorResponse(result) {
-  if (result?.status === 304) {
-    const headers = new Headers({ 'cache-control': 'no-cache' });
-    if (result.etag) headers.set('etag', result.etag);
-    return withSecurityHeaders(new Response(null, { status: 304, headers }));
-  }
   if (!result || result.status !== 200) {
     throw new HttpError(503, 'Live content is temporarily unavailable.');
   }
-  const headers = { 'cache-control': 'no-cache' };
-  if (result.etag) headers.etag = result.etag;
+  const headers = { 'cache-control': 'private, no-store' };
   // The adapter has already reconstructed the bounded public subset of the
   // canonical NewAPI envelope. Do not add Worker-owned labels or rewrite its
   // normal-user values here.
@@ -193,6 +189,10 @@ function conditionalValidator(request) {
   const value = request.headers.get('if-none-match');
   if (!value || value.length > 2_048 || /[\u0000-\u001f\u007f]/.test(value)) return undefined;
   return value;
+}
+
+function hasSessionCookie(header) {
+  return typeof header === 'string' && /(?:^|;)\s*session=/.test(header);
 }
 
 function normalizePath(pathname) {

@@ -21,7 +21,7 @@ Future/live:
          └─ NEWAPI_VPC_SERVICE -> newapi-api.newapi:3000
 
 Normal-user clone:
-  Browser session (`session` cookie + `New-Api-User`)
+  Browser session (`session` cookie; browser identity is not forwarded)
     ├─ `/api/front-door/v1/pricing`
     └─ `/api/front-door/v1/docs/v2/navigation?locale=zh`
          └─ NEWAPI_VPC_SERVICE -> canonical NewAPI front-door aliases
@@ -32,11 +32,12 @@ Public canonical bootstrap:
 ```
 
 The normal-user routes are a distinct session-only boundary. The Worker
-forwards only the signed `session` cookie, matching `New-Api-User` identity,
-and safe locale/conditional-request headers. It rejects Authorization, API
-keys, provider credentials, WebSocket credentials, credential query
-parameters, malformed/duplicate session cookies, and credential-shaped
-headers. Each canonical response is validated and reconstructed through an
+forwards only the signed `session` cookie; conditional validators, locale, and
+all other browser headers are ignored and never forwarded. It rejects
+Authorization, API keys, provider credentials, secure-API/WebSocket
+credentials, credential query parameters,
+malformed/duplicate session cookies, and credential-shaped headers. Each
+canonical response is validated and reconstructed through an
 explicit bounded public projection that preserves every reviewed canonical
 field; unknown/private fields are dropped and malformed known fields fail
 closed. Public identifier values remain intact even when they contain words
