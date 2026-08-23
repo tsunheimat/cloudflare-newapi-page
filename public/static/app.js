@@ -1,10 +1,12 @@
 /*
 Copyright (C) 2025 QuantumNous
 
-The Docs and Pricing surface renderers in this file adapt the user-facing
-NewAPI SPA at commit 4d27865ce8342530f362595fdcd134eb83062a35. They remain
-licensed under GNU AGPL v3 or later; see LICENSE and THIRD_PARTY_NOTICES.md.
-The front-door home and header renderer are original to this Worker.
+The Docs compatibility renderer in this file adapts the user-facing NewAPI
+SPA. The authenticated `/console/pricing` surface is mounted from the
+canonical React bundle built from approved NewAPI commit
+85143bc49260f9c7ab1efd6a5122558e58d0bee2. These adapted assets remain licensed
+under GNU AGPL v3 or later; see LICENSE and THIRD_PARTY_NOTICES.md. The
+front-door home and header renderer are original to this Worker.
 */
 import {
   calculateModelPricing,
@@ -49,6 +51,7 @@ let activeDocsTocObserver = null;
 let surfaceReturnFocus = null;
 let activeSurfaceDismiss = null;
 const contentApiCache = new Map();
+let canonicalPricingScriptPromise = null;
 
 window.addEventListener('popstate', () => renderRoute());
 pricingMobileMedia?.addEventListener('change', handlePricingViewportChange);
@@ -122,6 +125,11 @@ function handlePricingViewportChange() {
 
 async function renderRoute() {
   let path = normalizePath(window.location.pathname);
+  const canonicalPricing = path === '/console/pricing';
+  document.body.classList.toggle('canonical-pricing-active', canonicalPricing);
+  const canonicalStyles = document.querySelector('link[data-canonical-pricing-css]');
+  if (canonicalStyles) canonicalStyles.disabled = !canonicalPricing;
+  if (!canonicalPricing) globalThis.__unmountCanonicalPricing?.();
   activeDocsSearchButton = null;
   activeDocsTocObserver?.disconnect();
   activeDocsTocObserver = null;
@@ -713,6 +721,10 @@ function installDocsTocObserver() {
 }
 
 async function renderPricing() {
+  if (normalizePath(window.location.pathname) === '/console/pricing') {
+    await renderCanonicalPricing();
+    return;
+  }
   if (!state.pricing) {
     const canonicalPricing = await api('/api/front-door/v1/pricing', { frontDoor: true }).catch((error) => {
       if (readBrowserUser()?.public_id) throw error;
@@ -788,17 +800,58 @@ async function renderPricing() {
   replaceMain(shell);
 }
 
+async function renderCanonicalPricing() {
+  // `/console/pricing` is an authenticated normal-user surface.  It never
+  // falls back to the public fixture renderer when the browser session is
+  // absent or invalid; the Worker front-door returns 401 and the canonical
+  // bundle renders that failure state.
+  const root = node('div', {
+    id: 'canonical-pricing-root',
+    class: 'canonical-pricing-root',
+    'aria-label': '模型价格',
+  });
+  replaceMain(root);
+  // Semi's distributed CommonJS helpers retain a guarded process.env read;
+  // provide the browser-safe production value before the canonical module is
+  // evaluated without shipping a Node runtime shim.
+  globalThis.process ||= {};
+  globalThis.process.env ||= {};
+  globalThis.process.env.NODE_ENV ||= 'production';
+  if (!document.querySelector('link[data-canonical-pricing-css]')) {
+    const stylesheet = node('link', {
+      rel: 'stylesheet',
+      href: '/static/canonical-pricing.css',
+      'data-canonical-pricing-css': '1',
+    });
+    document.head.append(stylesheet);
+  } else {
+    document.querySelector('link[data-canonical-pricing-css]').disabled = false;
+  }
+  if (!canonicalPricingScriptPromise) {
+    canonicalPricingScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.type = 'module';
+      script.src = '/static/canonical-pricing.js';
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Canonical Pricing bundle failed to load.'));
+      document.head.append(script);
+    });
+  }
+  await canonicalPricingScriptPromise;
+  await globalThis.__mountCanonicalPricing?.();
+}
+
 function normalizeFrontDoorPricing(payload) {
-  const status = readBrowserStatus();
-  if ((!status || typeof status !== 'object') && (!payload.display || typeof payload.display !== 'object')) throw new Error('Canonical normal-user Pricing display status is unavailable.');
-  const user = readBrowserUser();
+  if (!payload.display || typeof payload.display !== 'object') {
+    throw new Error('Canonical normal-user Pricing display settings are unavailable.');
+  }
   const availableGroups = Object.keys(payload.usable_group || {});
-  const canonicalUserGroup = payload.context?.user_group ?? payload.user_group ?? user?.group;
+  const canonicalUserGroup = payload.context?.user_group ?? payload.user_group;
   const userGroup = availableGroups.includes(canonicalUserGroup) ? canonicalUserGroup : availableGroups[0] || '';
   const selectedGroup = payload.context?.selected_group ?? payload.selected_group ?? userGroup;
   const locked = payload.context?.locked ?? payload.locked ?? false;
   if (!userGroup || !availableGroups.includes(selectedGroup)) throw new Error('Canonical normal-user Pricing group context is unavailable.');
-  const sourceDisplay = payload.display || status || {};
+  const sourceDisplay = payload.display;
   const quotaDisplayType = sourceDisplay.quota_display_type || 'USD';
   const usdExchangeRate = Number(sourceDisplay.usd_exchange_rate ?? sourceDisplay.price ?? 1);
   const price = Number(sourceDisplay.price ?? usdExchangeRate);
@@ -821,16 +874,6 @@ function normalizeFrontDoorPricing(payload) {
       show_with_recharge: sourceDisplay.show_with_recharge === true || (sourceDisplay.show_with_recharge === undefined && quotaDisplayType !== 'TOKENS'),
     },
   };
-}
-
-function readBrowserStatus() {
-  try {
-    const raw = window.localStorage.getItem('status');
-    const status = raw ? JSON.parse(raw) : null;
-    return status && typeof status === 'object' ? status : null;
-  } catch {
-    return null;
-  }
 }
 
 function renderPricingProviders(payload, vendors) {

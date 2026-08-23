@@ -62,6 +62,19 @@ test('content routes serve fixture docs and pricing', async () => {
   assert.equal(pricing.meta.live, false);
 });
 
+test('/console/pricing is an asset route and never falls back to fixture pricing', async () => {
+  const response = await fetchWorker('/console/pricing', fixtureEnv);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'asset:/console/pricing');
+
+  const missingSession = await fetchWorker('/api/front-door/v1/pricing', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: { fetch: async () => { throw new Error('must not run'); } },
+  });
+  assert.equal(missingSession.status, 401);
+  assert.equal((await missingSession.json()).error.code, 'unauthorized');
+});
+
 test('front-door session routes forward only the signed session and New-Api-User identity', async () => {
   const seen = [];
   const pricing = {
@@ -193,6 +206,66 @@ test('front-door Pricing preserves a non-default usable user group from canonica
   });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), payload);
+});
+
+test('front-door keeps legal token-like public groups, endpoint identifiers, and complete model fields', async () => {
+  const model = {
+    model_name: 'token-public-model',
+    description: 'Public model',
+    icon: 'model-icon',
+    tags: 'token,public',
+    vendor_id: 9,
+    image_generation_model: true,
+    video_generation_model: true,
+    quota_type: 0,
+    model_ratio: 1,
+    model_price: 0,
+    owner_by: 'public-vendor',
+    completion_ratio: 2,
+    cache_ratio: 0.5,
+    create_cache_ratio: 0.25,
+    image_ratio: 3,
+    audio_ratio: 4,
+    audio_completion_ratio: 5,
+    enable_groups: ['token-group'],
+    supported_endpoint_types: ['token-endpoint'],
+    endpoint_map: {
+      'token-endpoint': { method: 'POST', path: '/v1/token-public' },
+    },
+    billing_mode: 'per_token',
+    billing_expr: '',
+    codex_fast_base_model: '',
+    video_geometry_contract: '',
+    video_route_contract: '',
+    video_input_duration_policy: '',
+    pricing_version: 'canonical-v1',
+  };
+  const payload = {
+    success: true,
+    data: [model],
+    vendors: [{ id: 9, name: 'Token Vendor', description: 'Public vendor', icon: 'token-icon' }],
+    group_ratio: { 'token-group': 1.25 },
+    usable_group: { 'token-group': 'Token group' },
+    supported_endpoint: { 'token-endpoint': { method: 'POST', path: '/v1/token-public' } },
+    auto_groups: ['token-group'],
+    video_resolution_dimensions: { 'token-resolution': { 'token-ratio': { token: [1280, 720] } } },
+    pricing_version: 'canonical-v1',
+  };
+  const response = await fetchWorker('/api/front-door/v1/pricing', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => new Response(JSON.stringify(payload), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    },
+  }, { headers: { cookie: 'session=signed', 'New-Api-User': 'user' } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.group_ratio, { 'token-group': 1.25 });
+  assert.deepEqual(body.usable_group, { 'token-group': 'Token group' });
+  assert.deepEqual(body.supported_endpoint, payload.supported_endpoint);
+  assert.deepEqual(body.auto_groups, ['token-group']);
+  assert.deepEqual(body.data[0], model);
 });
 
 test('front-door session routes reject credentials and incomplete browser sessions before VPC forwarding', async () => {

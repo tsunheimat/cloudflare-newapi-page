@@ -16,7 +16,7 @@
 
 Fixture 内容在 API 和 UI 都明确标记为演示数据；live badge 只会在经过 v1 response/schema 验证的 live payload 上出现，不代表尚未执行的生产部署或 provider 能力。
 
-Docs/Pricing presentation 的 canonical source 是 NewAPI commit `4d27865ce8342530f362595fdcd134eb83062a35`。本仓库保留 QuantumNous copyright 与 GNU AGPL v3-or-later license；完整 provenance 见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，license text 见 [LICENSE](LICENSE)。`/` 首页、header/footer、视觉设计系统、Worker adapter、download boundary 与 deployment contract 不属于该 presentation port。
+Docs/Pricing presentation 的 canonical source 是 checked-in NewAPI frontend at approved commit `85143bc49260f9c7ab1efd6a5122558e58d0bee2`；canonical `/console/pricing` bundle is shipped in `public/static/canonical-pricing.*`。本仓库保留 QuantumNous copyright 与 GNU AGPL v3-or-later license；完整 provenance 见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，license text 见 [LICENSE](LICENSE)。`/` 首页、header/footer、视觉设计系统、Worker adapter、download boundary 与 deployment contract 不属于该 presentation port。
 
 界面文件：`public/index.html`（外壳、header、footer）、`public/static/styles.css`（设计 token 与全部样式）、`public/static/app.js`（路由与三个页面的渲染）、`public/static/theme.js`（首屏前应用主题，避免闪烁）、`public/brand/`（JuAPI logo）。Docs 与 Pricing 的版式与数据保持不变，只重新定义了 token。
 

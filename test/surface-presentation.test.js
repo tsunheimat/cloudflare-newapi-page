@@ -9,6 +9,8 @@ const LICENSE_URL = new URL('../LICENSE', import.meta.url);
 const NOTICE_URL = new URL('../THIRD_PARTY_NOTICES.md', import.meta.url);
 const PACKAGE_URL = new URL('../package.json', import.meta.url);
 const ARCHITECTURE_URL = new URL('../docs/architecture.md', import.meta.url);
+const CANONICAL_PRICING_JS_URL = new URL('../public/static/canonical-pricing.js', import.meta.url);
+const CANONICAL_PRICING_CSS_URL = new URL('../public/static/canonical-pricing.css', import.meta.url);
 
 const sources = Promise.all([
   readFile(APP_URL, 'utf8'),
@@ -19,7 +21,8 @@ const sources = Promise.all([
 test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader states', async () => {
   const [app, styles] = await sources;
 
-  assert.match(app, /NewAPI SPA at commit 4d27865ce8342530f362595fdcd134eb83062a35/);
+  assert.match(app, /canonical React bundle built from approved NewAPI commit/);
+  assert.match(app, /85143bc49260f9c7ab1efd6a5122558e58d0bee2/);
   for (const contract of [
     "class: 'newapi-surface docs-hub-shell'",
     "class: 'docs-hub-sidebar'",
@@ -72,6 +75,8 @@ test('Pricing presentation reuses canonical session groups, fields, and both com
 
   assert.match(index, /href="\/console\/pricing" data-link data-nav="pricing"/);
   assert.match(app, /path === '\/console\/pricing' \|\| path === '\/pricing'/);
+  assert.match(app, /renderCanonicalPricing/);
+  assert.match(app, /canonical-pricing\.js/);
   assert.match(app, /card\.setAttribute\('data-pricing-group', group\)/);
   assert.match(app, /card\.disabled = true/);
   assert.match(app, /data-user-group/);
@@ -100,6 +105,22 @@ test('Pricing presentation reuses canonical session groups, fields, and both com
   assert.match(styles, /\.pricing-filter-modal-body\s*\{[\s\S]*?overflow-y:\s*auto/);
   assert.match(styles, /\.pricing-card-grid\s*\{[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
   assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.pricing-card-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
+});
+
+test('authenticated Pricing route ships the canonical component bundle without a fixture fallback', async () => {
+  const [app, bundle, stylesheet] = await Promise.all([
+    readFile(APP_URL, 'utf8'),
+    readFile(CANONICAL_PRICING_JS_URL, 'utf8'),
+    readFile(CANONICAL_PRICING_CSS_URL, 'utf8'),
+  ]);
+  assert.match(app, /path === '\/console\/pricing'/);
+  assert.match(app, /renderCanonicalPricing/);
+  assert.match(app, /__mountCanonicalPricing/);
+  assert.match(bundle, /\/api\/front-door\/v1\/pricing/);
+  assert.match(bundle, /__mountCanonicalPricing/);
+  assert.match(bundle, /__unmountCanonicalPricing/);
+  assert.ok(bundle.length > 1_000_000);
+  assert.ok(stylesheet.includes('.pricing-page-shell'));
 });
 
 test('architecture pricing contract preserves upstream ratios without a fixed substitute', async () => {
@@ -148,6 +169,6 @@ test('adapted surfaces retain QuantumNous attribution and the complete AGPL lice
   assert.match(license, /Version 3, 19 November 2007/);
   assert.match(license, /END OF TERMS AND CONDITIONS/);
   assert.match(notice, /copyright \(C\) 2025 QuantumNous/i);
-  assert.match(notice, /4d27865ce8342530f362595fdcd134eb83062a35/);
+  assert.match(notice, /85143bc49260f9c7ab1efd6a5122558e58d0bee2/);
   assert.equal(packageJson.license, 'AGPL-3.0-or-later');
 });

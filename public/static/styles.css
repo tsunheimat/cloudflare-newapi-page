@@ -3067,3 +3067,13 @@ a.feature-card:hover::before {
     transition: none !important;
   }
 }
+
+/* Canonical Pricing route owns the full viewport and its own header. */
+body.canonical-pricing-active .site-header,
+body.canonical-pricing-active .skip-link {
+  display: none;
+}
+
+body.canonical-pricing-active main {
+  min-height: 100vh;
+}

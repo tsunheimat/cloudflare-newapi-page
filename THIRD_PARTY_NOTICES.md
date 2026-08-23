@@ -34,3 +34,7 @@ It does not alter the referenced NewAPI checkout or its protected attribution.
 `public/brand/juapi-mark.png` are copied verbatim from the JuAPI deployment's
 `web/public/` brand assets. They are the deployer's own marks, used here only
 to identify the same service; no other file from that checkout is vendored.
+
+## Canonical Pricing bundle
+
+The authenticated `/console/pricing` surface also ships the built canonical NewAPI React component bundle from approved commit `85143bc49260f9c7ab1efd6a5122558e58d0bee2`; the checked-in `public/static/canonical-pricing.*` files preserve the component surface and attribution.

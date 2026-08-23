@@ -176,8 +176,8 @@ test('single-heading TOC occupies a column only at the desktop breakpoint', { ti
 test('phone Pricing keeps live modal changes across Escape, backdrop, close, and Confirm', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await newPage(context);
-  await page.goto(`${baseUrl}/console/pricing`, { waitUntil: 'domcontentloaded' });
-  assert.equal(new URL(page.url()).pathname, '/console/pricing');
+  await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
+  assert.equal(new URL(page.url()).pathname, '/pricing');
   const trigger = page.locator('[data-pricing-filter-trigger]');
   await trigger.waitFor();
   assert.equal(await page.locator('.pricing-advanced-filters').count(), 0);
@@ -251,6 +251,97 @@ test('phone Pricing keeps live modal changes across Escape, backdrop, close, and
   await dialog.waitFor({ state: 'detached' });
   await page.waitForFunction(() => document.activeElement?.hasAttribute('data-pricing-filter-trigger'));
   assert.match(await trigger.textContent(), /筛选 \(1\)/);
+  await context.close();
+});
+
+test('authenticated /console/pricing mounts canonical ordering, pagination, filters, cards, and detail sheet', { timeout: 35_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  await context.addInitScript(() => {
+    localStorage.setItem('user', JSON.stringify({
+      public_id: 'canonical-browser-user',
+      group: 'token-public',
+    }));
+    localStorage.setItem('i18nextLng', 'zh-CN');
+  });
+  const models = Array.from({ length: 24 }, (_, index) => ({
+    model_name: index < 12
+      ? `gpt-canonical-${String(index).padStart(2, '0')}`
+      : `zeta-canonical-${String(index).padStart(2, '0')}`,
+    description: index === 0 ? 'Canonical detail marker' : `Canonical model ${index}`,
+    icon: '',
+    tags: index % 2 === 0 ? 'chat,fast' : 'embedding',
+    vendor_id: index < 22 ? 1 : 2,
+    image_generation_model: false,
+    video_generation_model: false,
+    quota_type: index === 23 ? 1 : 0,
+    model_ratio: 1 + index / 10,
+    model_price: index === 23 ? 0.5 : 0,
+    owner_by: 'canonical-owner',
+    completion_ratio: 2,
+    cache_ratio: 0.5,
+    create_cache_ratio: 1.25,
+    image_ratio: 1,
+    audio_ratio: 1,
+    audio_completion_ratio: 1,
+    enable_groups: ['token-public'],
+    supported_endpoint_types: ['openai'],
+  }));
+  const payload = {
+    success: true,
+    data: models,
+    vendors: [
+      { id: 1, name: 'Canonical Vendor A', description: 'Primary canonical vendor', icon: '' },
+      { id: 2, name: 'Canonical Vendor B', description: 'Secondary canonical vendor', icon: '' },
+    ],
+    group_ratio: { 'token-public': 1.25 },
+    usable_group: { 'token-public': 'Token public group' },
+    supported_endpoint: { openai: { method: 'POST', path: '/v1/chat/completions' } },
+    auto_groups: ['token-public'],
+    video_resolution_dimensions: {},
+    pricing_version: 'canonical-browser-v1',
+  };
+  const page = await newPage(context);
+  await page.route('**/api/front-door/v1/pricing', async (route) => {
+    assert.equal(route.request().headers()['new-api-user'], 'canonical-browser-user');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(payload),
+    });
+  });
+  await page.goto(`${baseUrl}/console/pricing`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: '模型价格', exact: true }).first().waitFor();
+
+  assert.equal(await page.locator('.site-header').isVisible(), false);
+  assert.equal((await page.locator('.pricing-page-intro p').textContent()).trim(), '比较模型价格，按供应商、分组和能力快速找到适合你的模型。');
+  const visibleVendors = page.locator('.pricing-provider-section .pricing-vendor-chip');
+  assert.equal(await visibleVendors.count(), 2);
+  assert.equal((await visibleVendors.first().textContent()).includes('Canonical Vendor A'), true);
+  assert.equal(await page.locator('[data-pricing-group="token-public"]').count(), 1);
+  assert.equal(await page.locator('.pricing-model-table').count(), 1);
+
+  const rows = page.locator('.pricing-model-table tbody tr');
+  await rows.first().waitFor();
+  assert.equal(await rows.count(), 20);
+  assert.match(await rows.first().textContent(), /gpt-canonical-00/);
+  assert.match(await rows.nth(19).textContent(), /zeta-canonical-19/);
+
+  await page.locator('.semi-page-next').click();
+  await page.waitForFunction(() => document.querySelector('.pricing-model-table tbody')?.textContent?.includes('zeta-canonical-20'));
+  assert.equal(await rows.count(), 2);
+
+  await page.getByRole('button', { name: '卡片视图' }).click();
+  await page.locator('.pricing-card-grid').waitFor();
+  assert.equal(await page.locator('.pricing-model-card').count(), 2);
+
+  await page.getByPlaceholder('模糊搜索模型名称').fill('gpt-canonical-00');
+  await page.locator('.pricing-model-card').first().waitFor();
+  assert.equal(await page.locator('.pricing-model-card').count(), 1);
+  await page.locator('.pricing-model-card').click();
+  const detail = page.locator('.semi-sidesheet');
+  await detail.waitFor({ state: 'visible' });
+  assert.match(await detail.textContent(), /Canonical detail marker/);
+  assert.match(await detail.textContent(), /\/v1\/chat\/completions/);
   await context.close();
 });
 

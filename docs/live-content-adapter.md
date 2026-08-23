@@ -59,8 +59,9 @@ session aliases (`/api/front-door/v1/pricing` and
 conditional-request headers. It never forwards the internal live adapter token,
 Authorization/API-key/provider credentials, arbitrary credential headers, or
 credential query parameters. Its Pricing and recursive Docs responses use a
-bounded public allowlist; unknown/private fields are omitted and malformed
-known fields fail closed. `/api/content/pricing` remains on this existing
+bounded public allowlist; unknown/private fields are omitted, malformed known
+fields fail closed, and legitimate public identifiers are retained even when
+their values contain words such as `token`. `/api/content/pricing` remains on this existing
 service-token adapter regardless of `New-Api-User`.
 
 For the service-token live adapter, the Worker forwards only the browser's

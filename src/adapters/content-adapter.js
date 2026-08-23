@@ -339,11 +339,11 @@ function assertFrontDoorPricing(payload) {
     throw frontDoorUnavailable('invalid_upstream_schema');
   }
   for (const [key, ratio] of Object.entries(payload.group_ratio)) {
-    if (!isPublicMapKey(key)) continue;
+    if (!isCanonicalPublicIdentifier(key)) continue;
     if (!isFiniteNumber(ratio) || ratio < 0) throw frontDoorUnavailable('invalid_upstream_schema');
   }
   for (const [key, label] of Object.entries(payload.usable_group)) {
-    if (!isPublicMapKey(key)) continue;
+    if (!isCanonicalPublicIdentifier(key)) continue;
     if (typeof label !== 'string' || label.length > 300 || label.trim() === '') throw frontDoorUnavailable('invalid_upstream_schema');
   }
   const publicGroupRatios = projectFrontDoorMap(payload.group_ratio, (value) => value);
@@ -364,7 +364,7 @@ function assertFrontDoorPricing(payload) {
   if (typeof payload.pricing_version !== 'string' || payload.pricing_version.length > 300 || payload.pricing_version.trim() === '') throw frontDoorUnavailable('invalid_upstream_schema');
   const projected = {
     success: true,
-    data: payload.data.map((model) => projectPricingModel(model, { preserveIdentifierOrder: true })),
+    data: payload.data.map((model) => projectPricingModel(model, { preserveIdentifierOrder: true, frontDoor: true })),
     vendors: payload.vendors.map(projectFrontDoorVendor),
     group_ratio: publicGroupRatios,
     usable_group: publicUsableGroups,
@@ -452,13 +452,13 @@ function assertFrontDoorVendor(vendor) {
 }
 
 function assertFrontDoorIdentifierArray(value) {
-  if (!Array.isArray(value) || value.length > 1_000 || value.some((entry) => typeof entry !== 'string' || entry.length > 300 || !isPublicMapKey(entry))) throw frontDoorUnavailable('invalid_upstream_schema');
+  if (!Array.isArray(value) || value.length > 1_000 || value.some((entry) => typeof entry !== 'string' || entry.length > 300 || !isCanonicalPublicIdentifier(entry))) throw frontDoorUnavailable('invalid_upstream_schema');
 }
 
 function assertFrontDoorEndpointMap(value) {
   if (!isRecord(value) || Object.keys(value).length > FRONT_DOOR_MAX_ENDPOINT_MAP_ENTRIES) throw frontDoorUnavailable('invalid_upstream_schema');
   for (const [key, endpoint] of Object.entries(value)) {
-    if (!isPublicMapKey(key)) continue;
+    if (!isCanonicalPublicIdentifier(key)) continue;
     if (!isRecord(endpoint) || typeof endpoint.method !== 'string' || !/^[A-Za-z][A-Za-z0-9-]{0,19}$/.test(endpoint.method) || typeof endpoint.path !== 'string' || endpoint.path.length > 500 || !endpoint.path.startsWith('/')) throw frontDoorUnavailable('invalid_upstream_schema');
   }
 }
@@ -466,7 +466,7 @@ function assertFrontDoorEndpointMap(value) {
 function assertFrontDoorVideoPricing(profile) {
   if (!isRecord(profile) || profile.version !== 1 || !['USD', 'CNY'].includes(profile.currency) || profile.unit !== 'per_1m_completion_tokens' || !isFiniteNumber(profile.rate_multiplier) || profile.rate_multiplier <= 0 || !isRecord(profile.resolution_rates)) throw frontDoorUnavailable('invalid_upstream_schema');
   for (const [key, rates] of Object.entries(profile.resolution_rates)) {
-    if (!isPublicMapKey(key)) continue;
+    if (!isCanonicalPublicIdentifier(key)) continue;
     if (!isRecord(rates) || !isFiniteNumber(rates.without_video) || rates.without_video < 0 || !isFiniteNumber(rates.with_video) || rates.with_video < 0) throw frontDoorUnavailable('invalid_upstream_schema');
   }
 }
@@ -504,17 +504,17 @@ function projectFrontDoorVendor(vendor) {
   return result;
 }
 
-function projectFrontDoorMap(value, projectValue) {
+function projectFrontDoorMap(value, projectValue, { publicIdentifiers = false } = {}) {
   const projected = {};
   Object.entries(value).forEach(([key, item]) => {
-    if (!isPublicMapKey(key)) return;
+    if (!(publicIdentifiers ? isCanonicalPublicIdentifier(key) : isPublicMapKey(key))) return;
     projected[key] = projectValue(item);
   });
   return projected;
 }
 
 function projectFrontDoorIdentifierArray(values) {
-  return values.filter((value) => isPublicMapKey(value)).slice();
+  return values.filter((value) => isCanonicalPublicIdentifier(value)).slice();
 }
 
 function projectFrontDoorEndpointMap(value) {
@@ -522,7 +522,12 @@ function projectFrontDoorEndpointMap(value) {
 }
 
 function projectFrontDoorVideoDimensions(value) {
-  return projectFrontDoorMap(value, (resolutionSet) => projectFrontDoorMap(resolutionSet, (geometrySet) => projectFrontDoorMap(geometrySet, (dimensions) => [...dimensions])));
+  const options = { publicIdentifiers: true };
+  return projectFrontDoorMap(value, (resolutionSet) => projectFrontDoorMap(
+    resolutionSet,
+    (geometrySet) => projectFrontDoorMap(geometrySet, (dimensions) => [...dimensions], options),
+    options,
+  ), options);
 }
 
 function projectFrontDoorNavigationNodes(nodes) {
@@ -1615,11 +1620,14 @@ function fnv1a64(value) {
   return hash.toString(16).padStart(16, '0');
 }
 
-function projectPricingModel(model, { preserveIdentifierOrder = false } = {}) {
+function projectPricingModel(model, { preserveIdentifierOrder = false, frontDoor = false } = {}) {
   const projected = {};
   const projectIdentifiers = preserveIdentifierOrder
     ? projectFrontDoorIdentifierArray
     : projectPublicIdentifierArray;
+  const projectMap = frontDoor
+    ? (value, projectValue) => projectFrontDoorMap(value, projectValue, { publicIdentifiers: true })
+    : projectPublicMap;
   PUBLIC_PRICING_MODEL_FIELDS.forEach((field) => {
     if (!Object.hasOwn(model, field)) return;
     if (field === 'enable_groups' || field === 'supported_endpoint_types') {
@@ -1629,16 +1637,16 @@ function projectPricingModel(model, { preserveIdentifierOrder = false } = {}) {
     }
   });
   if (Object.hasOwn(model, 'video_pricing')) {
-    projected.video_pricing = projectVideoPricing(model.video_pricing);
+    projected.video_pricing = projectVideoPricing(model.video_pricing, projectMap);
   }
   if (Object.hasOwn(model, 'codex_fast_pricing')) {
     projected.codex_fast_pricing = projectCodexFastPricing(model.codex_fast_pricing);
   }
   if (Object.hasOwn(model, 'endpoint_map')) {
-    projected.endpoint_map = projectEndpointMap(model.endpoint_map);
+    projected.endpoint_map = projectEndpointMap(model.endpoint_map, projectMap);
   }
   if (Object.hasOwn(model, 'video_capability')) {
-    projected.video_capability = projectVideoCapability(model.video_capability, projectIdentifiers);
+    projected.video_capability = projectVideoCapability(model.video_capability, projectIdentifiers, projectMap);
   }
   return projected;
 }
@@ -1649,14 +1657,14 @@ function projectPublicIdentifierArray(values) {
     .sort(compareStableStrings);
 }
 
-function projectVideoPricing(profile) {
+function projectVideoPricing(profile, projectMap = projectPublicMap) {
   if (!isRecord(profile)) return profile;
   const projected = {};
   ['version', 'currency', 'unit', 'rate_multiplier'].forEach((field) => {
     if (Object.hasOwn(profile, field)) projected[field] = profile[field];
   });
   if (isRecord(profile.resolution_rates)) {
-    projected.resolution_rates = projectPublicMap(profile.resolution_rates, (rates) => {
+    projected.resolution_rates = projectMap(profile.resolution_rates, (rates) => {
       if (!isRecord(rates)) return rates;
       const projectedRates = {};
       ['without_video', 'with_video'].forEach((field) => {
@@ -1677,7 +1685,7 @@ function projectCodexFastPricing(profile) {
   return projected;
 }
 
-function projectVideoCapability(value, projectIdentifiers = projectPublicIdentifierArray) {
+function projectVideoCapability(value, projectIdentifiers = projectPublicIdentifierArray, projectMap = projectPublicMap) {
   const projected = {
     model: value.model,
     mapped_upstream_models: projectIdentifiers(value.mapped_upstream_models),
@@ -1708,13 +1716,13 @@ function projectVideoCapability(value, projectIdentifiers = projectPublicIdentif
       max_audios: value.media.max_audios,
       allow_video_only_reference: value.media.allow_video_only_reference,
       allow_audio_only_reference: value.media.allow_audio_only_reference,
-      modes: projectPublicMap(value.media.modes, (mode) => projectVideoCapabilityMode(mode, projectIdentifiers)),
+      modes: projectMap(value.media.modes, (mode) => projectVideoCapabilityMode(mode, projectIdentifiers, projectMap)),
     },
   };
   if (value.output.known_unsupported_resolutions !== undefined) projected.output.known_unsupported_resolutions = projectIdentifiers(value.output.known_unsupported_resolutions);
   if (value.output.default_output_format !== undefined) projected.output.default_output_format = value.output.default_output_format;
   if (Object.hasOwn(value.audio, 'generate_audio_default')) projected.audio.generate_audio_default = value.audio.generate_audio_default;
-  if (value.geometry !== undefined) projected.geometry = projectVideoCapabilityGeometry(value.geometry);
+  if (value.geometry !== undefined) projected.geometry = projectVideoCapabilityGeometry(value.geometry, projectMap);
   if (value.image_size !== undefined) {
     projected.image_size = {
       max_single_decoded_bytes: value.image_size.max_single_decoded_bytes,
@@ -1728,7 +1736,7 @@ function projectVideoCapability(value, projectIdentifiers = projectPublicIdentif
   return projected;
 }
 
-function projectVideoCapabilityMode(mode, projectIdentifiers = projectPublicIdentifierArray) {
+function projectVideoCapabilityMode(mode, projectIdentifiers = projectPublicIdentifierArray, projectMap = projectPublicMap) {
   const projected = {
     selectable: mode.selectable,
     ratios: projectIdentifiers(mode.ratios),
@@ -1742,22 +1750,22 @@ function projectVideoCapabilityMode(mode, projectIdentifiers = projectPublicIden
   return projected;
 }
 
-function projectVideoCapabilityGeometry(value) {
-  return projectPublicMap(value, (ratios) => projectPublicMap(ratios, (dimensions) => [...dimensions]));
+function projectVideoCapabilityGeometry(value, projectMap = projectPublicMap) {
+  return projectMap(value, (ratios) => projectMap(ratios, (dimensions) => [...dimensions]));
 }
 
-function projectEndpointMap(endpoints) {
-  return projectPublicMap(endpoints, (endpoint) => {
+function projectEndpointMap(endpoints, projectMap = projectPublicMap) {
+  return projectMap(endpoints, (endpoint) => {
     if (!isRecord(endpoint)) return undefined;
     return { method: endpoint.method, path: endpoint.path };
   });
 }
 
-function projectVideoDimensionSet(value) {
+function projectVideoDimensionSet(value, projectMap = projectPublicMap) {
   if (!isRecord(value)) return value;
-  return projectPublicMap(value, (geometrySet) => {
+  return projectMap(value, (geometrySet) => {
     if (!isRecord(geometrySet)) return undefined;
-    return projectPublicMap(geometrySet, (dimensions) => (
+    return projectMap(geometrySet, (dimensions) => (
       Array.isArray(dimensions) ? [...dimensions] : undefined
     ));
   });
@@ -1791,13 +1799,36 @@ function isPublicMapKey(key) {
     .replace(/[-:.\/]+/g, '_')
     .toLowerCase();
   const compact = normalized.replace(/_/g, '');
-  if (/(?:^|_)(?:authorization|cookie|password|credential|secret|token|private_key)(?:_|$)/.test(normalized)) return false;
+  if (/(?:^|_)(?:authorization|cookie|password|credential|secret|private_key)(?:_|$)/.test(normalized)) return false;
+  if (/(?:^|_)(?:service|client|provider)_(?:secret|token|key)(?:_|$)/.test(normalized)) return false;
   if (/(?:^|_)api_(?:key|token)(?:_|$)/.test(normalized)) return false;
   // Preserve the previous exact-name coverage for historical spellings such
   // as `apikey` and `privatesecret`, while also covering their token/key
   // equivalents.
   if (/^(?:api(?:key|token)|private(?:key|secret))$/.test(compact)) return false;
   return /^[A-Za-z0-9][A-Za-z0-9_:.\/-]{0,79}$/.test(key);
+}
+
+// Front-door map keys are canonical public identifiers.  Unlike arbitrary
+// upstream object fields, a group/vendor/endpoint identifier is user-visible
+// data and may legitimately contain words such as "token".  Keep the
+// credential/private classification limited to the reviewed field names above.
+function isCanonicalPublicIdentifier(key) {
+  if (typeof key !== 'string' || key.startsWith('__')) return false;
+  const normalized = key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-:.\/]+/g, '_')
+    .toLowerCase();
+  const compact = normalized.replace(/_/g, '');
+  if (new Set([
+    'authorization', 'authorizationheader', 'cookie', 'password', 'passwd',
+    'credential', 'credentials', 'secret', 'privatesecret', 'privatekey',
+    'apikey', 'apitoken', 'clientsecret', 'clientkey', 'clienttoken',
+    'providersecret', 'providerkey', 'providertoken', 'servicesecret',
+    'servicekey', 'servicetoken', 'oauthsecret', 'oauthkey', 'oauthtoken',
+  ]).has(compact)) return false;
+  return /^[A-Za-z0-9][A-Za-z0-9_:.\/-]{0,299}$/.test(key);
 }
 
 function clone(value) {

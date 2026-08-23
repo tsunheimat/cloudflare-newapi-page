@@ -33,8 +33,10 @@ and safe locale/conditional-request headers. It rejects Authorization, API
 keys, provider credentials, WebSocket credentials, credential query
 parameters, malformed/duplicate session cookies, and credential-shaped
 headers. Each canonical response is validated and reconstructed through an
-explicit bounded public projection; unknown/private fields are dropped and
-malformed known fields fail closed. The Docs response is the typed recursive
+explicit bounded public projection that preserves every reviewed canonical
+field; unknown/private fields are dropped and malformed known fields fail
+closed. Public identifier values remain intact even when they contain words
+such as `token`. The Docs response is the typed recursive
 `group`/`page` tree; the sidebar renders that tree recursively, including
 nested page descendants. Missing session,
 identity mismatch, administrator/API-key auth, upstream schema drift, timeout,
@@ -42,11 +44,11 @@ or oversized response fails closed. The existing service-token live adapter
 remains a separate public-content compatibility path and is not used to fake
 per-user Pricing or Docs navigation.
 
-`/console/pricing` is the canonical SPA route; `/pricing` remains a compatibility
-alias. Pricing display conversion still consumes the canonical SPA's already-loaded
-`/api/status` snapshot from browser storage; the approved front-door contract
-does not add a second status alias. If that snapshot is unavailable, the
-Worker surface fails closed instead of supplying a guessed currency or rate.
+`/console/pricing` is the canonical React SPA route; `/pricing` remains a Worker
+fixture compatibility alias. The approved front-door contract does not add a
+second status alias. The Worker does not manufacture pricing context or display
+settings from localStorage; the canonical component's existing status defaults
+remain the only fallback when the approved response omits those settings.
 
 `ContentAdapter` 是唯一可替换资料边界。UI 不读取硬编码的 NewAPI hostname，也不直接访问 private/VPC/Tunnel。Fixture 和 live adapter 必须返回同一个 public display contract。Live adapter 的 secret、schema、failure 和 cutover contract 见 [live-content-adapter.md](live-content-adapter.md)。
 
@@ -81,7 +83,7 @@ Page：
 }
 ```
 
-Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、`bullets`、`endpoint`、`table` 和 `link-cards`。Presentation 复用 pinned NewAPI commit `4d27865ce8342530f362595fdcd134eb83062a35` 的 Docs Hub shell、reader typography、导航/search/page states 与 responsive geometry，再把现有 flat fixture catalog 投影成一个 `开发文档` space 的 section groups；live adapter 对 NewAPI v1 renderer 做同样的受控 projection，未知 block/schema 会 fail closed，不从 private Admin response 直接透传内部字段。
+Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、`bullets`、`endpoint`、`table` 和 `link-cards`。Docs presentation 的 source authority 是 approved NewAPI commit `85143bc49260f9c7ab1efd6a5122558e58d0bee2`；the authenticated navigation response preserves and renders recursive folder/page layers. Live adapter 对 NewAPI v1 renderer 做同样的受控 projection，未知 block/schema 会 fail closed，不从 private Admin response 直接透传内部字段。
 
 ## Pricing contract 与不变量
 
