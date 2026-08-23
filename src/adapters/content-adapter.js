@@ -235,6 +235,30 @@ function isCredentialPublicIdentifier(value) {
   for (let index = 0; index < segments.length - 1; index += 1) {
     if (qualifiers.has(segments[index]) && secrets.has(segments[index + 1])) return true;
   }
+  // NewAPI identifiers also arrive as compact camel/acronym spellings where
+  // normalization cannot recover a separator (`accesskey`, `authkey`,
+  // `serviceid`, `privatekeyid`, `servicesecret`, `APIKEY`). Recognize the
+  // complete qualifier + one-or-more secret-word forms without rejecting
+  // ordinary public names such as `token`, `tokenrouter`, or `api_endpoint`.
+  const compact = segments.join('');
+  const credentialWords = new Set([...qualifiers, ...secrets]);
+  for (const qualifier of qualifiers) {
+    if (!compact.startsWith(qualifier) || compact === qualifier) continue;
+    let remainder = compact.slice(qualifier.length);
+    let matchedSecret = false;
+    while (remainder) {
+      const secret = [...credentialWords]
+        .filter((candidate) => remainder.startsWith(candidate))
+        .sort((left, right) => right.length - left.length)[0];
+      if (!secret) {
+        matchedSecret = false;
+        break;
+      }
+      matchedSecret = true;
+      remainder = remainder.slice(secret.length);
+    }
+    if (matchedSecret && remainder === '') return true;
+  }
   return false;
 }
 
@@ -352,7 +376,7 @@ function assertFrontDoorPricing(payload) {
   const projected = {
     success: true,
     data: payload.data.map((model) => projectPricingModel(model, { preserveIdentifierOrder: true, frontDoor: true })),
-    vendors: payload.vendors.map(projectFrontDoorVendor),
+    vendors: payload.vendors.map(projectFrontDoorVendor).filter(Boolean),
     group_ratio: publicGroupRatios,
     usable_group: publicUsableGroups,
     supported_endpoint: projectFrontDoorEndpointMap(payload.supported_endpoint),
@@ -485,6 +509,10 @@ function assertFrontDoorVideoDimensions(value) {
 }
 
 function projectFrontDoorVendor(vendor) {
+  // Vendor names are displayed as public identifiers by the canonical UI.
+  // Drop credential-shaped compact/camel/acronym spellings instead of
+  // allowing them to bypass the map-key sanitizer through the array form.
+  if (isCredentialPublicIdentifier(vendor.name)) return null;
   const result = { id: vendor.id, name: vendor.name };
   if (vendor.description !== undefined) result.description = vendor.description;
   if (vendor.icon !== undefined) result.icon = vendor.icon;

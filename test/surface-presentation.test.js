@@ -123,6 +123,13 @@ test('authenticated Pricing route ships the canonical component bundle without a
   assert.match(bundle, /localStorage\.setItem\("status", JSON\.stringify\(statusResponse\.data\.data\)\)/);
   assert.match(bundle, /__mountCanonicalPricing/);
   assert.match(bundle, /__unmountCanonicalPricing/);
+  assert.match(app, /cache: frontDoor \? 'no-store' : 'no-cache'/);
+  assert.doesNotMatch(app, /const cacheKey = options\.frontDoor/);
+  assert.doesNotMatch(app, /contentApiCache\.set\(cacheKey/);
+  assert.doesNotMatch(bundle, /Lto = 3e4|class Hto|new Hto/);
+  assert.match(bundle, /cache: "no-store"/);
+  assert.match(bundle, /disableDuplicate: !0/);
+  assert.doesNotMatch(bundle, /"New-API-User": Wto\(\)/);
   assert.ok(bundle.length > 1_000_000);
   assert.ok(stylesheet.includes('.pricing-page-shell'));
 });

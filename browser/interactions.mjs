@@ -267,6 +267,9 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
       custom_currency_symbol: 'STALE',
     }));
   });
+  await context.addCookies([
+    { name: 'session', value: 'session-a', domain: '127.0.0.1', path: '/' },
+  ]);
   const models = Array.from({ length: 24 }, (_, index) => ({
     model_name: index < 12
       ? `gpt-canonical-${String(index).padStart(2, '0')}`
@@ -326,12 +329,18 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
       }),
     });
   });
+  let pricingRequests = 0;
+  const pricingBodies = [];
   await page.route('**/api/front-door/v1/pricing', async (route) => {
-    assert.equal(route.request().headers()['new-api-user'], 'canonical-browser-user');
-    assert.equal(route.request().headers()['cookie'], undefined);
+    pricingRequests += 1;
+    assert.equal(route.request().headers()['new-api-user'], undefined);
+    const cookie = route.request().headers()['cookie'];
+    assert.equal(cookie, pricingRequests === 1 ? 'session=session-a' : 'session=session-b');
     assert.equal(route.request().headers()['authorization'], undefined);
     assert.equal(route.request().headers()['x-api-key'], undefined);
     assert.equal(route.request().headers()['if-none-match'], undefined);
+    assert.equal(route.request().headers()['cache-control'], 'no-store');
+    pricingBodies.push(cookie);
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -380,6 +389,13 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
   await detail.waitFor({ state: 'visible' });
   assert.match(await detail.textContent(), /Canonical detail marker/);
   assert.match(await detail.textContent(), /\/v1\/chat\/completions/);
+  await context.addCookies([
+    { name: 'session', value: 'session-b', domain: '127.0.0.1', path: '/' },
+  ]);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: '模型价格', exact: true }).first().waitFor();
+  assert.equal(pricingRequests, 2, 'canonical Pricing must fetch a fresh body after navigation');
+  assert.deepEqual(pricingBodies, ['session=session-a', 'session=session-b']);
   await context.close();
 });
 

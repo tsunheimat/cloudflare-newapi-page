@@ -288,7 +288,6 @@ test('front-door session routes forward only the signed session cookie', async (
           query: new URL(request.url).search,
           method: request.method,
           cookie: request.headers.get('cookie'),
-          identity: request.headers.get('new-api-user'),
           ifNoneMatch: request.headers.get('if-none-match'),
           acceptLanguage: request.headers.get('accept-language'),
           authorization: request.headers.get('authorization'),
@@ -318,13 +317,12 @@ test('front-door session routes forward only the signed session cookie', async (
   const docsResponse = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', env, init);
   assert.equal(docsResponse.status, 200);
   assert.deepEqual(await docsResponse.json(), navigation);
-  assert.deepEqual(seen.map(({ path, query, method, cookie, identity, authorization, random, ifNoneMatch, acceptLanguage }) => ({ path, query, method, cookie, identity, authorization, random, ifNoneMatch, acceptLanguage })), [
+  assert.deepEqual(seen.map(({ path, query, method, cookie, authorization, random, ifNoneMatch, acceptLanguage }) => ({ path, query, method, cookie, authorization, random, ifNoneMatch, acceptLanguage })), [
     {
       path: '/api/front-door/v1/pricing',
       query: '',
       method: 'GET',
       cookie: 'session=signed-cookie',
-      identity: null,
       authorization: null,
       random: null,
       ifNoneMatch: null,
@@ -335,7 +333,6 @@ test('front-door session routes forward only the signed session cookie', async (
       query: '?locale=zh',
       method: 'GET',
       cookie: 'session=signed-cookie',
-      identity: null,
       authorization: null,
       random: null,
       ifNoneMatch: null,
@@ -435,6 +432,8 @@ test('front-door drops credential-shaped public identifiers across case, separat
     'access_token', 'ACCESS-TOKEN', 'accessToken', 'ACCESS__TOKEN',
     'private_token', 'PrivateToken', 'privatetoken', 'admin-token', 'ADMIN_TOKEN', 'admintoken',
     'client_private_key', 'clientPrivateKey', 'clientprivatekey', 'clientAPIKey', 'CLIENT_API_KEY', 'clientapikey',
+    'accesskey', 'authkey', 'serviceid', 'privatekeyid', 'servicesecret',
+    'accessKeyId', 'AUTHKEY', 'serviceID', 'privateKeyID', 'serviceSecret',
   ];
   const legal = ['token', 'tokenrouter', 'token-group', 'api_endpoint', 'vendor-name'];
   const groupRatio = { default: 1, ...Object.fromEntries(rejected.map((key, index) => [key, index + 2])), ...Object.fromEntries(legal.map((key) => [key, 2])) };
@@ -449,9 +448,16 @@ test('front-door drops credential-shaped public identifiers across case, separat
       supported_endpoint_types: [...rejected, ...legal],
       endpoint_map: Object.fromEntries([...rejected, ...legal].map((key) => [key, endpoint])),
     }],
-    vendors: [], group_ratio: groupRatio, usable_group: usableGroup,
+    vendors: [{ id: 1, name: rejected[0] }, { id: 2, name: 'Normal Vendor' }],
+    group_ratio: groupRatio, usable_group: usableGroup,
     supported_endpoint: Object.fromEntries([...rejected, ...legal].map((key) => [key, endpoint])),
-    auto_groups: [...rejected, ...legal], video_resolution_dimensions: {}, pricing_version: 'v1',
+    auto_groups: [...rejected, ...legal],
+    video_resolution_dimensions: {
+      tokenrouter: {
+        tokenrouter: Object.fromEntries([...rejected, ...legal].map((key) => [key, [1280, 720]])),
+      },
+    },
+    pricing_version: 'v1',
   };
   const response = await fetchWorker('/api/front-door/v1/pricing', {
     ...fixtureEnv,
@@ -467,6 +473,10 @@ test('front-door drops credential-shaped public identifiers across case, separat
     assert.equal(Object.hasOwn(body.data[0].endpoint_map, key), false, key);
   }
   assert.deepEqual(body.auto_groups, legal);
+  assert.deepEqual(body.vendors, [{ id: 2, name: 'Normal Vendor' }]);
+  assert.deepEqual(body.video_resolution_dimensions, {
+    tokenrouter: { tokenrouter: Object.fromEntries(legal.map((key) => [key, [1280, 720]])) },
+  });
   assert.deepEqual(body.group_ratio.default, 1);
   for (const key of legal) assert.equal(Object.hasOwn(body.group_ratio, key), true, key);
   assert.deepEqual(body.data[0].enable_groups, legal);

@@ -49895,10 +49895,6 @@ Valid keys: ` + JSON.stringify(Object.keys(Z), null, "  ")
       rateKey: dSe(r)
     };
   }, l7e = "video", FWt = (e) => w3(e) ? l7e : e == null ? void 0 : e.quota_type, w9e = (e, t) => t === "all" || t === void 0 || t === null ? !0 : FWt(e) === t;
-  function KWt() {
-    let e = localStorage.getItem("user");
-    return e ? (e = JSON.parse(e), e.public_id || "") : "";
-  }
   window.matchMedia(
     `(max-width: ${crt - 1}px)`
   ).matches;
@@ -52465,7 +52461,6 @@ Valid keys: ` + JSON.stringify(Object.keys(Z), null, "  ")
     // builds. Stays false (axios default) for same-origin builds.
     withCredentials: !1,
     headers: {
-      "New-API-User": KWt(),
       "Cache-Control": "no-store"
     }
   });
@@ -190962,85 +190957,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         ] })
       }
     );
-  }, Lto = 3e4, hpt = () => typeof window < "u" && window.localStorage, Yg = (e) => String((e == null ? void 0 : e.public_id) || (e == null ? void 0 : e.id) || "anonymous"), vpt = (e) => String(e || "en"), gpt = (e, t) => `newapi:${Yg({ public_id: e })}:${t}`, Nto = (e, t, r = null) => {
-    if (!hpt()) return r;
-    try {
-      const n = window.localStorage.getItem(
-        gpt(e, t)
-      );
-      return n ?? r;
-    } catch {
-      return r;
-    }
-  }, Vto = (e, t, r) => {
-    if (hpt())
-      try {
-        window.localStorage.setItem(
-          gpt(e, t),
-          String(r)
-        );
-      } catch {
-      }
-  };
-  class Hto {
-    constructor({ ttl: t = Lto, now: r = () => Date.now() } = {}) {
-      this.ttl = t, this.now = r, this.entries = /* @__PURE__ */ new Map();
-    }
-    makeKey({ userId: t, language: r, resource: n }) {
-      return JSON.stringify([
-        Yg({ public_id: t }),
-        vpt(r),
-        String(n)
-      ]);
-    }
-    get({ userId: t, language: r, resource: n, fetcher: o, force: i = !1 }) {
-      const c = this.makeKey({ userId: t, language: r, resource: n }), s = this.entries.get(c);
-      if (s != null && s.promise && !i) return s.promise;
-      if (!i && s && s.expiresAt > this.now())
-        return Promise.resolve({
-          data: s.data,
-          stale: s.stale,
-          cached: !0
-        });
-      const f = { ...s || {} }, y = Promise.resolve().then(o).then((d) => {
-        const g = { data: d, stale: !1, expiresAt: this.now() + this.ttl };
-        return this.entries.get(c) === f && this.entries.set(c, g), { data: d, stale: !1, cached: !1 };
-      }).catch((d) => {
-        if (this.entries.get(c) === f && s && s.data !== void 0) {
-          const g = {
-            ...s,
-            stale: !0,
-            expiresAt: this.now()
-          };
-          return this.entries.set(c, g), { data: s.data, stale: !0, cached: !0, error: d };
-        }
-        throw this.entries.get(c) === f && this.entries.delete(c), d;
-      });
-      return f.promise = y, this.entries.set(c, f), y.finally(() => {
-        const d = this.entries.get(c);
-        if ((d == null ? void 0 : d.promise) === y) {
-          const { promise: g, ...P } = d;
-          this.entries.set(c, P);
-        }
-      });
-    }
-    invalidate({ userId: t, language: r, resource: n }) {
-      this.entries.delete(this.makeKey({ userId: t, language: r, resource: n }));
-    }
-    clearUser(t) {
-      const r = Yg({ public_id: t });
-      for (const n of this.entries.keys())
-        JSON.parse(n)[0] === r && this.entries.delete(n);
-    }
-    invalidateUserResource({ userId: t, resource: r }) {
-      const n = Yg({ public_id: t }), o = String(r);
-      for (const i of this.entries.keys()) {
-        const [c, , s] = JSON.parse(i);
-        c === n && s === o && this.entries.delete(i);
-      }
-    }
-  }
-  const Bto = new Hto(), Fto = (e) => {
+  },
+  // Authenticated Pricing is session-specific. Keep no in-memory body,
+  // validator, stale fallback, selection, or promise cache across sessions.
+  Bto = { get: ({ fetcher: e }) => Promise.resolve().then(e).then((t) => ({ data: t, stale: !1, cached: !1 })) }, Fto = (e) => {
     if (!e) return null;
     try {
       const t = JSON.parse(e);
@@ -191145,14 +191065,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         }
       }
       et.sort((Lt, fr) => Lt.quota_type - fr.quota_type), et.sort((Lt, fr) => Lt.model_name.startsWith("gpt") && !fr.model_name.startsWith("gpt") ? -1 : !Lt.model_name.startsWith("gpt") && fr.model_name.startsWith("gpt") ? 1 : Lt.model_name.localeCompare(fr.model_name)), Z(et);
-    }, _t = Yg(Zt == null ? void 0 : Zt.user), $t = vpt(t.language), tr = (ho = Vt == null ? void 0 : Vt.status) == null ? void 0 : ho.model_marketplace_default, _r = b.useMemo(
-      () => Fto(
-        Nto(_t, "pricing-selection", "")
-      ),
-      [_t]
-    ), Cr = (et) => {
-      et && Vto(_t, "pricing-selection", JSON.stringify(et));
-    }, nn = (et) => {
+    }, tr = (ho = Vt == null ? void 0 : Vt.status) == null ? void 0 : ho.model_marketplace_default, _r = null, Cr = () => {}, nn = (et) => {
       if (!et) {
         V(""), S(""), d("");
         return;
@@ -191177,7 +191090,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
           force: et,
           fetcher: async () => {
             var At, Qt;
-            const Tt = await dy.get("/api/pricing");
+            const Tt = await dy.get("/api/pricing", {
+              disableDuplicate: !0,
+              cache: "no-store"
+            });
             if (!((At = Tt.data) != null && At.success))
               throw new Error(((Qt = Tt.data) == null ? void 0 : Qt.message) || e("加载模型价格失败"));
             return Tt.data;
@@ -191386,8 +191302,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
     ...t,
     withCredentials: !0,
     headers: {
-      ...t.headers || {},
-      "New-API-User": Wto()
+      ...t.headers || {}
     }
   }) : eJe(e, t);
   function Opt() {
@@ -191397,10 +191312,6 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
     } catch {
       return null;
     }
-  }
-  function Wto() {
-    var e;
-    return String(((e = Opt()) == null ? void 0 : e.public_id) || "").trim();
   }
   function Gto({ status: statusData = {} } = {}) {
     const e = b.useMemo(() => Opt(), []), t = b.useMemo(() => statusData, [statusData]), r = b.useMemo(() => [{ user: e }, () => {

@@ -65,6 +65,12 @@ their values contain words such as `token`. Authenticated responses are
 `private, no-store` with no ETag/304 path. `/api/content/pricing` remains on
 this existing service-token adapter regardless of `New-Api-User`.
 
+The browser boundary follows the same rule: the canonical Pricing bundle and
+the compatibility Docs/Pricing layer force a fresh `no-store` request for
+every authenticated front-door navigation. They retain no front-door body,
+validator, stale fallback, or in-flight reuse in memory or localStorage; only
+the legacy public `/api/content/*` cache path remains eligible for reuse.
+
 The canonical `/console/pricing` bundle separately calls the public same-origin
 `/api/status` bootstrap. This is a read-only fixed `GET /api/status` through
 `NEWAPI_VPC_SERVICE`; it sends only `Accept: application/json` and never copies

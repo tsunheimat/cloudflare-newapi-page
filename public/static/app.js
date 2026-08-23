@@ -27,8 +27,6 @@ const pricingMobileMedia = window.matchMedia?.(PRICING_MOBILE_QUERY) || null;
 
 const state = {
   docsCatalog: null,
-  docsNavigation: null,
-  pricing: null,
   integration: null,
   docsQuery: '',
   pricingQuery: '',
@@ -50,6 +48,9 @@ let activeDocsSearchButton = null;
 let activeDocsTocObserver = null;
 let surfaceReturnFocus = null;
 let activeSurfaceDismiss = null;
+// Only legacy public `/api/content/*` responses may be reused in this
+// compatibility layer. Authenticated front-door bodies are always fetched
+// afresh and are never retained in browser memory or validators.
 const contentApiCache = new Map();
 let canonicalPricingScriptPromise = null;
 
@@ -118,7 +119,7 @@ function installThemeToggle() {
 }
 
 function handlePricingViewportChange() {
-  if (!isPricingPath(normalizePath(window.location.pathname)) || !state.pricing) return;
+  if (!isPricingPath(normalizePath(window.location.pathname))) return;
   closeSurfaceOverlay({ restoreFocus: false });
   void renderPricing();
 }
@@ -140,18 +141,18 @@ async function renderRoute() {
   try {
     if (path === '/docs') {
       const catalog = await ensureDocsCatalog();
-      await ensureDocsNavigation();
-      const slug = docsNavigationSlug(catalog);
+      const navigation = await ensureDocsNavigation();
+      const slug = docsNavigationSlug(withDocsNavigation(catalog, navigation));
       if (!slug) throw new Error('Docs catalog has no public pages.');
       path = docsPath(slug);
       window.history.replaceState(window.history.state, '', path);
     } else if (path.startsWith('/docs/')) {
       const requestedSlug = path.slice('/docs/'.length);
       const catalog = await ensureDocsCatalog();
-      await ensureDocsNavigation();
+      const navigation = await ensureDocsNavigation();
       // Keep old fixture links stable while repairing the live legacy entrypoint.
-      if (requestedSlug === DEFAULT_DOCS_SLUG && !docsCatalogHasSlug(catalog.data, requestedSlug)) {
-        const slug = docsNavigationSlug(catalog);
+      if (requestedSlug === DEFAULT_DOCS_SLUG && !docsCatalogHasSlug(withDocsNavigation(catalog, navigation).data, requestedSlug)) {
+        const slug = docsNavigationSlug(withDocsNavigation(catalog, navigation));
         if (slug && slug !== requestedSlug) {
           path = docsPath(slug);
           window.history.replaceState(window.history.state, '', path);
@@ -279,23 +280,18 @@ function downloadsSummary(status) {
 
 async function loadContentSurfaces() {
   const docsResponse = state.docsCatalog || await api('/api/content/docs');
-  let pricingResponse = state.pricing;
-  if (!pricingResponse) {
-    const canonicalPricing = await api('/api/front-door/v1/pricing', { frontDoor: true }).catch((error) => {
-      if (readBrowserUser()?.public_id) throw error;
-      return null;
-    });
-    // The approved GetPricing alias intentionally returns the exact NewAPI
-    // response. Its display settings are already loaded by the canonical SPA
-    // status bootstrap; if that snapshot is absent, normalization fails closed
-    // rather than inventing exchange rates or labels.
-    state.frontDoorPricing = canonicalPricing;
-    pricingResponse = canonicalPricing
-      ? normalizeFrontDoorPricing(canonicalPricing)
-      : await api('/api/content/pricing');
-  }
+  const canonicalPricing = await api('/api/front-door/v1/pricing', { frontDoor: true }).catch((error) => {
+    if (readBrowserUser()?.public_id) throw error;
+    return null;
+  });
+  // The approved GetPricing alias intentionally returns the exact NewAPI
+  // response. Its display settings are already loaded by the canonical SPA
+  // status bootstrap; if that snapshot is absent, normalization fails closed
+  // rather than inventing exchange rates or labels.
+  const pricingResponse = canonicalPricing
+    ? normalizeFrontDoorPricing(canonicalPricing)
+    : await api('/api/content/pricing');
   if (!state.docsCatalog) state.docsCatalog = docsResponse;
-  if (!state.pricing) state.pricing = pricingResponse;
   await ensureDocsNavigation();
   return {
     docs: {
@@ -312,27 +308,30 @@ async function ensureDocsCatalog() {
 }
 
 async function ensureDocsNavigation() {
-  if (state.docsNavigation) return state.docsNavigation;
   try {
-    state.docsNavigation = await api(
+    return await api(
       '/api/front-door/v1/docs/v2/navigation?locale=zh',
       { frontDoor: true },
     );
-    if (state.docsCatalog?.data && Array.isArray(state.docsNavigation?.data)) {
-      state.docsCatalog.data.navigation = state.docsNavigation.data;
-    }
   } catch (error) {
     // Anonymous/fixture browsing keeps the existing catalog navigation. A
     // normal-user session uses the canonical recursive response above.
     if (readBrowserUser()?.public_id) throw error;
-    state.docsNavigation = null;
+    return null;
   }
-  return state.docsNavigation;
+}
+
+function withDocsNavigation(catalogResponse, navigationResponse) {
+  if (!navigationResponse?.data || !catalogResponse?.data) return catalogResponse;
+  return {
+    ...catalogResponse,
+    data: { ...catalogResponse.data, navigation: navigationResponse.data },
+  };
 }
 
 async function renderDocs(slug) {
   await ensureDocsCatalog();
-  await ensureDocsNavigation();
+  const navigation = await ensureDocsNavigation();
   const response = await api(`/api/content/docs/${encodeURIComponent(slug)}`);
   const catalog = state.docsCatalog.data;
   const page = response.data.page;
@@ -359,7 +358,7 @@ async function renderDocs(slug) {
   });
   const sidebar = renderDocsSidebar(catalog, slug, () => {
     sidebarWrap.classList.remove('is-open');
-  }, state.docsNavigation?.data);
+  }, navigation?.data);
   sidebarWrap.append(backdrop, sidebar);
 
   const article = node('article', {
@@ -725,19 +724,15 @@ async function renderPricing() {
     await renderCanonicalPricing();
     return;
   }
-  if (!state.pricing) {
-    const canonicalPricing = await api('/api/front-door/v1/pricing', { frontDoor: true }).catch((error) => {
-      if (readBrowserUser()?.public_id) throw error;
-      return null;
-    });
-    state.frontDoorPricing = canonicalPricing;
-    state.pricing = canonicalPricing
-      ? normalizeFrontDoorPricing(canonicalPricing)
-      : await api('/api/content/pricing');
-    state.currency = state.pricing.display?.default_currency || 'CNY';
-    state.showWithRecharge = state.pricing.display?.show_with_recharge === true;
-  }
-  const payload = state.pricing;
+  const canonicalPricing = await api('/api/front-door/v1/pricing', { frontDoor: true }).catch((error) => {
+    if (readBrowserUser()?.public_id) throw error;
+    return null;
+  });
+  const payload = canonicalPricing
+    ? normalizeFrontDoorPricing(canonicalPricing)
+    : await api('/api/content/pricing');
+  state.currency = payload.display?.default_currency || 'CNY';
+  state.showWithRecharge = payload.display?.show_with_recharge === true;
   const models = getOrdinaryUserModels(payload);
   if (!state.selectedGroup || !(state.selectedGroup in (payload.usable_group || {}))) {
     state.selectedGroup = payload.context.selected_group || Object.keys(payload.usable_group || {})[0] || '';
@@ -1918,20 +1913,18 @@ function renderError(error) {
 }
 
 async function api(path, options = {}) {
-  const user = options.frontDoor ? readBrowserUser() : null;
-  const cacheKey = options.frontDoor ? `${path}\n${user?.public_id || ''}` : path;
-  const cached = contentApiCache.get(cacheKey);
+  const frontDoor = options.frontDoor === true;
+  const cached = frontDoor ? null : contentApiCache.get(path);
   const headers = new Headers({ accept: 'application/json' });
-  if (cached?.etag) headers.set('if-none-match', cached.etag);
-  if (options.frontDoor) {
-    if (user?.public_id) headers.set('new-api-user', user.public_id);
-  }
+  if (!frontDoor && cached?.etag) headers.set('if-none-match', cached.etag);
   const response = await fetch(path, {
     headers,
-    ...(path.startsWith('/api/content/') || options.frontDoor ? { cache: 'no-cache' } : {}),
+    ...(path.startsWith('/api/content/') || frontDoor
+      ? { cache: frontDoor ? 'no-store' : 'no-cache' }
+      : {}),
   });
   if (response.status === 304) {
-    if (!cached || response.headers.get('etag') !== cached.etag) {
+    if (frontDoor || !cached || response.headers.get('etag') !== cached.etag) {
       throw new Error('API 返回了无法验证的缓存响应。');
     }
     return cached.body;
@@ -1945,8 +1938,8 @@ async function api(path, options = {}) {
   if (!response.ok || body.success === false) {
     throw new Error(body?.error?.message || body?.message || `请求失败（${response.status}）。`);
   }
-  if (path.startsWith('/api/content/') || options.frontDoor) {
-    contentApiCache.set(cacheKey, {
+  if (path.startsWith('/api/content/') && !frontDoor) {
+    contentApiCache.set(path, {
       body,
       etag: response.headers.get('etag'),
     });
