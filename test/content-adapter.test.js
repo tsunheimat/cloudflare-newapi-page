@@ -419,6 +419,120 @@ test('live pricing retains the current NewAPI model families through a bounded p
   assert.equal(Object.hasOwn(model.video_capability.geometry['720p'], 'oauth_secret'), false);
 });
 
+test('live nested map projection redacts acronym-style secret identifiers', async () => {
+  const publicMode = {
+    selectable: true,
+    ratios: ['ordinaryAPIEndpoint'],
+    min_images: 0,
+    max_images: 1,
+  };
+  const publicRates = { without_video: 1, with_video: 2 };
+  const adapter = createContentAdapter(liveEnv(async () => liveResponse({
+    ...livePricing,
+    data: [{
+      model_name: 'acronym-redaction-model',
+      enable_groups: ['clientAPIKey', 'serviceAPIToken', 'signingPrivateKey', 'ordinaryAPIEndpoint'],
+      supported_endpoint_types: ['clientAPIKey', 'ordinaryAPIEndpoint'],
+      endpoint_map: {
+        clientAPIKey: { method: 'POST', path: '/private/client' },
+        serviceAPIToken: { method: 'POST', path: '/private/service' },
+        signingPrivateKey: { method: 'POST', path: '/private/signing' },
+        ordinaryAPIEndpoint: { method: 'POST', path: '/v1/public' },
+      },
+      video_pricing: {
+        version: 1,
+        currency: 'USD',
+        unit: 'per_1m_completion_tokens',
+        rate_multiplier: 1,
+        resolution_rates: {
+          clientAPIKey: publicRates,
+          serviceAPIToken: publicRates,
+          signingPrivateKey: publicRates,
+          ordinaryAPIEndpoint: publicRates,
+        },
+      },
+      video_capability: {
+        model: 'acronym-redaction-model',
+        mapped_upstream_models: ['serviceAPIToken', 'ordinaryAPIEndpoint'],
+        schema_version: 1,
+        profile: { name: 'profile', label: 'Profile', revision: 1, checksum: 'sum' },
+        output: {
+          resolutions: ['clientAPIKey', 'ordinaryAPIEndpoint'],
+          default_resolution: 'ordinaryAPIEndpoint',
+          ratios: ['signingPrivateKey', 'ordinaryAPIEndpoint'],
+          default_ratio: 'ordinaryAPIEndpoint',
+          duration_min: 1,
+          duration_max: 10,
+          allow_auto_duration: true,
+          default_duration: 5,
+          output_formats: ['serviceAPIToken', 'ordinaryAPIEndpoint'],
+        },
+        audio: { generate_audio_supported: true },
+        media: {
+          max_images: 1,
+          max_videos: 1,
+          max_audios: 0,
+          allow_video_only_reference: false,
+          allow_audio_only_reference: false,
+          modes: {
+            clientAPIKey: 'drop',
+            ordinaryAPIEndpoint: publicMode,
+          },
+        },
+        geometry: {
+          serviceAPIToken: { ordinaryAPIEndpoint: [1920, 1080] },
+          ordinaryAPIEndpoint: { ordinaryAPIEndpoint: [1280, 720] },
+        },
+      },
+    }],
+    group_ratio: {
+      default: 10,
+      clientAPIKey: 1,
+      serviceAPIToken: 2,
+      signingPrivateKey: 3,
+      ordinaryAPIEndpoint: 4,
+    },
+    supported_endpoint: {
+      clientAPIKey: { method: 'POST', path: '/private/client' },
+      serviceAPIToken: { method: 'POST', path: '/private/service' },
+      signingPrivateKey: { method: 'POST', path: '/private/signing' },
+      ordinaryAPIEndpoint: { method: 'POST', path: '/v1/public' },
+    },
+    auto_groups: ['signingPrivateKey', 'ordinaryAPIEndpoint'],
+    video_resolution_dimensions: {
+      clientAPIKey: {
+        ordinaryAPIEndpoint: { default: [1280, 720] },
+      },
+      ordinaryAPIEndpoint: {
+        ordinaryAPIEndpoint: { default: [1920, 1080] },
+      },
+    },
+  })));
+
+  const result = await adapter.getPricingResponse();
+  const model = result.payload.data[0];
+  assert.deepEqual(model.enable_groups, ['ordinaryAPIEndpoint']);
+  assert.deepEqual(model.supported_endpoint_types, ['ordinaryAPIEndpoint']);
+  assert.deepEqual(Object.keys(model.endpoint_map), ['ordinaryAPIEndpoint']);
+  assert.deepEqual(model.video_pricing.resolution_rates, { ordinaryAPIEndpoint: publicRates });
+  assert.deepEqual(result.payload.group_ratio, { default: 10, ordinaryAPIEndpoint: 4 });
+  assert.deepEqual(result.payload.supported_endpoint, {
+    ordinaryAPIEndpoint: { method: 'POST', path: '/v1/public' },
+  });
+  assert.deepEqual(result.payload.auto_groups, ['ordinaryAPIEndpoint']);
+  assert.deepEqual(model.video_capability.mapped_upstream_models, ['ordinaryAPIEndpoint']);
+  assert.deepEqual(model.video_capability.output.resolutions, ['ordinaryAPIEndpoint']);
+  assert.deepEqual(model.video_capability.output.ratios, ['ordinaryAPIEndpoint']);
+  assert.deepEqual(model.video_capability.output.output_formats, ['ordinaryAPIEndpoint']);
+  assert.deepEqual(Object.keys(model.video_capability.media.modes), ['ordinaryAPIEndpoint']);
+  assert.deepEqual(model.video_capability.geometry, {
+    ordinaryAPIEndpoint: { ordinaryAPIEndpoint: [1280, 720] },
+  });
+  assert.deepEqual(result.payload.video_resolution_dimensions, {
+    ordinaryAPIEndpoint: { ordinaryAPIEndpoint: { default: [1920, 1080] } },
+  });
+});
+
 test('live pricing bounds the top-level supported endpoint map before projection', async () => {
   assert.equal(LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES, 500);
   const supportedEndpoint = Object.fromEntries(

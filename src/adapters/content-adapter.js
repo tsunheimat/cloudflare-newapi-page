@@ -1223,14 +1223,17 @@ function projectPublicMap(value, projectValue) {
 function isPublicMapKey(key) {
   if (typeof key !== 'string' || key.startsWith('__')) return false;
   // Treat secret-bearing words as separator-delimited identifier segments,
-  // including camel-case segments, without rejecting public names such as
-  // tokenization or api_endpoint.
+  // including acronym-style and ordinary camel-case segments, without
+  // rejecting public names such as tokenization or api_endpoint.
+  // Split an acronym run before its final capitalized segment (`APIKey` ->
+  // `API_Key`) before applying the ordinary lower-to-upper boundary.
   const normalized = key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .replace(/[-:.\/]+/g, '_')
     .toLowerCase();
   const compact = normalized.replace(/_/g, '');
-  if (/(?:^|_)(?:authorization|cookie|password|credential|secret|token)(?:_|$)/.test(normalized)) return false;
+  if (/(?:^|_)(?:authorization|cookie|password|credential|secret|token|private_key)(?:_|$)/.test(normalized)) return false;
   if (/(?:^|_)api_(?:key|token)(?:_|$)/.test(normalized)) return false;
   // Preserve the previous exact-name coverage for historical spellings such
   // as `apikey` and `privatesecret`, while also covering their token/key
