@@ -258,11 +258,27 @@ test('live adapter bounds upstream failures and redacts backend responses', asyn
 
 test('live document 404 stays a public not-found response', async () => {
   const adapter = createContentAdapter(liveEnv(async () =>
-    liveResponse({ success: false, message: 'private backend message' }, 404),
+    liveResponse({ success: false, message: 'document page not found' }, 404),
   ));
   await assert.rejects(
     () => adapter.getDocPage('missing'),
     (error) => error instanceof HttpError && error.status === 404 && error.message === 'Document page not found.',
+  );
+});
+
+test('live document 404 fails closed when its contract is missing', async () => {
+  const privateBody = 'private backend details';
+  const adapter = createContentAdapter(liveEnv(async () => new Response(privateBody, {
+    status: 404,
+    headers: { 'content-type': 'text/plain' },
+  })));
+  await assert.rejects(
+    () => adapter.getDocPage('missing'),
+    (error) =>
+      error instanceof HttpError &&
+      error.status === 503 &&
+      error.message === 'Live content is temporarily unavailable.' &&
+      !JSON.stringify(error).includes(privateBody),
   );
 });
 

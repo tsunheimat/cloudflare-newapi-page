@@ -234,6 +234,49 @@ test('live content mode preserves public route envelopes and pricing lock', asyn
   assert.equal(payload.group_ratio.default, 1.25);
 });
 
+test('live Docs page 404s are public only after the upstream not-found contract is verified', async () => {
+  const token = 'worker-live-content-token-' + 'x'.repeat(32);
+  const base = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+  };
+  const contractless = await fetchWorker('/api/content/docs/missing', {
+    ...base,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => new Response('private backend details', {
+        status: 404,
+        headers: { 'content-type': 'text/plain' },
+      }),
+    },
+  });
+  assert.equal(contractless.status, 503);
+  const contractlessBody = await contractless.json();
+  assert.equal(contractlessBody.error.code, 'integration_unavailable');
+  assert.doesNotMatch(JSON.stringify(contractlessBody), /private backend details/);
+
+  const verified = await fetchWorker('/api/content/docs/missing', {
+    ...base,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => new Response(JSON.stringify({
+        success: false,
+        message: 'document page not found',
+      }), {
+        status: 404,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-newapi-content-contract': 'v1',
+        },
+      }),
+    },
+  });
+  assert.equal(verified.status, 404);
+  const verifiedBody = await verified.json();
+  assert.equal(verifiedBody.error.code, 'not_found');
+  assert.equal(verifiedBody.error.message, 'Document page not found.');
+  assert.doesNotMatch(JSON.stringify(verifiedBody), /private backend details/);
+});
+
 test('live Docs catalog/page and Pricing responses project only reviewed public fields', async () => {
   const token = 'worker-live-content-token-' + 'x'.repeat(32);
   const liveDocsSlug = 'page-1785606868894-3673ea8d4916890d';

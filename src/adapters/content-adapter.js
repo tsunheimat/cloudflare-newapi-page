@@ -265,13 +265,14 @@ function fetchLivePayload(
       ) {
         throw liveUnavailable('invalid_upstream_response');
       }
-      if (response.status === 404 && kind === 'docs_page') {
-        throw new HttpError(404, 'Document page not found.');
-      }
       if (kind === 'health' && response.status !== 200) {
         throw liveUnavailable('upstream_status');
       }
-      if (kind !== 'health' && ![200, 304].includes(response.status)) {
+      if (
+        kind !== 'health' &&
+        ![200, 304].includes(response.status) &&
+        !(response.status === 404 && kind === 'docs_page')
+      ) {
         throw liveUnavailable('upstream_status');
       }
       if (response.headers.get('x-newapi-content-contract') !== LIVE_CONTENT_CONTRACT_VERSION) {
@@ -314,6 +315,10 @@ function fetchLivePayload(
           throw liveUnavailable('upstream_timeout');
         }
         throw liveUnavailable('invalid_upstream_json');
+      }
+      if (response.status === 404 && kind === 'docs_page') {
+        assertLiveDocsPageNotFound(payload);
+        throw new HttpError(404, 'Document page not found.');
       }
       let validated;
       try {
@@ -569,6 +574,19 @@ function assertLiveGroupRatios(value) {
 function assertEnvelope(payload, kind) {
   if (!isRecord(payload) || payload.success !== true || !isRecord(payload.data)) schemaFailure();
   return payload.data;
+}
+
+function assertLiveDocsPageNotFound(payload) {
+  // NewAPI's 404 is a deliberately small, stable error envelope. Verify the
+  // exact public contract before converting the upstream response to a 404;
+  // arbitrary upstream 404 bodies must remain a generic 503.
+  if (
+    !isRecord(payload) ||
+    payload.success !== false ||
+    payload.message !== 'document page not found'
+  ) {
+    schemaFailure();
+  }
 }
 
 function assertLiveMeta(meta, docs) {
