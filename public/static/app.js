@@ -306,10 +306,13 @@ async function ensureDocsNavigation() {
       { frontDoor: true },
     );
   } catch (error) {
-    // Anonymous/fixture browsing keeps the existing catalog navigation. A
-    // normal-user session uses the canonical recursive response above.
-    if (readBrowserUser()?.public_id) throw error;
-    return null;
+    // Only the Worker-authenticated result can establish that this is an
+    // anonymous public request. Browser localStorage is stale/client-owned
+    // and must never decide whether a session-specific response is required.
+    if (error?.status === 401 && error?.details?.reason === 'missing_session') return null;
+    const unavailable = new Error('文档导航暂时不可用，请稍后重试。');
+    unavailable.cause = error;
+    throw unavailable;
   }
 }
 
@@ -1927,7 +1930,11 @@ async function api(path, options = {}) {
     throw new Error(`API 返回了非 JSON 响应（${response.status}）。`);
   }
   if (!response.ok || body.success === false) {
-    throw new Error(body?.error?.message || body?.message || `请求失败（${response.status}）。`);
+    const error = new Error(body?.error?.message || body?.message || `请求失败（${response.status}）。`);
+    error.status = response.status;
+    error.code = body?.error?.code;
+    error.details = body?.error?.details;
+    throw error;
   }
   if (path.startsWith('/api/content/') && !frontDoor) {
     contentApiCache.set(path, {
@@ -1936,16 +1943,6 @@ async function api(path, options = {}) {
     });
   }
   return body;
-}
-
-function readBrowserUser() {
-  try {
-    const raw = window.localStorage.getItem('user');
-    const user = raw ? JSON.parse(raw) : null;
-    return user && typeof user === 'object' ? user : null;
-  } catch {
-    return null;
-  }
 }
 
 function updateActiveNavigation(path) {

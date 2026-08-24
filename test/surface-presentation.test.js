@@ -42,6 +42,9 @@ test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader state
   assert.match(app, /docsNavigationSlug\(catalog\)/);
   assert.match(app, /docsPath\(slug\)/);
   assert.match(app, /front-door\/v1\/docs\/v2\/navigation\?locale=zh/);
+  assert.match(app, /reason === 'missing_session'/);
+  assert.match(app, /文档导航暂时不可用，请稍后重试。/);
+  assert.doesNotMatch(app, /readBrowserUser/);
   assert.match(app, /renderDocsNavigationNodes/);
   assert.match(app, /item\?\.type === 'group'/);
   assert.match(app, /item\.children/);

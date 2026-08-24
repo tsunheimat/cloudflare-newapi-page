@@ -100,6 +100,123 @@ test('direct /docs replace-navigates before the canonical page renders', { timeo
   await context.close();
 });
 
+test('authenticated Docs navigation uses the session response with missing or stale localStorage', { timeout: 30_000 }, async () => {
+  for (const storedUser of [null, { public_id: 'stale-browser-user' }]) {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    if (storedUser) {
+      await context.addInitScript((user) => {
+        localStorage.setItem('user', JSON.stringify(user));
+      }, storedUser);
+    }
+    await context.addCookies([
+      { name: 'session', value: 'docs-session', domain: '127.0.0.1', path: '/' },
+    ]);
+    const page = await newPage(context);
+    let navigationRequests = 0;
+    await page.route('**/api/front-door/v1/docs/v2/navigation?locale=zh', async (route) => {
+      navigationRequests += 1;
+      assert.equal(route.request().headers().cookie, 'session=docs-session');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          success: true,
+          data: [{
+            type: 'group',
+            id: 900,
+            slug: 'authenticated-guides',
+            title: 'Authenticated guides',
+            space_id: 1,
+            locale: 'zh',
+            children: [{
+              type: 'page',
+              id: 901,
+              slug: 'quickstart',
+              path: 'quickstart',
+              title: 'Session quickstart',
+              space_id: 1,
+              locale: 'zh',
+              children: [],
+            }],
+          }],
+        }),
+      });
+    });
+    await page.goto(`${baseUrl}/docs`, { waitUntil: 'domcontentloaded' });
+    await page.locator('.docs-hub-page-title').waitFor();
+    assert.equal(navigationRequests, 2, 'the redirect and final Docs render each use the fresh front-door result');
+    assert.equal(await page.locator('.docs-hub-tree-group').getByText('Authenticated guides', { exact: true }).count(), 1);
+    assert.equal(await page.locator('.docs-hub-tree-group').getByText('快速开始', { exact: true }).count(), 0);
+    await context.close();
+  }
+});
+
+test('authenticated Docs navigation failure renders a bounded error instead of fixture navigation', { timeout: 25_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addInitScript(() => {
+    localStorage.setItem('user', JSON.stringify({ public_id: 'stale-browser-user' }));
+  });
+  await context.addCookies([
+    { name: 'session', value: 'docs-session', domain: '127.0.0.1', path: '/' },
+  ]);
+  const page = await newPage(context);
+  let navigationRequests = 0;
+  await page.route('**/api/front-door/v1/docs/v2/navigation?locale=zh', async (route) => {
+    navigationRequests += 1;
+    assert.equal(route.request().headers().cookie, 'session=docs-session');
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: false,
+        error: {
+          code: 'integration_unavailable',
+          message: 'Front-door Docs navigation is unavailable.',
+        },
+      }),
+    });
+  });
+  await page.goto(`${baseUrl}/docs`, { waitUntil: 'domcontentloaded' });
+  await page.locator('.error-page').waitFor();
+  assert.equal(navigationRequests, 1, 'the failed front-door request stops the route before the final Docs render');
+  assert.equal(await page.locator('.docs-hub-page-title').count(), 0);
+  assert.match(await page.locator('.error-page h1').textContent(), /内容暂时无法载入/);
+  assert.equal(
+    (await page.locator('.error-page p').textContent()).trim(),
+    '文档导航暂时不可用，请稍后重试。',
+  );
+  assert.equal(await page.locator('.docs-hub-tree-group').count(), 0);
+  await context.close();
+});
+
+test('anonymous Docs keeps the legacy catalog when the front-door result says session is missing', { timeout: 25_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await newPage(context);
+  let navigationRequests = 0;
+  await page.route('**/api/front-door/v1/docs/v2/navigation?locale=zh', async (route) => {
+    navigationRequests += 1;
+    assert.equal(route.request().headers().cookie, undefined);
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: false,
+        error: {
+          code: 'unauthorized',
+          message: 'Browser session is required.',
+          details: { reason: 'missing_session' },
+        },
+      }),
+    });
+  });
+  await page.goto(`${baseUrl}/docs`, { waitUntil: 'domcontentloaded' });
+  await page.locator('.docs-hub-page-title').waitFor();
+  assert.equal(navigationRequests, 2, 'the redirect and final Docs render each use the fresh front-door result');
+  assert.equal(new URL(page.url()).pathname, '/docs/quickstart');
+  assert.equal((await page.locator('.docs-hub-page-title').textContent()).trim(), '快速开始');
+  await context.close();
+});
+
 test('desktop Ctrl/Cmd+K finds rendered text and endpoint paths with exact anchors', { timeout: 25_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   const page = await newPage(context);

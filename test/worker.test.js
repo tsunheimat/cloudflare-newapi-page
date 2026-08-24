@@ -235,6 +235,11 @@ test('/console/pricing is an asset route and never falls back to fixture pricing
   });
   assert.equal(missingSession.status, 401);
   assert.equal((await missingSession.json()).error.code, 'unauthorized');
+  const missingDocsSession = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', {
+    ...fixtureEnv,
+    NEWAPI_VPC_SERVICE: { fetch: async () => { throw new Error('must not run'); } },
+  });
+  assert.equal((await missingDocsSession.json()).error.details.reason, 'missing_session');
 });
 
 test('front-door session routes forward only the signed session cookie', async () => {

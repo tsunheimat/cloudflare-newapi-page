@@ -72,10 +72,10 @@ export function createFrontDoorSessionAdapter(
     maxBodyBytes = FRONT_DOOR_CONTENT_MAX_BODY_BYTES,
   } = {},
 ) {
+  const credentials = extractFrontDoorCredentials(request);
   if (typeof env[FRONT_DOOR_CONTENT_VPC_BINDING]?.fetch !== 'function') {
     throw frontDoorUnavailable('missing_vpc_binding');
   }
-  const credentials = extractFrontDoorCredentials(request);
   const fetchResponse = (path, kind) => fetchFrontDoorPayload(
     env,
     credentials,
@@ -100,23 +100,31 @@ export function createFrontDoorSessionAdapter(
 
 export function extractFrontDoorCredentials(request) {
   if (!(request instanceof Request)) {
-    throw new HttpError(401, 'Browser session is required.');
+    throw new HttpError(401, 'Browser session is required.', {
+      reason: 'invalid_session_request',
+    });
   }
   if (hasFrontDoorCredentialQuery(request.url)) {
-    throw new HttpError(401, 'Browser session is required.');
+    throw new HttpError(401, 'Browser session is required.', {
+      reason: 'invalid_session_request',
+    });
   }
   for (const header of FRONT_DOOR_REJECTED_HEADERS) {
     if (String(request.headers.get(header) || '').trim() !== '') {
-      throw new HttpError(401, 'Browser session is required.');
+      throw new HttpError(401, 'Browser session is required.', {
+        reason: 'invalid_session_request',
+      });
     }
   }
   if (hasCredentialBearingHeader(request)) {
-    throw new HttpError(401, 'Browser session is required.');
+    throw new HttpError(401, 'Browser session is required.', {
+      reason: 'invalid_session_request',
+    });
   }
   const cookie = extractSessionCookie(request.headers.get('cookie'));
-  if (!cookie) {
-    throw new HttpError(401, 'Browser session is required.');
-  }
+  if (!cookie) throw new HttpError(401, 'Browser session is required.', {
+    reason: 'missing_session',
+  });
   return Object.freeze({ cookie });
 }
 
@@ -298,7 +306,9 @@ async function fetchFrontDoorPayload(
     }
     if (!response || !response.headers || response.status !== 200) {
       if (response?.status === 401 || response?.status === 403) {
-        throw new HttpError(401, 'Browser session is required.');
+        throw new HttpError(401, 'Browser session is required.', {
+          reason: 'upstream_unauthorized',
+        });
       }
       throw frontDoorUnavailable('upstream_status');
     }
