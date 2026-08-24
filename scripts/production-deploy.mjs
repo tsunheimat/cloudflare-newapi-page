@@ -336,10 +336,7 @@ export async function assertProductionRuntimeContract() {
     success: true,
     message: '',
     data: {
-      secure_api_enabled: true,
-      secure_api_key_id: 'default',
-      secure_api_public_key: 'production-public-key',
-      server_time: 1_725_000_000,
+      secure_api_enabled: false,
     },
   });
 

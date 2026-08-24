@@ -20,18 +20,22 @@ Future/live:
     └─ NewAPI live adapter (explicit `CONTENT_ADAPTER="newapi"`)
          └─ NEWAPI_VPC_SERVICE -> newapi-api.newapi:3000
 
-Normal-user clone:
+Public Pricing:
+  Browser (no session or user auth)
+    └─ `/api/content/pricing`
+         └─ ContentAdapter -> NEWAPI_VPC_SERVICE -> `/api/internal/live-content/v1/pricing`
+
+Session-bound recursive Docs navigation:
   Browser session (`session` cookie; browser identity is not forwarded)
-    ├─ `/api/front-door/v1/pricing`
     └─ `/api/front-door/v1/docs/v2/navigation?locale=zh`
-         └─ NEWAPI_VPC_SERVICE -> canonical NewAPI front-door aliases
+         └─ NEWAPI_VPC_SERVICE -> canonical NewAPI front-door Docs alias
 
 Public canonical bootstrap:
   `/api/status` (read-only, fixed anonymous GET)
          └─ NEWAPI_VPC_SERVICE -> canonical NewAPI `/api/status`
 ```
 
-The normal-user routes are a distinct session-only boundary. The Worker
+The recursive Docs route is a distinct session-only boundary. The Worker
 forwards only the signed `session` cookie; conditional validators, locale, and
 all other browser headers are ignored and never forwarded. It rejects
 Authorization, API keys, provider credentials, secure-API/WebSocket
@@ -45,19 +49,21 @@ such as `token`. The Docs response is the typed recursive
 `group`/`page` tree; the sidebar renders that tree recursively, including
 nested page descendants. Missing session,
 identity mismatch, administrator/API-key auth, upstream schema drift, timeout,
-or oversized response fails closed. The existing service-token live adapter
-remains a separate public-content compatibility path and is not used to fake
-per-user Pricing or Docs navigation.
+or oversized response fails closed. Pricing does not use this session route.
+The existing service-token live adapter is the sole public Pricing path and
+does not read browser cookies, sessions, or user identity.
 
-`/console/pricing` is the canonical React SPA route; `/pricing` remains a Worker
-fixture compatibility alias. Its canonical bundle bootstraps through the public
-same-origin `/api/status` route before mounting. That route performs a bounded,
-fixed anonymous GET through `NEWAPI_VPC_SERVICE`, forwards no browser headers or
-credentials, and reconstructs only the reviewed status/display fields. Schema
-drift, timeout, oversized bodies, and upstream errors fail closed. The Worker
-never manufactures display settings from localStorage or falls back to fixture
-pricing; when anonymous NewAPI status omits authenticated-only display settings,
-the canonical React component retains its own existing display defaults.
+`/console/pricing` is the public canonical React SPA route; `/pricing` remains a
+Worker fixture compatibility alias. Its canonical bundle bootstraps through the
+public same-origin `/api/status` route and then calls `/api/content/pricing`.
+Pricing calls are fresh, same-origin, and explicitly disable credentials and
+secure-API signing. The status route performs a bounded fixed anonymous GET
+through `NEWAPI_VPC_SERVICE`, forwards no browser headers or credentials, emits
+only bounded safe display/bootstrap fields, and always sets
+`secure_api_enabled=false` without exposing key material or signing windows.
+Schema drift, timeout, oversized bodies, and upstream errors fail closed. The
+Worker never manufactures display settings from localStorage or varies Pricing
+with cookies, sessions, or browser identity.
 
 `ContentAdapter` 是唯一可替换资料边界。UI 不读取硬编码的 NewAPI hostname，也不直接访问 private/VPC/Tunnel。Fixture 和 live adapter 必须返回同一个 public display contract。Live adapter 的 secret、schema、failure 和 cutover contract 见 [live-content-adapter.md](live-content-adapter.md)。
 
@@ -96,11 +102,10 @@ Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、
 
 ## Pricing contract 与不变量
 
-Pricing response 保留 NewAPI `/api/pricing` 的主要字段：`data`、`vendors`、`group_ratio`、`usable_group`、`supported_endpoint`、`auto_groups`、`video_resolution_dimensions` 和 `pricing_version`，并可保留 canonical `user_group`、`selected_group`、`locked`、`context`、`display` 与 `meta` fields。Front-door output is an explicit public projection rather than a raw passthrough。
+Pricing response 保留 NewAPI dedicated-token `/api/internal/live-content/v1/pricing` 的主要字段：`data`、`vendors`、`group_ratio`、`usable_group`、`supported_endpoint`、`auto_groups`、`video_resolution_dimensions` 和 `pricing_version`，并保留 canonical `context`、`display` 与 `meta` fields. The public output is the existing ContentAdapter projection; there is no front-door Pricing output or browser-session context.
 
 `/api/content/pricing` 的 fixture/internal-live adapter 必须强制 locked
-ordinary-user presentation context；front-door session adapter 则保留 canonical
-normal-user `user_group`、`selected_group` 和 `locked` values。两者只接受 NewAPI
+ordinary-user presentation context supplied by NewAPI's dedicated-token endpoint. 只接受 NewAPI
 上游提供的公开 group ratios：每一个 ratio 都必须是 finite、non-negative
 number。适配器保留 NewAPI 的 group ratios 原值（包括 `default` 和其他公开
 groups），不得 hard-code 任何 ratio 或其他数值，也不得 normalize、clamp、
@@ -111,13 +116,12 @@ NewAPI 的 pricing logic：
 content.context.user_group       = default
 content.context.selected_group   = default
 content.context.locked           = true
-front_door.context.*             = canonical normal-user values
 group_ratio.default              = finite non-negative upstream default value
 group_ratio.*                    = NewAPI upstream public map unchanged
 usable_group.selected            exists
 ```
 
-Pricing presentation 同样复用 pinned NewAPI 的供应商 → 分组 → 价格清单、计价规则、table/card、filter 与 detail-sheet hierarchy。Locked fixture context 只渲染一个 disabled group card；unlocked front-door context renders every canonical usable group and lets the user switch the selected group。供应商、计费类型、端点、标签、货币、单位与 recharge display 继续使用 canonical payload。
+Pricing presentation 同样复用 pinned NewAPI 的供应商 → 分组 → 价格清单、计价规则、table/card、filter 与 detail-sheet hierarchy。Locked public/default context 只渲染一个 disabled group card；供应商、计费类型、端点、标签、货币、单位与 recharge display 继续使用 canonical payload。
 
 价格模式仍遵循 NewAPI 的 `resolvePricingContext`：`official` 使用
 `usedGroupRatio=1` 和原始美元基础价，`group` 使用当前 selected group 的

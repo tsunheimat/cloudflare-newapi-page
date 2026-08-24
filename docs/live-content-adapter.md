@@ -52,32 +52,31 @@ a generic 503. Backend response bodies and messages are never exposed to the
 browser. There is no session-cookie, user API-key, public-origin, or fixture
 fallback path in live mode.
 
-The separate normal-user front-door adapter calls only the two approved
-session aliases (`/api/front-door/v1/pricing` and
-`/api/front-door/v1/docs/v2/navigation?locale=zh`). It forwards only the signed
+The separate recursive Docs front-door adapter calls only the approved
+session alias (`/api/front-door/v1/docs/v2/navigation?locale=zh`). It forwards only the signed
 `session` cookie. Browser identity, conditional-request validators, secure-API
 headers, the internal live adapter token, Authorization/API-key/provider
 credentials, arbitrary credential headers, and credential query parameters
-never cross this boundary. Its Pricing and recursive Docs responses use a
+never cross this boundary. Its recursive Docs responses use a
 bounded public allowlist; unknown/private fields are omitted, malformed known
 fields fail closed, and legitimate public identifiers are retained even when
-their values contain words such as `token`. Authenticated responses are
-`private, no-store` with no ETag/304 path. `/api/content/pricing` remains on
-this existing service-token adapter regardless of `New-Api-User`.
+their values contain words such as `token`. Authenticated Docs responses are
+`private, no-store` with no ETag/304 path. `/api/content/pricing` is the public
+Pricing route and remains on this existing service-token adapter regardless of
+`New-Api-User` or any browser session.
 
-The browser boundary follows the same rule: the canonical Pricing bundle and
-the compatibility Docs/Pricing layer force a fresh `no-store` request for
-every authenticated front-door navigation. They retain no front-door body,
-validator, stale fallback, or in-flight reuse in memory or localStorage; only
-the legacy public `/api/content/*` cache path remains eligible for reuse.
+The browser boundary follows the same rule: the canonical Pricing bundle makes
+a fresh public `/api/content/pricing` request with credentials and secure-API
+signing disabled. It uses no browser user/session state. Only the legacy public
+`/api/content/*` compatibility layer may use its existing public cache path.
 
 The canonical `/console/pricing` bundle separately calls the public same-origin
 `/api/status` bootstrap. This is a read-only fixed `GET /api/status` through
 `NEWAPI_VPC_SERVICE`; it sends only `Accept: application/json` and never copies
 browser cookies, Authorization, API keys, provider credentials, or arbitrary
-headers. When the request carries the normal-user session cookie, the Worker
-uses a front-door-specific status projection that sets `secure_api_enabled` to
-false and omits secure-API public keys, key ids, and signing windows. The Worker
+headers. The Worker always sets `secure_api_enabled` to false and omits secure-
+API public keys, key ids, server-time signing windows, and other signing
+material. The Worker
 bounds the response to 256 KiB and five seconds, requires a
 JSON `{ success: true, data: object }` envelope, validates any canonical display
 settings that are present, projects only the reviewed public status fields, and
@@ -103,10 +102,10 @@ change values or semantics. It derives the public pricing `ETag` from that
 projected payload, so an equivalent upstream `200` with different model,
 vendor, or identifier-array order still returns the same validator and a
 matching browser validator is converted to an empty public `304`. The separate
-front-door adapter strips upstream validators and rejects upstream `304`
-responses; its authenticated responses are `private, no-store` with no ETag or
-304 reuse. Cookies, sessions, browser authorization, user API keys, and
-unrelated headers are not forwarded. The five-second deadline covers binding
+Docs front-door adapter strips upstream validators and rejects upstream `304`
+responses; its authenticated Docs responses are `private, no-store` with no
+ETag or 304 reuse. Cookies, sessions, browser authorization, user API keys, and
+unrelated headers are not forwarded by the public Pricing adapter. The five-second deadline covers binding
 fetch, body streaming,
 UTF-8 decoding, JSON parsing, validation, and projection.
 

@@ -61,24 +61,14 @@ export async function route(request, env = {}) {
   // arbitrary headers to the private service binding.
   if (request.method === 'GET' && pathname === '/api/status') {
     const adapter = createStatusAdapter(env);
-    const result = await adapter.getResponse({
-      frontDoor: hasSessionCookie(request.headers.get('cookie')),
-    });
+    const result = await adapter.getResponse();
     if (!result || result.status !== 200) {
       throw new HttpError(503, 'Status is temporarily unavailable.');
     }
     return json(result.payload, 200, { 'cache-control': 'no-store' });
   }
 
-  // The normal-user clone is a separate browser-session boundary.  It is
-  // intentionally not implemented by the internal service-token adapter:
-  // NewAPI must evaluate the signed session, user identity, role, status,
-  // usable groups, country filtering, and recursive Docs navigation itself.
-  if (request.method === 'GET' && pathname === '/api/front-door/v1/pricing') {
-    const adapter = createFrontDoorSessionAdapter(env, request);
-    return frontDoorResponse(await adapter.getPricingResponse());
-  }
-
+  // Recursive Docs navigation remains a separate browser-session boundary.
   if (
     request.method === 'GET' &&
     pathname === '/api/front-door/v1/docs/v2/navigation'
@@ -178,9 +168,9 @@ function frontDoorResponse(result) {
     throw new HttpError(503, 'Live content is temporarily unavailable.');
   }
   const headers = { 'cache-control': 'private, no-store' };
-  // The adapter has already reconstructed the bounded public subset of the
-  // canonical NewAPI envelope. Do not add Worker-owned labels or rewrite its
-  // normal-user values here.
+  // The Docs adapter has already reconstructed the bounded public subset of
+  // the canonical NewAPI envelope. Do not add Worker-owned labels or rewrite
+  // its session-bound values here.
   return json(result.payload, 200, headers);
 }
 
@@ -189,10 +179,6 @@ function conditionalValidator(request) {
   const value = request.headers.get('if-none-match');
   if (!value || value.length > 2_048 || /[\u0000-\u001f\u007f]/.test(value)) return undefined;
   return value;
-}
-
-function hasSessionCookie(header) {
-  return typeof header === 'string' && /(?:^|;)\s*session=/.test(header);
 }
 
 function normalizePath(pathname) {

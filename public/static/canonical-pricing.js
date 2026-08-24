@@ -191293,24 +191293,17 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         }
       )
     ] });
-  }, kto = "/api/front-door/v1/pricing", eJe = dy.get.bind(dy);
+  }, kto = "/api/content/pricing", eJe = dy.get.bind(dy);
   dy.get = (e, t = {}) => e === "/api/pricing" ? eJe(kto, {
     ...t,
-    withCredentials: !0,
+    withCredentials: !1,
+    secureApi: !1,
     headers: {
       ...t.headers || {}
     }
   }) : eJe(e, t);
-  function Opt() {
-    try {
-      const e = localStorage.getItem("user"), t = e ? JSON.parse(e) : null;
-      return t && typeof t == "object" ? t : null;
-    } catch {
-      return null;
-    }
-  }
   function Gto({ status: statusData = {} } = {}) {
-    const e = b.useMemo(() => Opt(), []), t = b.useMemo(() => statusData, [statusData]), r = b.useMemo(() => [{ user: e }, () => {
+    const e = b.useMemo(() => null, []), t = b.useMemo(() => statusData, [statusData]), r = b.useMemo(() => [{ user: e }, () => {
     }], [e]), n = b.useMemo(() => [{ status: t }, () => {
     }], [t]);
     return /* @__PURE__ */ a.jsx(uJe.Provider, { value: r, children: /* @__PURE__ */ a.jsx(sJe.Provider, { value: n, children: /* @__PURE__ */ a.jsx(Dht, { i18n: K0, children: /* @__PURE__ */ a.jsx(Uto, {}) }) }) });

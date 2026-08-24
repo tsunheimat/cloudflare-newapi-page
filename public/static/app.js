@@ -2,7 +2,7 @@
 Copyright (C) 2025 QuantumNous
 
 The Docs compatibility renderer in this file adapts the user-facing NewAPI
-SPA. The authenticated `/console/pricing` surface is mounted from the
+SPA. The public `/console/pricing` surface is mounted from the
 canonical React bundle built from approved NewAPI commit
 85143bc49260f9c7ab1efd6a5122558e58d0bee2. These adapted assets remain licensed
 under GNU AGPL v3 or later; see LICENSE and THIRD_PARTY_NOTICES.md. The
@@ -720,7 +720,7 @@ async function renderPricing() {
     return;
   }
   // `/pricing` is the public compatibility surface. Keep its fixture/live
-  // public-content state separate from the authenticated front-door clone.
+  // public-content state remains separate from recursive Docs navigation.
   // The public API helper may reuse only this legacy response and its ETag;
   // no front-door body, validator, or in-flight promise is retained here.
   const payload = state.legacyPricing || await api('/api/content/pricing');
@@ -769,9 +769,7 @@ async function renderPricing() {
   listHeader.append(listTitle, renderPricingModeSwitch());
   listCard.append(
     listHeader,
-    payload.__frontDoor && payload.context.locked !== true
-      ? renderSessionPricingGroups(payload, calculated.length)
-      : renderLockedPricingGroup(payload, calculated.length),
+    renderLockedPricingGroup(payload, calculated.length),
   );
 
   const toolbar = node('div', { class: 'pricing-comparison-toolbar' });
@@ -790,10 +788,9 @@ async function renderPricing() {
 }
 
 async function renderCanonicalPricing() {
-  // `/console/pricing` is an authenticated normal-user surface.  It never
-  // falls back to the public fixture renderer when the browser session is
-  // absent or invalid; the Worker front-door returns 401 and the canonical
-  // bundle renders that failure state.
+  // `/console/pricing` is the public default view. It has no browser session
+  // or end-user credential boundary; the canonical bundle calls the public
+  // Worker Pricing endpoint backed by the server-side live-content adapter.
   const root = node('div', {
     id: 'canonical-pricing-root',
     class: 'canonical-pricing-root',
@@ -828,41 +825,6 @@ async function renderCanonicalPricing() {
   }
   await canonicalPricingScriptPromise;
   await globalThis.__mountCanonicalPricing?.();
-}
-
-function normalizeFrontDoorPricing(payload) {
-  if (!payload.display || typeof payload.display !== 'object') {
-    throw new Error('Canonical normal-user Pricing display settings are unavailable.');
-  }
-  const availableGroups = Object.keys(payload.usable_group || {});
-  const canonicalUserGroup = payload.context?.user_group ?? payload.user_group;
-  const userGroup = availableGroups.includes(canonicalUserGroup) ? canonicalUserGroup : availableGroups[0] || '';
-  const selectedGroup = payload.context?.selected_group ?? payload.selected_group ?? userGroup;
-  const locked = payload.context?.locked ?? payload.locked ?? false;
-  if (!userGroup || !availableGroups.includes(selectedGroup)) throw new Error('Canonical normal-user Pricing group context is unavailable.');
-  const sourceDisplay = payload.display;
-  const quotaDisplayType = sourceDisplay.quota_display_type || 'USD';
-  const usdExchangeRate = Number(sourceDisplay.usd_exchange_rate ?? sourceDisplay.price ?? 1);
-  const price = Number(sourceDisplay.price ?? usdExchangeRate);
-  return {
-    ...payload,
-    __frontDoor: true,
-    meta: payload.meta || { source: 'newapi', fixture: false, live: true, label: 'NewAPI', updated_at: null, notice: '' },
-    context: {
-      user_group: userGroup,
-      selected_group: selectedGroup,
-      locked,
-    },
-    display: {
-      quota_display_type: quotaDisplayType,
-      default_currency: sourceDisplay.default_currency || (quotaDisplayType === 'TOKENS' ? 'USD' : 'CNY'),
-      price: Number.isFinite(price) && price > 0 ? price : 1,
-      usd_exchange_rate: Number.isFinite(usdExchangeRate) && usdExchangeRate > 0 ? usdExchangeRate : 1,
-      custom_currency_exchange_rate: Number(sourceDisplay.custom_currency_exchange_rate) > 0 ? Number(sourceDisplay.custom_currency_exchange_rate) : 1,
-      custom_currency_symbol: String(sourceDisplay.custom_currency_symbol || '¤'),
-      show_with_recharge: sourceDisplay.show_with_recharge === true || (sourceDisplay.show_with_recharge === undefined && quotaDisplayType !== 'TOKENS'),
-    },
-  };
 }
 
 function renderPricingProviders(payload, vendors) {
@@ -1010,28 +972,6 @@ function renderLockedPricingGroup(payload, count) {
   return fragment;
 }
 
-function renderSessionPricingGroups(payload, count) {
-  const list = node('div', { class: 'pricing-group-list', 'aria-label': '可用令牌分组' });
-  Object.keys(payload.usable_group || {}).forEach((group) => {
-    const active = group === state.selectedGroup;
-    const card = surfaceButton('', `pricing-group-card${active ? ' is-active' : ''}`);
-    card.setAttribute(PRICING_GROUP_DATA_ATTRIBUTE, group);
-    card.setAttribute('aria-pressed', String(active));
-    card.append(
-      node('span', { class: 'pricing-group-name' }, group),
-      node('span', { class: 'pricing-group-rate' }, payload.usable_group[group]),
-      node('span', { class: 'pricing-group-formula' }, `官方价 × ${formatNumber(payload.group_ratio[group])}x`),
-      node('span', { class: 'pricing-group-count' }, `共 ${getOrdinaryUserModels(payload).filter((model) => modelSupportsGroup(model, group)).length} 个模型`),
-    );
-    card.addEventListener('click', () => {
-      selectPricingGroup(payload, group);
-      void renderPricing();
-    });
-    list.append(card);
-  });
-  return list;
-}
-
 function renderPricingSearchActions(payload, results, countTag) {
   const wrapper = node('div', { class: 'pricing-search-actions' });
   const search = node('label', { class: 'surface-input pricing-search-input' });
@@ -1119,9 +1059,7 @@ function renderPricingFilterControls(payload, values, onChange, includeLockedGro
   const fragment = document.createDocumentFragment();
   if (includeLockedGroup) {
     fragment.append(
-      payload.__frontDoor && payload.context.locked !== true
-        ? renderSessionPricingFilterGroup(payload, values.selectedGroup, (value) => onChange('selectedGroup', value))
-        : renderLockedPricingFilterGroup(payload),
+      renderLockedPricingFilterGroup(payload),
     );
   }
   const vendorModels = getOrdinaryUserModels(payload).filter((model) => String(model.vendor_id) === state.vendor);
@@ -1201,24 +1139,6 @@ function renderLockedPricingFilterGroup(payload) {
   locked.setAttribute('aria-disabled', 'true');
   locked.disabled = true;
   options.append(locked);
-  group.append(options);
-  return group;
-}
-
-function renderSessionPricingFilterGroup(payload, selectedGroup, onChange) {
-  const group = node('section', { class: 'pricing-filter-group' });
-  group.append(node('div', { class: 'pricing-filter-title' }, '用户分组'));
-  const options = node('div', { class: 'pricing-filter-options', role: 'group', 'aria-label': '用户分组' });
-  Object.keys(payload.usable_group || {}).forEach((groupName) => {
-    const button = surfaceButton(
-      `${groupName} · ${formatNumber(payload.group_ratio[groupName])}x`,
-      `pricing-filter-chip${groupName === selectedGroup ? ' is-active' : ''}`,
-    );
-    button.setAttribute('data-pricing-filter-group', groupName);
-    button.setAttribute('aria-pressed', String(groupName === selectedGroup));
-    button.addEventListener('click', () => onChange(groupName));
-    options.append(button);
-  });
   group.append(options);
   return group;
 }

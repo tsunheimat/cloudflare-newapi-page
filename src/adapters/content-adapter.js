@@ -24,10 +24,8 @@ export const FRONT_DOOR_CONTENT_ORIGIN = LIVE_CONTENT_ORIGIN;
 export const FRONT_DOOR_CONTENT_TIMEOUT_MS = LIVE_CONTENT_TIMEOUT_MS;
 export const FRONT_DOOR_CONTENT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 export const FRONT_DOOR_DOCS_NAVIGATION_PATH = '/api/front-door/v1/docs/v2/navigation?locale=zh';
-export const FRONT_DOOR_PRICING_PATH = '/api/front-door/v1/pricing';
 export const FRONT_DOOR_MAX_NAVIGATION_NODES = 50_000;
 export const FRONT_DOOR_MAX_NAVIGATION_DEPTH = 100;
-export const FRONT_DOOR_MAX_ENDPOINT_MAP_ENTRIES = 1_000;
 export const LOCKED_PRICING_CONTEXT = Object.freeze({
   user_group: 'default',
   selected_group: 'default',
@@ -57,7 +55,7 @@ export function createContentAdapter(env = {}) {
 }
 
 /**
- * Browser-session-only adapter for the approved normal-user front door.
+ * Browser-session-only adapter for the approved recursive Docs front door.
  *
  * The private service binding is the only origin selector. The upstream
  * request is deliberately assembled from the signed `session` cookie alone;
@@ -76,24 +74,17 @@ export function createFrontDoorSessionAdapter(
   if (typeof env[FRONT_DOOR_CONTENT_VPC_BINDING]?.fetch !== 'function') {
     throw frontDoorUnavailable('missing_vpc_binding');
   }
-  const fetchResponse = (path, kind) => fetchFrontDoorPayload(
+  const fetchResponse = (path) => fetchFrontDoorPayload(
     env,
     credentials,
     path,
-    kind,
     { timeoutMs, maxBodyBytes },
   );
   return {
     name: 'front-door-session',
     live: true,
-    async getPricingResponse() {
-      return fetchResponse(FRONT_DOOR_PRICING_PATH, 'pricing');
-    },
     async getDocsNavigationResponse() {
-      return fetchResponse(
-        FRONT_DOOR_DOCS_NAVIGATION_PATH,
-        'docs_navigation',
-      );
+      return fetchResponse(FRONT_DOOR_DOCS_NAVIGATION_PATH);
     },
   };
 }
@@ -274,7 +265,6 @@ async function fetchFrontDoorPayload(
   env,
   credentials,
   path,
-  kind,
   { timeoutMs, maxBodyBytes },
 ) {
   const binding = env[FRONT_DOOR_CONTENT_VPC_BINDING];
@@ -340,10 +330,7 @@ async function fetchFrontDoorPayload(
     if (!payload || payload.success !== true || !Object.hasOwn(payload, 'data')) {
       throw frontDoorUnavailable('invalid_upstream_schema');
     }
-    let projected;
-    if (kind === 'pricing') projected = assertFrontDoorPricing(payload);
-    else if (kind === 'docs_navigation') projected = assertFrontDoorNavigation(payload);
-    else throw frontDoorUnavailable('invalid_upstream_schema');
+    const projected = assertFrontDoorNavigation(payload);
     // Authenticated payloads are session-specific. Do not reflect upstream
     // validators or derive a reusable identity-free ETag at this boundary.
     return { status: 200, payload: projected };
@@ -351,53 +338,6 @@ async function fetchFrontDoorPayload(
     clearTimeout(timer);
   }
 }
-
-function assertFrontDoorPricing(payload) {
-  if (!isRecord(payload) || payload.success !== true || !Array.isArray(payload.data) || payload.data.length > 5_000 || !isRecord(payload.group_ratio) || !isRecord(payload.usable_group)) {
-    throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  if (Object.keys(payload.group_ratio).length === 0 || Object.keys(payload.usable_group).length === 0 || Object.keys(payload.group_ratio).length > 500 || Object.keys(payload.usable_group).length > 500) {
-    throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  for (const [key, ratio] of Object.entries(payload.group_ratio)) {
-    if (!isCanonicalPublicIdentifier(key)) continue;
-    if (!isFiniteNumber(ratio) || ratio < 0) throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  for (const [key, label] of Object.entries(payload.usable_group)) {
-    if (!isCanonicalPublicIdentifier(key)) continue;
-    if (typeof label !== 'string' || label.length > 300 || label.trim() === '') throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  const publicGroupRatios = projectFrontDoorMap(payload.group_ratio, (value) => value);
-  const publicUsableGroups = projectFrontDoorMap(payload.usable_group, (value) => value);
-  if (Object.keys(publicGroupRatios).length === 0 || Object.keys(publicUsableGroups).length === 0) throw frontDoorUnavailable('invalid_upstream_schema');
-  for (const group of Object.keys(publicUsableGroups)) {
-    if (!Object.hasOwn(publicGroupRatios, group)) throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  payload.data.forEach(assertFrontDoorPricingModel);
-  if (!Array.isArray(payload.vendors) || payload.vendors.length > 1_000) throw frontDoorUnavailable('invalid_upstream_schema');
-  payload.vendors.forEach(assertFrontDoorVendor);
-  if (!isRecord(payload.supported_endpoint) || Object.keys(payload.supported_endpoint).length > FRONT_DOOR_MAX_ENDPOINT_MAP_ENTRIES) throw frontDoorUnavailable('invalid_upstream_schema');
-  assertFrontDoorEndpointMap(payload.supported_endpoint);
-  if (!Array.isArray(payload.auto_groups) || payload.auto_groups.length > 500) throw frontDoorUnavailable('invalid_upstream_schema');
-  assertFrontDoorIdentifierArray(payload.auto_groups);
-  if (!isRecord(payload.video_resolution_dimensions)) throw frontDoorUnavailable('invalid_upstream_schema');
-  assertFrontDoorVideoDimensions(payload.video_resolution_dimensions);
-  if (typeof payload.pricing_version !== 'string' || payload.pricing_version.length > 300 || payload.pricing_version.trim() === '') throw frontDoorUnavailable('invalid_upstream_schema');
-  const projected = {
-    success: true,
-    data: payload.data.map((model) => projectPricingModel(model, { preserveIdentifierOrder: true, frontDoor: true })),
-    vendors: payload.vendors.map(projectFrontDoorVendor).filter(Boolean),
-    group_ratio: publicGroupRatios,
-    usable_group: publicUsableGroups,
-    supported_endpoint: projectFrontDoorEndpointMap(payload.supported_endpoint),
-    auto_groups: projectFrontDoorIdentifierArray(payload.auto_groups),
-    video_resolution_dimensions: projectFrontDoorVideoDimensions(payload.video_resolution_dimensions),
-    pricing_version: payload.pricing_version,
-  };
-  projectOptionalFrontDoorPricingFields(payload, projected);
-  return projected;
-}
-
 
 function assertFrontDoorNavigation(payload) {
   if (!isRecord(payload) || payload.success !== true || !Array.isArray(payload.data) || payload.data.length > 5_000) {
@@ -438,123 +378,6 @@ function assertFrontDoorNavigation(payload) {
   return { success: true, data: projectFrontDoorNavigationNodes(payload.data) };
 }
 
-function assertFrontDoorPricingModel(model) {
-  if (!isRecord(model) || typeof model.model_name !== 'string' || model.model_name.length > 300 || model.model_name.trim() === '') {
-    throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  const stringFields = ['description', 'icon', 'tags', 'owner_by', 'billing_mode', 'billing_expr', 'codex_fast_base_model', 'video_geometry_contract', 'video_route_contract', 'video_input_duration_policy', 'pricing_version'];
-  for (const field of stringFields) {
-    if (model[field] !== undefined && (typeof model[field] !== 'string' || model[field].length > (field === 'billing_expr' ? 50_000 : 5_000))) throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  for (const field of ['quota_type', 'model_ratio', 'model_price', 'owner_by', 'completion_ratio', 'enable_groups', 'supported_endpoint_types']) {
-    if (!Object.hasOwn(model, field)) throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  if (model.vendor_id !== undefined && (!Number.isInteger(model.vendor_id) || model.vendor_id < 0)) throw frontDoorUnavailable('invalid_upstream_schema');
-  if (model.quota_type !== undefined && !Number.isInteger(model.quota_type)) throw frontDoorUnavailable('invalid_upstream_schema');
-  for (const field of ['model_ratio', 'model_price', 'completion_ratio', 'cache_ratio', 'create_cache_ratio', 'image_ratio', 'audio_ratio', 'audio_completion_ratio']) {
-    if (model[field] !== undefined && (!isFiniteNumber(model[field]) || model[field] < 0)) throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  for (const field of ['image_generation_model', 'video_generation_model']) {
-    if (model[field] !== undefined && typeof model[field] !== 'boolean') throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  if (model.enable_groups !== undefined) assertFrontDoorIdentifierArray(model.enable_groups);
-  if (model.supported_endpoint_types !== undefined) assertFrontDoorIdentifierArray(model.supported_endpoint_types);
-  if (model.endpoint_map !== undefined) assertFrontDoorEndpointMap(model.endpoint_map);
-  if (model.video_pricing !== undefined) assertFrontDoorVideoPricing(model.video_pricing);
-  if (model.codex_fast_pricing !== undefined) assertFrontDoorCodexPricing(model.codex_fast_pricing);
-  if (model.video_capability !== undefined) assertFrontDoorVideoCapability(model.video_capability);
-}
-
-function assertFrontDoorVendor(vendor) {
-  if (!isRecord(vendor) || !Number.isInteger(vendor.id) || vendor.id < 0 || typeof vendor.name !== 'string' || vendor.name.length > 300 || vendor.name.trim() === '') throw frontDoorUnavailable('invalid_upstream_schema');
-  for (const field of ['description', 'icon']) {
-    if (vendor[field] !== undefined && (typeof vendor[field] !== 'string' || vendor[field].length > 5_000)) throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-}
-
-function assertFrontDoorIdentifierArray(value) {
-  if (!Array.isArray(value) || value.length > 1_000 || value.some((entry) => typeof entry !== 'string' || entry.length > 300 || !/^[A-Za-z0-9][A-Za-z0-9_:.\/\-]{0,299}$/.test(entry))) throw frontDoorUnavailable('invalid_upstream_schema');
-}
-
-function assertFrontDoorEndpointMap(value) {
-  if (!isRecord(value) || Object.keys(value).length > FRONT_DOOR_MAX_ENDPOINT_MAP_ENTRIES) throw frontDoorUnavailable('invalid_upstream_schema');
-  for (const [key, endpoint] of Object.entries(value)) {
-    if (!isCanonicalPublicIdentifier(key)) continue;
-    if (!isRecord(endpoint) || typeof endpoint.method !== 'string' || !/^[A-Za-z][A-Za-z0-9-]{0,19}$/.test(endpoint.method) || typeof endpoint.path !== 'string' || endpoint.path.length > 500 || !endpoint.path.startsWith('/')) throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-}
-
-function assertFrontDoorVideoPricing(profile) {
-  if (!isRecord(profile) || profile.version !== 1 || !['USD', 'CNY'].includes(profile.currency) || profile.unit !== 'per_1m_completion_tokens' || !isFiniteNumber(profile.rate_multiplier) || profile.rate_multiplier <= 0 || !isRecord(profile.resolution_rates)) throw frontDoorUnavailable('invalid_upstream_schema');
-  for (const [key, rates] of Object.entries(profile.resolution_rates)) {
-    if (!isCanonicalPublicIdentifier(key)) continue;
-    if (!isRecord(rates) || !isFiniteNumber(rates.without_video) || rates.without_video < 0 || !isFiniteNumber(rates.with_video) || rates.with_video < 0) throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-}
-
-function assertFrontDoorCodexPricing(profile) {
-  if (!isRecord(profile) || profile.version !== 1 || !['multiplier', 'prices'].includes(profile.mode)) throw frontDoorUnavailable('invalid_upstream_schema');
-  if (profile.mode === 'multiplier') {
-    if (!isFiniteNumber(profile.multiplier) || profile.multiplier <= 0 || Object.hasOwn(profile, 'input_price') || Object.hasOwn(profile, 'output_price') || Object.hasOwn(profile, 'cached_input_price')) throw frontDoorUnavailable('invalid_upstream_schema');
-  } else if (Object.hasOwn(profile, 'multiplier') || ['input_price', 'cached_input_price', 'output_price'].some((field) => !isFiniteNumber(profile[field]) || profile[field] < 0)) throw frontDoorUnavailable('invalid_upstream_schema');
-}
-
-function assertFrontDoorVideoCapability(value) {
-  // The live-content schema validators are deliberately shared here: both
-  // contracts expose the same bounded capability fields. Convert any failure
-  // to the front-door's generic integration error below.
-  try {
-    assertLiveVideoCapability(value);
-  } catch {
-    throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-}
-
-function assertFrontDoorVideoDimensions(value) {
-  try {
-    assertVideoResolutionDimensions(value);
-  } catch {
-    throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-}
-
-function projectFrontDoorVendor(vendor) {
-  // Vendor names are displayed as public identifiers by the canonical UI.
-  // Drop credential-shaped compact/camel/acronym spellings instead of
-  // allowing them to bypass the map-key sanitizer through the array form.
-  if (isCredentialPublicIdentifier(vendor.name)) return null;
-  const result = { id: vendor.id, name: vendor.name };
-  if (vendor.description !== undefined) result.description = vendor.description;
-  if (vendor.icon !== undefined) result.icon = vendor.icon;
-  return result;
-}
-
-function projectFrontDoorMap(value, projectValue, { publicIdentifiers = false } = {}) {
-  const projected = {};
-  Object.entries(value).forEach(([key, item]) => {
-    if (!(publicIdentifiers ? isCanonicalPublicIdentifier(key) : isPublicMapKey(key))) return;
-    projected[key] = projectValue(item);
-  });
-  return projected;
-}
-
-function projectFrontDoorIdentifierArray(values) {
-  return values.filter((value) => isCanonicalPublicIdentifier(value)).slice();
-}
-
-function projectFrontDoorEndpointMap(value) {
-  return projectFrontDoorMap(value, (endpoint) => ({ method: endpoint.method, path: endpoint.path }));
-}
-
-function projectFrontDoorVideoDimensions(value) {
-  const options = { publicIdentifiers: true };
-  return projectFrontDoorMap(value, (resolutionSet) => projectFrontDoorMap(
-    resolutionSet,
-    (geometrySet) => projectFrontDoorMap(geometrySet, (dimensions) => [...dimensions], options),
-    options,
-  ), options);
-}
-
 function projectFrontDoorNavigationNodes(nodes) {
   return nodes.map((node) => {
     const projected = { type: node.type, id: node.id, slug: node.slug, title: node.title };
@@ -564,58 +387,6 @@ function projectFrontDoorNavigationNodes(nodes) {
     if (Array.isArray(node.children)) projected.children = projectFrontDoorNavigationNodes(node.children);
     return projected;
   });
-}
-
-function projectOptionalFrontDoorPricingFields(payload, projected) {
-  const topLevelContextFields = ['user_group', 'selected_group', 'locked'];
-  const topLevelContextCount = topLevelContextFields.filter((field) => Object.hasOwn(payload, field)).length;
-  if (topLevelContextCount > 0 && topLevelContextCount < topLevelContextFields.length) throw frontDoorUnavailable('invalid_upstream_schema');
-  if (isRecord(payload.context)) {
-    if (typeof payload.context.user_group !== 'string' || typeof payload.context.selected_group !== 'string' || typeof payload.context.locked !== 'boolean') throw frontDoorUnavailable('invalid_upstream_schema');
-    projected.context = { user_group: payload.context.user_group, selected_group: payload.context.selected_group, locked: payload.context.locked };
-  }
-  for (const field of ['user_group', 'selected_group']) {
-    if (payload[field] !== undefined && (typeof payload[field] !== 'string' || payload[field].length > 300)) throw frontDoorUnavailable('invalid_upstream_schema');
-    if (payload[field] !== undefined) projected[field] = payload[field];
-  }
-  if (payload.locked !== undefined) {
-    if (typeof payload.locked !== 'boolean') throw frontDoorUnavailable('invalid_upstream_schema');
-    projected.locked = payload.locked;
-  }
-  if (projected.user_group !== undefined && !Object.hasOwn(projected.usable_group, projected.user_group)) throw frontDoorUnavailable('invalid_upstream_schema');
-  if (projected.selected_group !== undefined && (!Object.hasOwn(projected.usable_group, projected.selected_group) || !Object.hasOwn(projected.group_ratio, projected.selected_group))) throw frontDoorUnavailable('invalid_upstream_schema');
-  const context = projected.context;
-  if (context) {
-    if (!Object.hasOwn(projected.usable_group, context.user_group) || !Object.hasOwn(projected.usable_group, context.selected_group) || !Object.hasOwn(projected.group_ratio, context.selected_group)) throw frontDoorUnavailable('invalid_upstream_schema');
-    if (projected.user_group !== undefined && projected.user_group !== context.user_group) throw frontDoorUnavailable('invalid_upstream_schema');
-    if (projected.selected_group !== undefined && projected.selected_group !== context.selected_group) throw frontDoorUnavailable('invalid_upstream_schema');
-    if (projected.locked !== undefined && projected.locked !== context.locked) throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  if (isRecord(payload.display)) {
-    const display = {};
-    for (const field of ['quota_display_type', 'default_currency', 'custom_currency_symbol']) {
-      if (payload.display[field] !== undefined && typeof payload.display[field] !== 'string') throw frontDoorUnavailable('invalid_upstream_schema');
-      if (payload.display[field] !== undefined) display[field] = payload.display[field];
-    }
-    for (const field of ['price', 'usd_exchange_rate', 'custom_currency_exchange_rate']) {
-      if (payload.display[field] !== undefined && !isFiniteNumber(payload.display[field])) throw frontDoorUnavailable('invalid_upstream_schema');
-      if (payload.display[field] !== undefined) display[field] = payload.display[field];
-    }
-    if (payload.display.show_with_recharge !== undefined) {
-      if (typeof payload.display.show_with_recharge !== 'boolean') throw frontDoorUnavailable('invalid_upstream_schema');
-      display.show_with_recharge = payload.display.show_with_recharge;
-    }
-    projected.display = display;
-  }
-  if (isRecord(payload.meta)) {
-    if (payload.meta.source !== 'newapi' || payload.meta.fixture !== false || payload.meta.live !== true) throw frontDoorUnavailable('invalid_upstream_schema');
-    const meta = {};
-    ['source', 'fixture', 'live', 'label', 'updated_at', 'contract_version', 'notice'].forEach((field) => {
-      if (payload.meta[field] !== undefined && (typeof payload.meta[field] !== 'string' && typeof payload.meta[field] !== 'boolean' && typeof payload.meta[field] !== 'number' && payload.meta[field] !== null)) throw frontDoorUnavailable('invalid_upstream_schema');
-      if (payload.meta[field] !== undefined) meta[field] = payload.meta[field];
-    });
-    projected.meta = meta;
-  }
 }
 
 function frontDoorUnavailable(reason) {
@@ -1639,14 +1410,10 @@ function fnv1a64(value) {
   return hash.toString(16).padStart(16, '0');
 }
 
-function projectPricingModel(model, { preserveIdentifierOrder = false, frontDoor = false } = {}) {
+function projectPricingModel(model) {
   const projected = {};
-  const projectIdentifiers = preserveIdentifierOrder
-    ? projectFrontDoorIdentifierArray
-    : projectPublicIdentifierArray;
-  const projectMap = frontDoor
-    ? (value, projectValue) => projectFrontDoorMap(value, projectValue, { publicIdentifiers: true })
-    : projectPublicMap;
+  const projectIdentifiers = projectPublicIdentifierArray;
+  const projectMap = projectPublicMap;
   PUBLIC_PRICING_MODEL_FIELDS.forEach((field) => {
     if (!Object.hasOwn(model, field)) return;
     if (field === 'enable_groups' || field === 'supported_endpoint_types') {
@@ -1809,16 +1576,6 @@ function isPublicMapKey(key) {
   if (typeof key !== 'string' || key.startsWith('__')) return false;
   if (isCredentialPublicIdentifier(key)) return false;
   return /^[A-Za-z0-9][A-Za-z0-9_:.\/-]{0,79}$/.test(key);
-}
-
-// Front-door map keys are canonical public identifiers.  Unlike arbitrary
-// upstream object fields, a group/vendor/endpoint identifier is user-visible
-// data and may legitimately contain words such as "token".  Keep the
-// credential/private classification limited to the reviewed field names above.
-function isCanonicalPublicIdentifier(key) {
-  if (typeof key !== 'string' || key.startsWith('__')) return false;
-  if (isCredentialPublicIdentifier(key)) return false;
-  return /^[A-Za-z0-9][A-Za-z0-9_:.\/-]{0,299}$/.test(key);
 }
 
 function clone(value) {

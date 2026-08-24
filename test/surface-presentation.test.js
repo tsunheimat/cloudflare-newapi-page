@@ -60,7 +60,7 @@ test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader state
   assert.match(styles, /\.docs-code-group\s*\{[\s\S]*?--docs-code-bg:\s*#0f1218/);
 });
 
-test('Pricing presentation reuses canonical session groups, fields, and both compatible routes', async () => {
+test('Pricing presentation reuses canonical default groups, fields, and both compatible routes', async () => {
   const [app, styles, index] = await sources;
 
   for (const contract of [
@@ -90,7 +90,7 @@ test('Pricing presentation reuses canonical session groups, fields, and both com
   assert.doesNotMatch(
     app,
     /async function renderPricing\(\)[\s\S]*?front-door\/v1\/pricing/,
-    'legacy /pricing must not load authenticated front-door Pricing',
+    'legacy /pricing must not load the removed front-door Pricing route',
   );
   assert.match(app, /payload\.context\.user_group/);
   assert.match(app, /payload\.context\.selected_group/);
@@ -116,7 +116,7 @@ test('Pricing presentation reuses canonical session groups, fields, and both com
   assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.pricing-card-grid\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\)/);
 });
 
-test('authenticated Pricing route ships the canonical component bundle without a fixture fallback', async () => {
+test('public Pricing route ships the canonical component bundle without browser auth', async () => {
   const [app, bundle, stylesheet] = await Promise.all([
     readFile(APP_URL, 'utf8'),
     readFile(CANONICAL_PRICING_JS_URL, 'utf8'),
@@ -125,7 +125,8 @@ test('authenticated Pricing route ships the canonical component bundle without a
   assert.match(app, /path === '\/console\/pricing'/);
   assert.match(app, /renderCanonicalPricing/);
   assert.match(app, /__mountCanonicalPricing/);
-  assert.match(bundle, /\/api\/front-door\/v1\/pricing/);
+  assert.match(bundle, /\/api\/content\/pricing/);
+  assert.doesNotMatch(bundle, /\/api\/front-door\/v1\/pricing/);
   assert.match(bundle, /dy\.get\("\/api\/status"/);
   assert.match(bundle, /Canonical NewAPI status bootstrap is unavailable/);
   assert.match(bundle, /statusResponse\.data\.data/);
@@ -138,7 +139,10 @@ test('authenticated Pricing route ships the canonical component bundle without a
   assert.doesNotMatch(bundle, /Lto = 3e4|class Hto|new Hto/);
   assert.match(bundle, /cache: "no-store"/);
   assert.match(bundle, /disableDuplicate: !0/);
+  assert.match(bundle, /withCredentials: !1/);
+  assert.match(bundle, /secureApi: !1/);
   assert.doesNotMatch(bundle, /"New-API-User": Wto\(\)/);
+  assert.doesNotMatch(bundle, /localStorage\.getItem\("user"\)/);
   assert.doesNotMatch(bundle, /userId: _t|language: \$t/);
   assert.match(bundle, /Bto\.get\(\{\s*fetcher: async/);
   assert.ok(bundle.length > 1_000_000);

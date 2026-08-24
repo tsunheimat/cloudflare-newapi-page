@@ -371,22 +371,16 @@ test('phone Pricing keeps live modal changes across Escape, backdrop, close, and
   await context.close();
 });
 
-test('authenticated /console/pricing mounts canonical ordering, pagination, filters, cards, and detail sheet', { timeout: 35_000 }, async () => {
+test('public /console/pricing mounts canonical ordering, pagination, filters, cards, and detail sheet', { timeout: 35_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   await context.addInitScript(() => {
-    localStorage.setItem('user', JSON.stringify({
-      public_id: 'canonical-browser-user',
-      group: 'token-public',
-    }));
+    localStorage.setItem('user', JSON.stringify({ public_id: 'stale-browser-user' }));
     localStorage.setItem('i18nextLng', 'zh-CN');
     localStorage.setItem('status', JSON.stringify({
       price: 999,
       custom_currency_symbol: 'STALE',
     }));
   });
-  await context.addCookies([
-    { name: 'session', value: 'session-a', domain: '127.0.0.1', path: '/' },
-  ]);
   const models = Array.from({ length: 24 }, (_, index) => ({
     model_name: index < 12
       ? `gpt-canonical-${String(index).padStart(2, '0')}`
@@ -449,17 +443,17 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
     });
   });
   let pricingRequests = 0;
-  const pricingBodies = [];
-  await page.route('**/api/front-door/v1/pricing', async (route) => {
+  const pricingRequestsHeaders = [];
+  await page.route('**/api/content/pricing', async (route) => {
     pricingRequests += 1;
-    assert.equal(route.request().headers()['new-api-user'], undefined);
-    const cookie = route.request().headers()['cookie'];
-    assert.equal(cookie, pricingRequests === 1 ? 'session=session-a' : 'session=session-b');
-    assert.equal(route.request().headers()['authorization'], undefined);
-    assert.equal(route.request().headers()['x-api-key'], undefined);
-    assert.equal(route.request().headers()['if-none-match'], undefined);
+    const headers = route.request().headers();
+    assert.equal(headers['new-api-user'], undefined);
+    assert.equal(headers.cookie, undefined);
+    assert.equal(headers.authorization, undefined);
+    assert.equal(headers['x-api-key'], undefined);
+    assert.equal(headers['if-none-match'], undefined);
     assert.equal(route.request().headers()['cache-control'], 'no-store');
-    pricingBodies.push(cookie);
+    pricingRequestsHeaders.push(headers);
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -469,7 +463,7 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
   await page.goto(`${baseUrl}/console/pricing`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('heading', { name: '模型价格', exact: true }).first().waitFor();
   assert.deepEqual(pageErrors, [], 'canonical Pricing must mount without runtime errors');
-  assert.equal(pricingRequests, 1, 'canonical Pricing must issue its front-door request');
+  assert.equal(pricingRequests, 1, 'canonical Pricing must issue its public request');
   assert.equal(statusRequests, 1);
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('status'))), {
     quota_display_type: 'CNY',
@@ -516,13 +510,12 @@ test('authenticated /console/pricing mounts canonical ordering, pagination, filt
   await detail.waitFor({ state: 'visible' });
   assert.match(await detail.textContent(), /Canonical detail marker/);
   assert.match(await detail.textContent(), /\/v1\/chat\/completions/);
-  await context.addCookies([
-    { name: 'session', value: 'session-b', domain: '127.0.0.1', path: '/' },
-  ]);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.getByRole('heading', { name: '模型价格', exact: true }).first().waitFor();
   assert.equal(pricingRequests, 2, 'canonical Pricing must fetch a fresh body after navigation');
-  assert.deepEqual(pricingBodies, ['session=session-a', 'session=session-b']);
+  assert.equal(pricingRequestsHeaders.length, 2);
+  assert.equal(pricingRequestsHeaders[0].cookie, undefined);
+  assert.equal(pricingRequestsHeaders[1].cookie, undefined);
   await context.close();
 });
 

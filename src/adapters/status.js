@@ -7,21 +7,16 @@ export const STATUS_MAX_BODY_BYTES = 256 * 1024;
 export const STATUS_MAX_DATA_FIELDS = 64;
 
 const STATUS_STRING_LIMITS = Object.freeze({
-  secure_api_public_key: 16_384,
-  secure_api_key_id: 128,
   quota_display_type: 32,
   default_currency: 32,
   custom_currency_symbol: 32,
 });
 
 const STATUS_BOOLEAN_FIELDS = new Set([
-  'secure_api_enabled',
   'display_in_currency',
 ]);
 
 const STATUS_NUMBER_LIMITS = Object.freeze({
-  server_time: [0, 4_294_967_295],
-  secure_api_timestamp_window_seconds: [1, 86_400],
   price: [0, Number.MAX_SAFE_INTEGER],
   usd_exchange_rate: [0, Number.MAX_SAFE_INTEGER],
   custom_currency_exchange_rate: [0, Number.MAX_SAFE_INTEGER],
@@ -51,17 +46,16 @@ export function createStatusAdapter(
   return {
     name: 'newapi-status',
     live: true,
-    async getResponse(options = {}) {
+    async getResponse() {
       return fetchStatusPayload(env, {
         timeoutMs: boundedTimeoutMs,
         maxBodyBytes: boundedBodyBytes,
-        frontDoor: options.frontDoor === true,
       });
     },
   };
 }
 
-async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes, frontDoor = false }) {
+async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes }) {
   const binding = env.NEWAPI_VPC_SERVICE;
   const controller = new AbortController();
   const deadline = Date.now() + timeoutMs;
@@ -121,7 +115,7 @@ async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes, frontDoor = fa
     } catch {
       throw statusUnavailable('invalid_upstream_json');
     }
-    return projectStatusPayload(payload, { frontDoor });
+    return projectStatusPayload(payload);
   })();
 
   return Promise.race([operation, timeout])
@@ -132,7 +126,7 @@ async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes, frontDoor = fa
     .finally(() => clearTimeout(timer));
 }
 
-function projectStatusPayload(payload, { frontDoor = false } = {}) {
+function projectStatusPayload(payload) {
   if (!isRecord(payload) || payload.success !== true || !isRecord(payload.data)) {
     throw statusUnavailable('invalid_upstream_schema');
   }
@@ -142,12 +136,6 @@ function projectStatusPayload(payload, { frontDoor = false } = {}) {
   const data = {};
   for (const [field, value] of Object.entries(payload.data)) {
     if (!STATUS_PUBLIC_FIELDS.has(field)) continue;
-    if (frontDoor && (
-      field === 'secure_api_enabled' ||
-      field === 'secure_api_public_key' ||
-      field === 'secure_api_key_id' ||
-      field === 'secure_api_timestamp_window_seconds'
-    )) continue;
     if (STATUS_STRING_LIMITS[field] !== undefined) {
       if (typeof value !== 'string' || value.length > STATUS_STRING_LIMITS[field]) {
         throw statusUnavailable('invalid_upstream_schema');
@@ -182,12 +170,9 @@ function projectStatusPayload(payload, { frontDoor = false } = {}) {
     }
     response.message = payload.message;
   }
-  if (frontDoor) {
-    // The canonical same-origin bundle consumes this public bootstrap before
-    // calling the authenticated front door. Explicitly disable its secure-API
-    // interceptor and never expose key material or signing windows here.
-    data.secure_api_enabled = false;
-  }
+  // This Worker exposes only public read-only APIs. Disable the canonical
+  // bundle's secure-API interceptor without exposing signing key material.
+  data.secure_api_enabled = false;
   response.data = data;
   return { status: 200, payload: response };
 }
