@@ -401,6 +401,22 @@ main {
   display: block;
 }
 
+/* Canonical Docs and Pricing routes own the full viewport and their own chrome. */
+body.canonical-docs-active .site-header,
+body.canonical-docs-active .skip-link,
+body.canonical-docs-active #toast-region {
+  display: none;
+}
+
+body.canonical-docs-active,
+body.docs-hub-worker-body {
+  background: var(--semi-color-bg-0, #fff);
+}
+
+body.canonical-docs-active main {
+  min-height: 100vh;
+}
+
 /* ============================================================
    5. Footer, loading, toast
    ============================================================ */

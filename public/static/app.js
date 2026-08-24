@@ -14,9 +14,7 @@ import {
   modelSupportsGroup,
 } from './pricing.js';
 import {
-  DEFAULT_DOCS_SLUG,
   contentStatus,
-  docsCatalogHasSlug,
   docsNavigationSlug,
 } from './content-meta.js';
 
@@ -54,8 +52,13 @@ let activeSurfaceDismiss = null;
 // retained in browser memory or validators.
 const contentApiCache = new Map();
 let canonicalPricingScriptPromise = null;
+let canonicalDocsScriptPromise = null;
+let canonicalDocsMounted = false;
 
-window.addEventListener('popstate', () => renderRoute());
+window.addEventListener('popstate', () => {
+  if (document.body.classList.contains('canonical-docs-active')) return;
+  renderRoute();
+});
 pricingMobileMedia?.addEventListener('change', handlePricingViewportChange);
 document.addEventListener('keydown', (event) => {
   if (
@@ -140,30 +143,12 @@ async function renderRoute() {
   main.setAttribute('aria-busy', 'true');
 
   try {
-    if (path === '/docs') {
-      const catalog = await ensureDocsCatalog();
-      const navigation = await ensureDocsNavigation();
-      const slug = docsNavigationSlug(withDocsNavigation(catalog, navigation));
-      if (!slug) throw new Error('Docs catalog has no public pages.');
-      path = docsPath(slug);
-      window.history.replaceState(window.history.state, '', path);
-    } else if (path.startsWith('/docs/')) {
-      const requestedSlug = path.slice('/docs/'.length);
-      const catalog = await ensureDocsCatalog();
-      const navigation = await ensureDocsNavigation();
-      // Keep old fixture links stable while repairing the live legacy entrypoint.
-      if (requestedSlug === DEFAULT_DOCS_SLUG && !docsCatalogHasSlug(withDocsNavigation(catalog, navigation).data, requestedSlug)) {
-        const slug = docsNavigationSlug(withDocsNavigation(catalog, navigation));
-        if (slug && slug !== requestedSlug) {
-          path = docsPath(slug);
-          window.history.replaceState(window.history.state, '', path);
-        }
-      }
+    if (path === '/docs' || path.startsWith('/docs/')) {
+      await renderCanonicalDocs();
+      return;
     }
     if (path === '/') {
       await renderHome();
-    } else if (path.startsWith('/docs/')) {
-      await renderDocs(path.slice('/docs/'.length));
     } else if (isPricingPath(path)) {
       await renderPricing();
     } else {
@@ -175,6 +160,27 @@ async function renderRoute() {
   } finally {
     main.removeAttribute('aria-busy');
   }
+}
+
+async function renderCanonicalDocs() {
+  if (canonicalDocsMounted) return;
+  document.body.classList.add('canonical-docs-active');
+  document.body.classList.remove('canonical-pricing-active');
+  const canonicalStyles = document.querySelector('link[data-canonical-docs-css]') || node('link', {
+    rel: 'stylesheet',
+    href: '/static/docs-hub.css',
+    'data-canonical-docs-css': '',
+  });
+  if (!canonicalStyles.isConnected) document.head.append(canonicalStyles);
+  main.replaceChildren();
+  const root = node('div', { id: 'root' });
+  main.append(root);
+  if (!canonicalDocsScriptPromise) {
+    canonicalDocsScriptPromise = import('./docs-hub.js');
+  }
+  await canonicalDocsScriptPromise;
+  canonicalDocsMounted = true;
+  document.title = '文档';
 }
 
 async function renderHome() {
@@ -310,404 +316,6 @@ async function ensureDocsNavigation() {
     unavailable.cause = error;
     throw unavailable;
   }
-}
-
-function withDocsNavigation(catalogResponse, navigationResponse) {
-  if (!navigationResponse?.data || !catalogResponse?.data) return catalogResponse;
-  return {
-    ...catalogResponse,
-    data: { ...catalogResponse.data, navigation: navigationResponse.data },
-  };
-}
-
-async function renderDocs(slug) {
-  await ensureDocsCatalog();
-  const navigation = await ensureDocsNavigation();
-  const response = await api(`/api/content/docs/${encodeURIComponent(slug)}`);
-  const catalog = state.docsCatalog.data;
-  const page = response.data.page;
-  document.title = `${page.title} · JuAPI 文档`;
-
-  const shell = node('div', {
-    class: 'newapi-surface docs-hub-shell',
-    'data-docs-hub': '1',
-    'data-content-source': response.data.meta.source,
-  });
-  const mobileBar = node('div', { class: 'docs-hub-mobile-bar' });
-  const menuButton = surfaceButton('菜单', 'docs-hub-mobile-nav-btn', icon('menu'));
-  menuButton.setAttribute('aria-label', '打开文档导航');
-  const mobileTitle = node('span', { class: 'docs-hub-mobile-bar__title' }, page.title);
-  const mobileSearch = surfaceButton('搜索', 'docs-hub-mobile-nav-btn', icon('search'));
-  mobileSearch.setAttribute('aria-label', '搜索文档');
-  mobileBar.append(menuButton, mobileTitle, mobileSearch);
-
-  const sidebarWrap = node('div', { class: 'docs-hub-sidebar-wrap' });
-  const backdrop = node('button', {
-    type: 'button',
-    class: 'docs-hub-sidebar-backdrop',
-    'aria-label': '关闭文档导航',
-  });
-  const sidebar = renderDocsSidebar(catalog, slug, () => {
-    sidebarWrap.classList.remove('is-open');
-  }, navigation?.data);
-  sidebarWrap.append(backdrop, sidebar);
-
-  const article = node('article', {
-    class: 'docs-hub-canvas',
-    id: 'docs-page-content',
-  });
-  const headingWrap = node('header', { class: 'docs-hub-page-header' });
-  const breadcrumbs = node('nav', {
-    class: 'docs-hub-breadcrumbs',
-    'aria-label': '面包屑导航',
-  });
-  const docsHomeSlug = docsNavigationSlug(catalog);
-  breadcrumbs.append(
-    node('a', {
-      href: docsHomeSlug ? docsPath(docsHomeSlug) : '/docs',
-      'data-link': '',
-    }, '开发文档'),
-    node('span', { 'aria-hidden': 'true' }, '/'),
-    node('span', {}, page.section),
-    renderDataBadge(response.data.meta),
-  );
-  headingWrap.append(
-    breadcrumbs,
-    node('h1', { class: 'docs-hub-page-title' }, page.title),
-    node('p', { class: 'docs-hub-page-summary' }, page.summary),
-  );
-  const blocks = node('div', { class: 'docs-block-renderer' });
-  page.blocks.forEach((block) => blocks.append(renderDocBlock(block)));
-  article.append(headingWrap, blocks, renderDocsPageNavigation(catalog, page));
-
-  const headings = page.blocks.filter(
-    (block) => block.type === 'heading' && [2, 3].includes(block.level || 2),
-  );
-  const mainColumn = node('div', { class: 'docs-hub-main' });
-  mainColumn.append(article);
-  if (headings.length > 0) mainColumn.append(renderDocsToc(headings));
-
-  shell.append(mobileBar, sidebarWrap, mainColumn);
-  replaceMain(shell);
-  menuButton.addEventListener('click', () => sidebarWrap.classList.add('is-open'));
-  backdrop.addEventListener('click', () => sidebarWrap.classList.remove('is-open'));
-  mobileSearch.addEventListener('click', () => openDocsSearch(catalog));
-  requestAnimationFrame(() => {
-    scrollToCurrentHash();
-    installDocsTocObserver();
-  });
-}
-
-function renderDocsSidebar(catalog, activeSlug, onPageNavigate, navigation = null) {
-  const aside = node('aside', { class: 'docs-hub-sidebar', 'aria-label': '文档导航' });
-  const search = surfaceButton('搜索文档', 'docs-hub-sidebar-search', icon('search'));
-  search.append(node('kbd', { 'aria-hidden': 'true' }, 'Ctrl K'));
-  search.addEventListener('click', () => openDocsSearch(catalog));
-  activeDocsSearchButton = search;
-  aside.append(search, node('span', { class: 'docs-hub-rail-label' }, '开发文档'));
-
-  const tree = node('nav', { class: 'docs-hub-tree-group' });
-  if (Array.isArray(navigation) && navigation.length > 0) {
-    tree.append(...renderDocsNavigationNodes(navigation, catalog, activeSlug, onPageNavigate));
-  } else {
-    catalog.sections.forEach((section, sectionIndex) => {
-      const children = section.items.map((item) => ({
-        type: 'page',
-        id: `fixture-${sectionIndex}-${item.slug}`,
-        slug: item.slug,
-        path: item.slug,
-        title: item.title,
-        children: [],
-      }));
-      tree.append(...renderDocsNavigationNodes([
-        { type: 'group', id: `fixture-${sectionIndex}`, title: section.title, children },
-      ], catalog, activeSlug, onPageNavigate));
-    });
-  }
-  aside.append(tree);
-  return aside;
-}
-
-function renderDocsNavigationNodes(nodes, catalog, activeSlug, onPageNavigate) {
-  return (nodes || []).map((item) => {
-    if (item?.type === 'group') {
-      const children = renderDocsNavigationNodes(item.children, catalog, activeSlug, onPageNavigate);
-      const containsActive = children.some((child) => child.querySelector?.('[aria-current="page"]'));
-      const group = node('div', { class: 'docs-hub-nav-group' });
-      const groupId = `docs-navigation-group-${item.id}`;
-      const groupButton = surfaceButton(item.title, 'docs-hub-group-label', icon('chevron'));
-      groupButton.setAttribute('aria-expanded', String(containsActive));
-      groupButton.setAttribute('aria-controls', groupId);
-      groupButton.querySelector('svg')?.classList.toggle('is-open', containsActive);
-      const childWrap = node('div', { id: groupId, role: 'group' });
-      childWrap.hidden = !containsActive;
-      childWrap.append(...children);
-      groupButton.addEventListener('click', () => {
-        if (containsActive) return;
-        const nextOpen = childWrap.hidden;
-        childWrap.hidden = !nextOpen;
-        groupButton.setAttribute('aria-expanded', String(nextOpen));
-        groupButton.querySelector('svg')?.classList.toggle('is-open', nextOpen);
-      });
-      group.append(groupButton, childWrap);
-      return group;
-    }
-    const target = docsNavigationTarget(item, catalog);
-    const active = target === activeSlug || item.path === activeSlug || item.slug === activeSlug;
-    const wrapper = node('div');
-    const button = surfaceButton(item.title, `docs-hub-tree-item${active ? ' is-active' : ''}`);
-    if (active) button.setAttribute('aria-current', 'page');
-    button.addEventListener('click', () => {
-      onPageNavigate?.();
-      navigate(`/docs/${encodeURIComponent(target)}`);
-    });
-    wrapper.append(button);
-    const nested = renderDocsNavigationNodes(item.children, catalog, activeSlug, onPageNavigate);
-    if (nested.length) {
-      const nestedWrap = node('div', { role: 'group', class: 'docs-hub-tree-nested' });
-      nestedWrap.append(...nested);
-      wrapper.append(nestedWrap);
-    }
-    return wrapper;
-  });
-}
-
-function docsNavigationTarget(item, catalog) {
-  const pages = (catalog?.sections || []).flatMap((section) => section.items || []);
-  const direct = pages.find((page) => page.slug === item.slug || page.slug === item.path);
-  const titled = pages.find((page) => page.title === item.title);
-  return direct?.slug || titled?.slug || item.slug || item.path;
-}
-
-function renderDocBlock(block) {
-  switch (block.type) {
-    case 'lead':
-      return node('p', { class: 'docs-page-lead' }, block.text);
-    case 'paragraph':
-      return node('p', {}, block.text);
-    case 'heading':
-      return node(`h${block.level || 2}`, { id: block.id }, block.text);
-    case 'callout': {
-      const tone = block.tone === 'fixture' ? 'warning' : block.tone || 'info';
-      const callout = node('aside', { class: `docs-callout docs-callout--${tone}` });
-      const body = node('div', { class: 'docs-callout__main' });
-      body.append(
-        node('div', { class: 'docs-callout__title' }, block.title),
-        node('div', { class: 'docs-callout__body' }, node('p', {}, block.text)),
-      );
-      callout.append(node('span', { class: 'docs-callout__icon', 'aria-hidden': 'true' }, '●'), body);
-      return callout;
-    }
-    case 'code':
-      return codeBlock(block);
-    case 'bullets': {
-      const list = node('ul', { class: 'docs-list' });
-      block.items.forEach((item) => list.append(node('li', {}, item)));
-      return list;
-    }
-    case 'endpoint': {
-      const endpoint = node('div', { class: 'docs-api-endpoint', id: block.id });
-      const header = node('div', { class: 'docs-api-endpoint__header' });
-      header.append(
-        node('span', { class: 'docs-api-endpoint__method', 'data-method': block.method }, block.method),
-        node('code', { class: 'docs-api-endpoint__path' }, block.path),
-      );
-      endpoint.append(
-        header,
-        node('p', { class: 'docs-api-endpoint__summary' }, block.text),
-      );
-      return endpoint;
-    }
-    case 'table':
-      return docsDataTable(block.columns, block.rows);
-    case 'link-cards': {
-      const list = node('div', { class: 'docs-related-inline' });
-      block.items.forEach((item) => {
-        const link = node('a', {
-          href: `/docs/${item.slug}`,
-          'data-link': '',
-          class: 'docs-doc-link',
-        });
-        link.append(
-          icon('file'),
-          node('span', { class: 'docs-doc-link__copy' },
-            node('strong', { class: 'docs-doc-link__title' }, item.title),
-            node('small', {}, item.text),
-          ),
-          node('span', { class: 'docs-doc-link__arrow', 'aria-hidden': 'true' }, '→'),
-        );
-        list.append(node('div', { class: 'docs-doc-link-row' }, link));
-      });
-      return list;
-    }
-    default:
-      return node('div');
-  }
-}
-
-function renderDocsToc(headings) {
-  const toc = node('nav', { class: 'docs-hub-toc', 'aria-label': '本页目录' });
-  toc.append(node('div', { class: 'docs-hub-toc-label' }, '本页目录'));
-  const list = node('ul', { class: 'docs-hub-toc-list' });
-  headings.forEach((heading, index) => {
-    const link = node('a', {
-      href: `#${encodeURIComponent(heading.id)}`,
-      class: `docs-hub-toc-link${index === 0 ? ' is-active' : ''}`,
-      ...(index === 0 ? { 'aria-current': 'true' } : {}),
-    }, heading.text);
-    list.append(node('li', { 'data-level': String(heading.level || 2) }, link));
-  });
-  toc.append(list);
-  return toc;
-}
-
-function renderDocsPageNavigation(catalog, page) {
-  const section = catalog.sections.find((item) => item.title === page.section);
-  const index = section?.items.findIndex((item) => item.slug === page.slug) ?? -1;
-  const previous = index > 0 ? section.items[index - 1] : null;
-  const next = index >= 0 && index < section.items.length - 1 ? section.items[index + 1] : null;
-  if (!previous && !next) return node('span');
-  const nav = node('nav', { class: 'docs-hub-page-nav', 'aria-label': '文档翻页导航' });
-  nav.append(
-    previous
-      ? docsPageNavLink(previous, '上一页', false)
-      : node('span'),
-    next
-      ? docsPageNavLink(next, '下一页', true)
-      : node('span'),
-  );
-  return nav;
-}
-
-function docsPageNavLink(item, direction, isNext) {
-  const link = node('a', {
-    href: `/docs/${item.slug}`,
-    'data-link': '',
-    class: isNext ? 'is-next' : '',
-  });
-  link.append(
-    node('span', { class: 'docs-hub-page-nav__dir' }, isNext ? `${direction} →` : `← ${direction}`),
-    node('span', { class: 'docs-hub-page-nav__title' }, item.title),
-  );
-  return link;
-}
-
-function openDocsSearch(catalog) {
-  closeSurfaceOverlay();
-  const dialog = createSurfaceDialog('搜索文档', 'docs-search-dialog');
-  const inputWrap = node('label', { class: 'surface-input docs-search-input' });
-  const input = node('input', {
-    type: 'search',
-    value: state.docsQuery,
-    placeholder: '搜索标题、正文、接口路径…',
-    'aria-label': '搜索文档',
-  });
-  inputWrap.append(icon('search'), input);
-  const results = node('div', { class: 'docs-hub-search-results', 'aria-live': 'polite' });
-  const draw = () => {
-    state.docsQuery = input.value;
-    results.replaceChildren();
-    const query = state.docsQuery.trim().toLowerCase();
-    if (!query) return;
-    const matches = docsSearchEntries(catalog).filter((item) =>
-      item.text.toLowerCase().includes(query),
-    );
-    matches.forEach((item) => {
-      const href = docsSearchHref(item);
-      const button = surfaceButton('', 'docs-hub-search-item');
-      button.setAttribute('data-search-target', href);
-      const title = node('span', { class: 'docs-hub-search-item__title' });
-      appendHighlightedText(
-        title,
-        item.target_title === item.title
-          ? item.title
-          : `${item.title} · ${item.target_title}`,
-        state.docsQuery,
-      );
-      const snippet = node('span', { class: 'docs-hub-search-item__snippet' });
-      appendHighlightedText(snippet, item.text, state.docsQuery);
-      button.append(title, snippet);
-      button.addEventListener('click', () => {
-        closeSurfaceOverlay();
-        navigate(href);
-      });
-      results.append(button);
-    });
-    if (matches.length === 0) {
-      results.append(node('p', { class: 'docs-hub-search-empty' }, '未找到匹配的文档'));
-    }
-  };
-  input.addEventListener('input', draw);
-  dialog.content.append(inputWrap, results);
-  document.body.append(dialog.overlay);
-  input.focus();
-  draw();
-}
-
-function docsSearchEntries(catalog) {
-  if (Array.isArray(catalog.search_index)) return catalog.search_index;
-  return catalog.sections.flatMap((section) => section.items).map((item) => ({
-    slug: item.slug,
-    anchor: null,
-    title: item.title,
-    target_title: item.title,
-    text: [item.title, item.summary, ...(item.keywords || [])].join(' '),
-  }));
-}
-
-function docsSearchHref(item) {
-  const anchor = item.anchor ? `#${encodeURIComponent(item.anchor)}` : '';
-  return `/docs/${encodeURIComponent(item.slug)}${anchor}`;
-}
-
-function appendHighlightedText(container, text, query) {
-  const source = String(text || '');
-  const needle = String(query || '').trim();
-  if (!needle) {
-    container.append(source);
-    return;
-  }
-  const lowerSource = source.toLowerCase();
-  const lowerNeedle = needle.toLowerCase();
-  let cursor = 0;
-  let matchIndex = lowerSource.indexOf(lowerNeedle);
-  while (matchIndex >= 0) {
-    container.append(source.slice(cursor, matchIndex));
-    container.append(node('mark', {}, source.slice(matchIndex, matchIndex + needle.length)));
-    cursor = matchIndex + needle.length;
-    matchIndex = lowerSource.indexOf(lowerNeedle, cursor);
-  }
-  container.append(source.slice(cursor));
-}
-
-function scrollToCurrentHash() {
-  const raw = window.location.hash.replace(/^#/, '');
-  if (!raw) return;
-  let id = raw;
-  try { id = decodeURIComponent(raw); } catch { /* Preserve malformed hash text. */ }
-  const target = document.getElementById(id);
-  if (!target) return;
-  target.classList.add('docs-hub-anchor-target');
-  target.setAttribute('tabindex', '-1');
-  target.focus({ preventScroll: true });
-  target.scrollIntoView({ block: 'start', behavior: 'auto' });
-}
-
-function installDocsTocObserver() {
-  if (!window.IntersectionObserver) return;
-  const links = [...document.querySelectorAll('.docs-hub-toc-link')];
-  const targets = links.map((link) => document.getElementById(decodeURIComponent(link.hash.slice(1))));
-  activeDocsTocObserver = new IntersectionObserver((entries) => {
-    const visible = entries.find((entry) => entry.isIntersecting);
-    if (!visible) return;
-    links.forEach((link) => {
-      const active = decodeURIComponent(link.hash.slice(1)) === visible.target.id;
-      link.classList.toggle('is-active', active);
-      if (active) link.setAttribute('aria-current', 'true');
-      else link.removeAttribute('aria-current');
-    });
-  }, { rootMargin: '-88px 0px -70% 0px' });
-  targets.filter(Boolean).forEach((target) => activeDocsTocObserver.observe(target));
 }
 
 async function renderPricing() {
@@ -1545,61 +1153,6 @@ function dataTable(columns, rows) {
   table.append(head, body);
   wrap.append(table);
   return wrap;
-}
-
-function docsDataTable(columns, rows) {
-  const wrap = node('div', { class: 'docs-table-wrap' });
-  const table = node('table', { class: 'docs-table' });
-  const head = node('thead');
-  const headerRow = node('tr');
-  columns.forEach((column) => headerRow.append(node('th', { scope: 'col' }, column)));
-  head.append(headerRow);
-  const body = node('tbody');
-  rows.forEach((row) => {
-    const tr = node('tr');
-    row.forEach((cell) => tr.append(node('td', {}, String(cell))));
-    body.append(tr);
-  });
-  table.append(head, body);
-  wrap.append(table);
-  return wrap;
-}
-
-function codeBlock(block) {
-  const figure = node('figure', { class: 'docs-code-group' });
-  const caption = node('figcaption', { class: 'docs-code-group__header' });
-  caption.append(
-    node('span', { class: 'docs-code-group__title' },
-      icon('code'),
-      node('span', { class: 'docs-code-group__title-text' }, block.label || block.language || 'Code'),
-    ),
-    node('span', { class: 'docs-code-group__badge docs-code-group__badge--lang' }, block.language || 'text'),
-    copyButton(block.code),
-  );
-  const pre = node('pre', { class: 'docs-code-group__pre', tabindex: '0' });
-  pre.append(node('code', { class: `language-${block.language || 'text'}` }, block.code));
-  figure.append(caption, pre);
-  return figure;
-}
-
-function copyButton(text) {
-  const button = node('button', { type: 'button', class: 'docs-code-group__copy', 'aria-label': '复制代码' }, '复制');
-  button.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      button.textContent = '已复制';
-      button.dataset.state = 'copied';
-      toast('代码已复制');
-      setTimeout(() => {
-        button.textContent = '复制';
-        delete button.dataset.state;
-      }, 1600);
-    } catch {
-      button.dataset.state = 'failed';
-      toast('复制失败，请手动选择代码');
-    }
-  });
-  return button;
 }
 
 function renderDataBadge(meta, label = undefined) {

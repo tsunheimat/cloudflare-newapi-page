@@ -18,6 +18,7 @@ import {
   withSecurityHeaders,
 } from './http.js';
 import { createStatusAdapter } from './adapters/status.js';
+import { createDocsHubAdapter } from './adapters/docs-hub.js';
 
 const PHASE = '2';
 
@@ -83,6 +84,10 @@ export async function route(request, env = {}) {
       }),
       (payload) => payload,
     );
+  }
+
+  if (request.method === 'GET' && pathname.startsWith('/api/docs/v2/')) {
+    return handleDocsHubRoute(request, env, url, pathname);
   }
 
 
@@ -164,11 +169,98 @@ function publicContentResponse(result, envelope) {
     return withSecurityHeaders(new Response(null, { status: 304, headers }));
   }
   if (!result || result.status !== 200) {
+    if (result?.status === 404) {
+      return json(result.payload || { success: false, message: 'Not found.' }, 404, {
+        'cache-control': 'no-store',
+      });
+    }
     throw new HttpError(503, 'Live content is temporarily unavailable.');
   }
   const headers = { 'cache-control': 'no-cache' };
   if (result.etag) headers.etag = result.etag;
   return json(envelope(result.payload), 200, headers);
+}
+
+async function handleDocsHubRoute(request, env, url, pathname) {
+  const adapter = createDocsHubAdapter(env);
+  const ifNoneMatch = conditionalValidator(request);
+  const assetMatch = pathname.match(/^\/api\/docs\/v2\/assets\/([1-9][0-9]{0,10})$/);
+  if (assetMatch) {
+    const result = await adapter.getAssetResponse(assetMatch[1], { ifNoneMatch });
+    if (result?.status === 304) {
+      const headers = new Headers({ 'cache-control': 'private, max-age=3600' });
+      if (result.etag) headers.set('etag', result.etag);
+      return withSecurityHeaders(new Response(null, { status: 304, headers }));
+    }
+    if (!result || ![200, 404].includes(result.status)) throw new HttpError(503, 'Live content is temporarily unavailable.');
+    if (result.status === 404) return json({ success: false, message: 'asset not found' }, 404);
+    const headers = new Headers({
+      'cache-control': 'private, max-age=3600',
+      'content-type': result.contentType || 'application/octet-stream',
+    });
+    if (result.etag) headers.set('etag', result.etag);
+    if (result.disposition) headers.set('content-disposition', result.disposition);
+    return withSecurityHeaders(new Response(result.body, { status: 200, headers }));
+  }
+  const supported = [
+    'config', 'spaces', 'tree', 'navigation', 'search', 'featured', 'recent',
+    'redirect',
+  ];
+  const isPage = pathname.includes('/pages/');
+  if (!supported.some((name) => pathname.endsWith(`/api/docs/v2/${name}`)) && !isPage) {
+    throw new HttpError(404, 'DocsHub route not found.');
+  }
+  const upstreamPath = buildDocsHubUpstreamPath(pathname, url);
+  return publicContentResponse(
+    await adapter.getResponse(upstreamPath, { ifNoneMatch }),
+    (payload) => payload,
+  );
+}
+
+function buildDocsHubUpstreamPath(pathname, url) {
+  const relative = pathname.slice('/api/docs/v2'.length);
+  const query = new URLSearchParams();
+  const add = (name, { max = 300, pattern = null, required = false } = {}) => {
+    const value = url.searchParams.get(name);
+    if (value === null || value === '') {
+      if (required) throw new HttpError(400, `Invalid DocsHub parameter: ${name}.`);
+      return;
+    }
+    if (value.length > max || /[\u0000-\u001f\u007f]/.test(value) || (pattern && !pattern.test(value))) {
+      throw new HttpError(400, `Invalid DocsHub parameter: ${name}.`);
+    }
+    query.set(name, value);
+  };
+  if (relative === '/config') return '/api/internal/live-content/v1/docs/v2/config';
+  if (relative === '/spaces') {
+    add('locale', { max: 16, pattern: /^[a-z-]+$/i });
+  } else if (relative === '/tree' || relative === '/navigation') {
+    add('locale', { max: 16, pattern: /^[a-z-]+$/i });
+    add('space', { max: 120, pattern: /^[a-z0-9][a-z0-9._-]*$/i });
+  } else if (relative === '/search') {
+    add('q', { max: 500, required: true });
+    add('locale', { max: 16, pattern: /^[a-z-]+$/i });
+    add('space', { max: 120, pattern: /^[a-z0-9][a-z0-9._-]*$/i });
+  } else if (relative === '/featured') {
+    add('locale', { max: 16, pattern: /^[a-z-]+$/i });
+  } else if (relative === '/recent') {
+    add('locale', { max: 16, pattern: /^[a-z-]+$/i });
+    add('limit', { max: 3, pattern: /^[1-9][0-9]?$/ });
+  } else if (relative === '/redirect') {
+    add('path', { max: 500, required: true, pattern: /^\/[a-z0-9._/-]+$/i });
+  } else if (relative.startsWith('/pages/by-id/')) {
+    if (!/^\/pages\/by-id\/[1-9][0-9]{0,10}$/.test(relative)) throw new HttpError(400, 'Invalid DocsHub page id.');
+    add('locale', { max: 16, pattern: /^[a-z-]+$/i });
+  } else if (relative.startsWith('/pages/')) {
+    if (!/^\/pages\/[a-z0-9][a-z0-9._-]{0,199}$/i.test(relative)) throw new HttpError(400, 'Invalid DocsHub page slug.');
+    add('space', { max: 120, pattern: /^[a-z0-9][a-z0-9._-]*$/i, required: true });
+    add('locale', { max: 16, pattern: /^[a-z-]+$/i });
+    add('path', { max: 500, pattern: /^[a-z0-9._/-]+$/i, required: true });
+  } else {
+    throw new HttpError(404, 'DocsHub route not found.');
+  }
+  const encoded = query.toString();
+  return `/api/internal/live-content/v1/docs/v2${relative}${encoded ? `?${encoded}` : ''}`;
 }
 
 function conditionalValidator(request) {

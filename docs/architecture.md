@@ -4,7 +4,7 @@
 
 ```text
 Browser
-  ├─ /docs/*, /console/pricing, /pricing ──> Worker Assets (Phase 1 SPA)
+  ├─ /docs/*, /console/pricing, /pricing ──> Worker Assets (canonical SPA surfaces)
   ├─ /api/content/* ─────> ContentAdapter
   │                          └─ FixtureAdapter (Phase 1 only)
   └─ download routes ─────> explicit runtime gate
@@ -25,30 +25,29 @@ Public Pricing:
     └─ `/api/content/pricing`
          └─ ContentAdapter -> NEWAPI_VPC_SERVICE -> `/api/internal/live-content/v1/pricing`
 
-Public recursive Docs navigation:
-  Browser (credentials omitted by the SPA)
-    └─ `/api/front-door/v1/docs/v2/navigation?locale=zh`
+Public canonical DocsHub:
+  Browser (credentials omitted by the canonical DocsHub transport)
+    └─ `/api/docs/v2/*` (config, spaces, tree, navigation, pages, search, assets, …)
          └─ NEWAPI_VPC_SERVICE + LIVE_CONTENT_ADAPTER_TOKEN
-              -> `/api/internal/live-content/v1/docs/v2/navigation?locale=zh`
+              -> `/api/internal/live-content/v1/docs/v2/*`
 
 Public canonical bootstrap:
   `/api/status` (read-only, fixed anonymous GET)
          └─ NEWAPI_VPC_SERVICE -> canonical NewAPI `/api/status`
 ```
 
-The recursive Docs route is a public compatibility URL backed only by the
-Worker-held service token. The Worker constructs a fixed GET over the VPC
-binding and forwards only `Accept`, the Worker token Authorization header, and
-an optional `If-None-Match` validator. Browser cookies, `New-Api-User`, browser
+The public `/api/docs/v2/*` routes are same-origin adapters for the canonical
+NewAPI DocsHub. The Worker constructs fixed GETs over the VPC binding and
+forwards only `Accept`, the Worker token Authorization header, and an optional
+`If-None-Match` validator. Browser cookies, `New-Api-User`, browser
 Authorization, API keys, provider/admin credentials, arbitrary headers, and
 end-user logic are not inspected or forwarded. Published normal/public pages
-and enabled navigation groups are validated and reconstructed through an
-explicit bounded public projection that preserves recursive folder/layer/page
-`children` and canonical `path`; unknown/private fields are dropped and
-malformed known fields fail closed. The sidebar renders that tree recursively,
-including nested page descendants. Upstream navigation failure, schema drift,
-timeout, or oversized response fails closed. Pricing does not use this route;
-the existing service-token live adapter remains the sole public Pricing path.
+and enabled navigation groups retain the canonical recursive folder/layer/page
+DTOs; unknown credential-shaped fields are redacted and malformed responses,
+timeouts, or oversized bodies fail closed. `public/static/docs-hub.*` is built
+from the approved NewAPI `web/src/pages/DocsHub` and `packages/docs-core`
+sources, preserving the original layout, strings, reader, search, TOC,
+navigation, and block rendering behavior.
 
 `/console/pricing` is the public canonical React SPA route; `/pricing` remains a
 Worker fixture compatibility alias. Its canonical bundle bootstraps through the

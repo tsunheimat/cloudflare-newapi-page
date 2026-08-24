@@ -11,6 +11,8 @@ const PACKAGE_URL = new URL('../package.json', import.meta.url);
 const ARCHITECTURE_URL = new URL('../docs/architecture.md', import.meta.url);
 const CANONICAL_PRICING_JS_URL = new URL('../public/static/canonical-pricing.js', import.meta.url);
 const CANONICAL_PRICING_CSS_URL = new URL('../public/static/canonical-pricing.css', import.meta.url);
+const CANONICAL_DOCS_JS_URL = new URL('../public/static/docs-hub.js', import.meta.url);
+const CANONICAL_DOCS_CSS_URL = new URL('../public/static/docs-hub.css', import.meta.url);
 
 const sources = Promise.all([
   readFile(APP_URL, 'utf8'),
@@ -20,46 +22,36 @@ const sources = Promise.all([
 
 test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader states', async () => {
   const [app, styles] = await sources;
-
-  assert.match(app, /canonical React bundle built from approved NewAPI commit/);
-  assert.match(app, /85143bc49260f9c7ab1efd6a5122558e58d0bee2/);
+  const [docsBundle, docsStyles] = await Promise.all([
+    readFile(CANONICAL_DOCS_JS_URL, 'utf8'),
+    readFile(CANONICAL_DOCS_CSS_URL, 'utf8'),
+  ]);
+  assert.match(app, /renderCanonicalDocs/);
+  assert.match(app, /docs-hub\.js/);
+  assert.match(docsBundle, /\/api\/docs\/v2\/config/);
+  assert.match(docsBundle, /credentials:"omit"/);
+  assert.doesNotMatch(docsBundle, /New-API-User/);
+  assert.doesNotMatch(docsBundle, /localStorage\.getItem\("user"\)/);
   for (const contract of [
-    "class: 'newapi-surface docs-hub-shell'",
-    "class: 'docs-hub-sidebar'",
-    "class: 'docs-hub-canvas'",
-    "class: 'docs-block-renderer'",
-    "class: 'docs-hub-page-nav'",
-    "class: 'docs-hub-search-results'",
-    "class: 'docs-hub-mobile-bar'",
+    'docs-hub-shell',
+    'docs-hub-sidebar',
+    'docs-hub-canvas',
+    'docs-block-renderer',
+    'docs-hub-page-nav',
+    'docs-hub-search-results',
+    'docs-hub-mobile-bar',
   ]) {
-    assert.ok(app.includes(contract), contract);
+    assert.ok(docsBundle.includes(contract), contract);
   }
-  assert.match(app, /\(event\.metaKey \|\| event\.ctrlKey\)/);
-  assert.match(app, /搜索标题、正文、接口路径…/);
-  assert.match(app, /未找到匹配的文档/);
-  assert.match(app, /catalog\.search_index/);
-  assert.match(app, /if \(headings\.length > 0\)/);
-  assert.match(app, /docsNavigationSlug\(catalog\)/);
-  assert.match(app, /docsPath\(slug\)/);
-  assert.match(app, /front-door\/v1\/docs\/v2\/navigation\?locale=zh/);
-  assert.match(app, /publicDocsNavigation: true/);
-  assert.match(app, /credentials: path\.startsWith\('\/api\/content\/docs'\) \|\| publicDocsNavigation \? 'omit'/);
-  assert.doesNotMatch(app, /missing_session/);
-  assert.match(app, /文档导航暂时不可用，请稍后重试。/);
-  assert.doesNotMatch(app, /readBrowserUser/);
-  assert.match(app, /renderDocsNavigationNodes/);
-  assert.match(app, /item\?\.type === 'group'/);
-  assert.match(app, /item\.children/);
-  assert.match(app, /return slug \? `\/docs\/\$\{encodeURIComponent\(slug\)\}` : '\/docs';/);
-  assert.doesNotMatch(app, /encodeURIComponent\(slug \|\| DEFAULT_DOCS_SLUG\)/);
-  assert.doesNotMatch(app, /replaceState\(window\.history\.state, '', '\/docs\/quickstart'\)/);
+  assert.match(docsBundle, /搜索标题、正文、接口路径…/);
+  assert.match(docsBundle, /未找到匹配的文档/);
+  assert.match(docsBundle, /docs-navigation-group-/);
 
-  assert.match(styles, /--docs-sidebar-width:\s*272px/);
-  assert.match(styles, /--docs-gutter:\s*clamp\(32px, 4vw, 48px\)/);
-  assert.match(styles, /--docs-canvas-max:\s*1000px/);
-  assert.match(styles, /@media \(min-width: 1560px\)[\s\S]*?\.docs-hub-toc/);
-  assert.match(styles, /@media \(max-width: 768px\)[\s\S]*?\.docs-hub-sidebar-wrap\.is-open/);
-  assert.match(styles, /\.docs-code-group\s*\{[\s\S]*?--docs-code-bg:\s*#0f1218/);
+  assert.match(docsStyles, /--docs-sidebar-width:\s*272px/);
+  assert.match(docsStyles, /--docs-gutter:\s*clamp\(32px, 4vw, 48px\)/);
+  assert.match(docsStyles, /--docs-canvas-max:\s*1000px/);
+  assert.match(docsStyles, /@media \(max-width: 768px\)[\s\S]*?\.docs-hub-sidebar-wrap\.is-open/);
+  assert.match(docsStyles, /\.docs-code-group\s*\{[\s\S]*?--docs-code-bg:\s*#0f1218/);
 });
 
 test('Pricing presentation reuses canonical default groups, fields, and both compatible routes', async () => {

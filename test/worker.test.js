@@ -63,6 +63,67 @@ test('content routes serve fixture docs and pricing', async () => {
   assert.equal(pricing.meta.live, false);
 });
 
+test('canonical DocsHub routes mount the original read contract and omit browser credentials', async () => {
+  const config = await fetchWorker('/api/docs/v2/config', fixtureEnv);
+  assert.equal(config.status, 200);
+  assert.equal((await config.json()).data.default_locale, 'zh');
+  const spaces = await fetchWorker('/api/docs/v2/spaces?locale=zh', fixtureEnv);
+  assert.equal(spaces.status, 200);
+  assert.equal((await spaces.json()).data[0].slug, 'quickstart');
+  const page = await fetchWorker('/api/docs/v2/pages/quickstart?space=quickstart&locale=zh&path=quickstart', fixtureEnv);
+  assert.equal(page.status, 200);
+  assert.equal((await page.json()).data.title, '快速开始');
+  const search = await fetchWorker('/api/docs/v2/search?q=temperature&locale=zh&space=quickstart', fixtureEnv);
+  assert.equal(search.status, 200);
+  assert.equal(Array.isArray((await search.json()).data), true);
+
+  const seen = [];
+  const livePayload = {
+    success: true,
+    data: {
+      enabled: true,
+      require_auth: false,
+      schema_version: 1,
+      renderer_version: 1,
+      default_locale: 'zh',
+    },
+  };
+  const response = await fetchWorker('/api/docs/v2/config?locale=zh', {
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: `docs-route-${'x'.repeat(32)}`,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        seen.push({ url: request.url, method: request.method, headers: Object.fromEntries(request.headers) });
+        return new Response(JSON.stringify(livePayload), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'x-newapi-content-contract': 'v1',
+            etag: '"docs-config"',
+          },
+        });
+      },
+    },
+  }, {
+    headers: {
+      cookie: 'session=browser',
+      authorization: 'Bearer browser',
+      'new-api-user': 'browser-user',
+      'x-api-key': 'browser-key',
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).data.default_locale, 'zh');
+  assert.equal(seen.length, 1);
+  assert.equal(new URL(seen[0].url).pathname, '/api/internal/live-content/v1/docs/v2/config');
+  assert.equal(seen[0].method, 'GET');
+  assert.equal(seen[0].headers.accept, 'application/json');
+  assert.match(seen[0].headers.authorization, /^Bearer docs-route-/);
+  assert.equal(seen[0].headers.cookie, undefined);
+  assert.equal(seen[0].headers['new-api-user'], undefined);
+  assert.equal(seen[0].headers['x-api-key'], undefined);
+});
+
 test('/api/status forwards a fixed anonymous GET and projects canonical display settings', async () => {
   const seen = [];
   const upstream = {

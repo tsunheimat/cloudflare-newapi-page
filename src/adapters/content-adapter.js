@@ -14,6 +14,7 @@ export const LIVE_CONTENT_TIMEOUT_MS = 5_000;
 export const LIVE_CONTENT_MAX_BODY_BYTES = 2 * 1024 * 1024;
 export const LIVE_CONTENT_DOCS_NAVIGATION_PATH = '/api/internal/live-content/v1/docs/v2/navigation?locale=zh';
 export const LIVE_CONTENT_DOCS_NAVIGATION_MAX_BODY_BYTES = 8 * 1024 * 1024;
+export const LIVE_CONTENT_DOCS_V2_MAX_BODY_BYTES = 8 * 1024 * 1024;
 export const LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES = 500;
 // Match the finite coordinate limit already enforced by capability geometry.
 export const LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION = 100_000;
@@ -336,6 +337,23 @@ export function createLiveContentAdapter(
     assertLivePricing,
     stablePricingEtag,
   );
+  const getDocsV2Response = (path, options = {}) => {
+    if (typeof path !== 'string' || !path.startsWith('/api/internal/live-content/v1/docs/v2/')) {
+      throw new HttpError(400, 'Invalid DocsHub route.');
+    }
+    return fetchAndValidateDocsV2(path, options);
+  };
+  const getDocsV2AssetResponse = (id, options = {}) => {
+    if (!/^[1-9][0-9]{0,10}$/.test(String(id))) {
+      throw new HttpError(400, 'Invalid documentation asset.');
+    }
+    return fetchLiveAsset(
+      env,
+      token,
+      `/api/internal/live-content/v1/docs/v2/assets/${id}`,
+      options,
+    );
+  };
   return {
     name: CONTENT_ADAPTER_LIVE,
     live: true,
@@ -358,6 +376,10 @@ export function createLiveContentAdapter(
 
     getPricingResponse,
 
+    getDocsV2Response,
+
+    getDocsV2AssetResponse,
+
     async checkHealth() {
       try {
         await fetchAndValidate(
@@ -378,6 +400,15 @@ export function createLiveContentAdapter(
       ...options,
       transform: (payload) => clone(validator(payload)),
       etag,
+    });
+  }
+
+  async function fetchAndValidateDocsV2(path, options = {}) {
+    return fetchLivePayload(env, token, path, 'docs_v2', {
+      timeoutMs,
+      maxBodyBytes: LIVE_CONTENT_DOCS_V2_MAX_BODY_BYTES,
+      ifNoneMatch: options.ifNoneMatch,
+      transform: (payload) => clone(assertLiveDocsV2Payload(payload)),
     });
   }
 }
@@ -474,7 +505,7 @@ function fetchLivePayload(
       if (
         kind !== 'health' &&
         ![200, 304].includes(response.status) &&
-        !(response.status === 404 && kind === 'docs_page')
+        !(response.status === 404 && (kind === 'docs_page' || kind === 'docs_v2'))
       ) {
         throw liveUnavailable('upstream_status');
       }
@@ -527,6 +558,12 @@ function fetchLivePayload(
         assertLiveDocsPageNotFound(payload);
         throw new HttpError(404, 'Document page not found.');
       }
+      if (response.status === 404 && kind === 'docs_v2') {
+        if (!isRecord(payload) || payload.success !== false || typeof payload.message !== 'string') {
+          schemaFailure();
+        }
+        return { status: 404, payload, etag };
+      }
       let validated;
       try {
         assertBeforeDeadline(deadline, controller);
@@ -553,6 +590,114 @@ function fetchLivePayload(
     .finally(() => {
       clearTimeout(timer);
     });
+}
+
+function assertLiveDocsV2Payload(payload) {
+  if (!isRecord(payload) || payload.success !== true || !Object.hasOwn(payload, 'data')) {
+    schemaFailure();
+  }
+  // The canonical NewAPI DocsHub handlers are already public/published DTOs.
+  // Keep their complete shape while recursively dropping credential-shaped
+  // keys if a future handler accidentally adds one.
+  return redactDocsHubValue(payload, 0);
+}
+
+function redactDocsHubValue(value, depth) {
+  if (depth > 24) schemaFailure();
+  if (typeof value === 'string') {
+    if (value.length > 200_000) schemaFailure();
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  if (Array.isArray(value)) {
+    if (value.length > 50_000) schemaFailure();
+    return value.map((item) => redactDocsHubValue(item, depth + 1));
+  }
+  if (!isRecord(value) || Object.keys(value).length > 2_000) schemaFailure();
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (isCredentialPublicIdentifier(key)) continue;
+    result[key] = redactDocsHubValue(item, depth + 1);
+  }
+  return result;
+}
+
+async function fetchLiveAsset(env, token, path, { timeoutMs = LIVE_CONTENT_TIMEOUT_MS, maxBodyBytes = 16 * 1024 * 1024, ifNoneMatch } = {}) {
+  const binding = env[LIVE_CONTENT_VPC_BINDING];
+  const controller = new AbortController();
+  const deadline = Date.now() + timeoutMs;
+  let upstreamResponse;
+  let timedOut = false;
+  let rejectTimeout;
+  const timeout = new Promise((_, reject) => { rejectTimeout = reject; });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+    void Promise.resolve(upstreamResponse?.body?.cancel?.('deadline exceeded')).catch(() => {});
+    rejectTimeout(liveUnavailable('upstream_timeout'));
+  }, timeoutMs);
+  const headers = {
+    Accept: 'application/octet-stream, image/*, video/*',
+    Authorization: `Bearer ${token}`,
+  };
+  if (typeof ifNoneMatch === 'string' && ifNoneMatch.trim() !== '') headers['If-None-Match'] = ifNoneMatch;
+  const operation = (async () => {
+    assertBeforeDeadline(deadline, controller);
+    upstreamResponse = await binding.fetch(new Request(`${LIVE_CONTENT_ORIGIN}${path}`, {
+      method: 'GET', headers, signal: controller.signal,
+    }));
+    assertBeforeDeadline(deadline, controller);
+    if (!upstreamResponse || ![200, 304, 404].includes(upstreamResponse.status)) throw liveUnavailable('upstream_status');
+    // NewAPI's binary Docs asset handler intentionally carries the asset
+    // ETag/content-type contract but not the JSON contract header.
+    if (upstreamResponse.status === 200 && !(upstreamResponse.headers.get('content-type') || '').trim()) throw liveUnavailable('invalid_upstream_content_type');
+    const rawEtag = upstreamResponse.headers.get('etag');
+    const etag = verifiedEtag(rawEtag);
+    if (rawEtag !== null && !etag) throw liveUnavailable('invalid_upstream_etag');
+    if (upstreamResponse.status === 304) {
+      if (!etag || !etagMatches(ifNoneMatch, etag)) throw liveUnavailable('invalid_upstream_etag');
+      return { status: 304, body: null, etag, contentType: upstreamResponse.headers.get('content-type') || 'application/octet-stream' };
+    }
+    if (upstreamResponse.status === 404) return { status: 404, body: null, etag: null, contentType: 'application/json' };
+    const body = await readBoundedBytes(upstreamResponse, maxBodyBytes, controller.signal, deadline);
+    return {
+      status: 200,
+      body,
+      etag,
+      contentType: upstreamResponse.headers.get('content-type') || 'application/octet-stream',
+      disposition: upstreamResponse.headers.get('content-disposition') || '',
+    };
+  })();
+  return Promise.race([operation, timeout])
+    .catch((error) => { if (error instanceof HttpError) throw error; throw liveUnavailable(timedOut ? 'upstream_timeout' : 'upstream_transport'); })
+    .finally(() => clearTimeout(timer));
+}
+
+async function readBoundedBytes(response, maxBytes, signal, deadline) {
+  const contentLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) throw new Error('upstream response too large');
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      assertBeforeDeadline(deadline);
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) throw new Error('upstream response too large');
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  assertBeforeDeadline(deadline);
+  return bytes;
 }
 
 async function readBoundedBody(response, maxBytes, signal, deadline) {
@@ -703,17 +848,24 @@ function assertLiveDocsPage(payload) {
 
 function assertLivePricing(payload) {
   if (!isRecord(payload) || payload.success !== true) schemaFailure();
-  assertLiveMeta(payload.meta, false);
-  const context = payload.context;
-  if (!isRecord(context) || context.user_group !== 'default' || context.selected_group !== 'default' || context.locked !== true) schemaFailure();
-  if (!isRecord(payload.display)) schemaFailure();
-  assertString(payload.display.quota_display_type, 40);
-  assertString(payload.display.default_currency, 40);
-  ['price', 'usd_exchange_rate', 'custom_currency_exchange_rate'].forEach((key) => {
-    if (!isFiniteNumber(payload.display[key]) || payload.display[key] <= 0) schemaFailure();
-  });
-  assertString(payload.display.custom_currency_symbol, 20, { allowEmpty: true });
-  if (typeof payload.display.show_with_recharge !== 'boolean') schemaFailure();
+  // The internal token route is the canonical `/api/pricing` payload. Older
+  // adapter fixtures may additionally carry Worker context/display metadata;
+  // validate those fields when present without requiring them upstream.
+  if (payload.meta !== undefined) assertLiveMeta(payload.meta, false);
+  if (payload.context !== undefined) {
+    const context = payload.context;
+    if (!isRecord(context) || context.user_group !== 'default' || context.selected_group !== 'default' || context.locked !== true) schemaFailure();
+  }
+  if (payload.display !== undefined) {
+    if (!isRecord(payload.display)) schemaFailure();
+    if (payload.display.quota_display_type !== undefined) assertString(payload.display.quota_display_type, 40);
+    if (payload.display.default_currency !== undefined) assertString(payload.display.default_currency, 40);
+    ['price', 'usd_exchange_rate', 'custom_currency_exchange_rate'].forEach((key) => {
+      if (payload.display[key] !== undefined && (!isFiniteNumber(payload.display[key]) || payload.display[key] <= 0)) schemaFailure();
+    });
+    if (payload.display.custom_currency_symbol !== undefined) assertString(payload.display.custom_currency_symbol, 20, { allowEmpty: true });
+    if (payload.display.show_with_recharge !== undefined && typeof payload.display.show_with_recharge !== 'boolean') schemaFailure();
+  }
   if (!Array.isArray(payload.data) || payload.data.length > 5_000) schemaFailure();
   payload.data.forEach((item) => {
     if (!isRecord(item)) schemaFailure();
@@ -1177,27 +1329,20 @@ function projectLivePricing(payload) {
     return projected;
   });
   vendors.sort(comparePricingVendors);
-  return {
+  const result = {
     success: true,
-    meta: projectLiveMeta(payload.meta, false),
     context: {
-      user_group: payload.context.user_group,
-      selected_group: payload.context.selected_group,
-      locked: payload.context.locked,
-    },
-    display: {
-      quota_display_type: payload.display.quota_display_type,
-      default_currency: payload.display.default_currency,
-      price: payload.display.price,
-      usd_exchange_rate: payload.display.usd_exchange_rate,
-      custom_currency_exchange_rate: payload.display.custom_currency_exchange_rate,
-      custom_currency_symbol: payload.display.custom_currency_symbol,
-      show_with_recharge: payload.display.show_with_recharge,
+      user_group: payload.context?.user_group || 'default',
+      selected_group: payload.context?.selected_group || 'default',
+      locked: payload.context?.locked ?? true,
     },
     data: models,
     vendors,
     group_ratio: projectPublicMap(payload.group_ratio, (ratio) => ratio),
-    usable_group: { default: payload.usable_group.default },
+    // Preserve every public group option supplied by canonical /api/pricing;
+    // browser presentation decides which tabs are selectable. The Worker must
+    // not collapse live mode to a single default group.
+    usable_group: projectPublicMap(payload.usable_group, (label) => label),
     supported_endpoint: projectEndpointMap(payload.supported_endpoint),
     auto_groups: projectPublicIdentifierArray(payload.auto_groups),
     video_resolution_dimensions: projectPublicMap(
@@ -1206,6 +1351,19 @@ function projectLivePricing(payload) {
     ),
     pricing_version: payload.pricing_version,
   };
+  if (payload.meta !== undefined) result.meta = projectLiveMeta(payload.meta, false);
+  if (payload.display !== undefined) {
+    result.display = {
+      quota_display_type: payload.display.quota_display_type,
+      default_currency: payload.display.default_currency,
+      price: payload.display.price,
+      usd_exchange_rate: payload.display.usd_exchange_rate,
+      custom_currency_exchange_rate: payload.display.custom_currency_exchange_rate,
+      custom_currency_symbol: payload.display.custom_currency_symbol,
+      show_with_recharge: payload.display.show_with_recharge,
+    };
+  }
+  return result;
 }
 
 // NewAPI may serialize equivalent model sets in different array orders. Use

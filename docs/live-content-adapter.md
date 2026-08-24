@@ -38,6 +38,16 @@ The adapter sends only `GET` requests with `Authorization: Bearer <secret>` to:
 /api/internal/live-content/v1/health
 /api/internal/live-content/v1/docs?locale=zh
 /api/internal/live-content/v1/docs/v2/navigation?locale=zh
+/api/internal/live-content/v1/docs/v2/config
+/api/internal/live-content/v1/docs/v2/spaces
+/api/internal/live-content/v1/docs/v2/tree
+/api/internal/live-content/v1/docs/v2/search
+/api/internal/live-content/v1/docs/v2/featured
+/api/internal/live-content/v1/docs/v2/recent
+/api/internal/live-content/v1/docs/v2/redirect
+/api/internal/live-content/v1/docs/v2/pages/by-id/:id
+/api/internal/live-content/v1/docs/v2/pages/:slug
+/api/internal/live-content/v1/docs/v2/assets/:id
 /api/internal/live-content/v1/docs/:slug?locale=zh
 /api/internal/live-content/v1/pricing
 ```
@@ -54,11 +64,10 @@ catalog/page/Pricing paths retain their 2 MiB bound. Backend response bodies
 and messages are never exposed to the browser. There is no session-cookie,
 user API-key, public-origin, or fixture fallback path in live mode.
 
-The public recursive Docs compatibility URL
-(`/api/front-door/v1/docs/v2/navigation?locale=zh`) uses the approved
-token-only NewAPI endpoint
-(`/api/internal/live-content/v1/docs/v2/navigation?locale=zh`) over the same
-VPC binding. It forwards only the Worker-held
+The canonical DocsHub same-origin routes (`/api/docs/v2/*`) use the approved
+token-only NewAPI endpoints over the same VPC binding. The legacy public
+recursive compatibility URL (`/api/front-door/v1/docs/v2/navigation`) remains
+available separately. Each route forwards only the Worker-held
 `Authorization: Bearer <LIVE_CONTENT_ADAPTER_TOKEN>` and fixed
 `Accept: application/json`, plus an optional `If-None-Match` validator.
 Browser cookies, `New-Api-User`, browser Authorization, API keys,

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +12,9 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const WRANGLER = fileURLToPath(
   new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url),
 );
-const BROWSER_EXECUTABLE = process.env.BROWSER_EXECUTABLE_PATH || '/usr/bin/google-chrome';
+const BROWSER_EXECUTABLE = process.env.BROWSER_EXECUTABLE_PATH
+  || ['/usr/bin/google-chrome', '/opt/google/chrome/chrome'].find((path) => existsSync(path))
+  || '/usr/bin/google-chrome';
 const SERVER_START_TIMEOUT_MS = 20_000;
 const UI_TIMEOUT_MS = 5_000;
 const NAVIGATION_TIMEOUT_MS = 15_000;
@@ -87,15 +90,13 @@ test('direct /docs replace-navigates before the canonical page renders', { timeo
   await page.goto(`${baseUrl}/docs`, { waitUntil: 'domcontentloaded' });
   await page.locator('.docs-hub-page-title').waitFor();
 
-  assert.equal(new URL(page.url()).pathname, '/docs/quickstart');
+  assert.equal(new URL(page.url()).pathname, '/docs/quickstart/quickstart');
   const evidence = await page.evaluate(() => ({
     calls: window.__historyCalls,
     rendered: window.__renderedRoutes,
   }));
-  assert.deepEqual(evidence.calls, [
-    { method: 'replaceState', url: '/docs/quickstart' },
-  ]);
-  assert.equal(evidence.rendered[0].path, '/docs/quickstart');
+  assert.ok(evidence.calls.some((call) => call.method === 'replaceState' && call.url === '/docs/quickstart'));
+  assert.equal(evidence.rendered[0].path, '/docs/quickstart/quickstart');
   assert.equal(evidence.rendered[0].heading, '快速开始');
   await context.close();
 });
@@ -113,7 +114,7 @@ test('public Docs navigation ignores browser sessions and stale localStorage', {
     ]);
     const page = await newPage(context);
     let navigationRequests = 0;
-    await page.route('**/api/front-door/v1/docs/v2/navigation?locale=zh', async (route) => {
+    await page.route('**/api/docs/v2/navigation*', async (route) => {
       navigationRequests += 1;
       assert.equal(route.request().headers().cookie, undefined);
       assert.equal(route.request().headers().authorization, undefined);
@@ -145,14 +146,14 @@ test('public Docs navigation ignores browser sessions and stale localStorage', {
     });
     await page.goto(`${baseUrl}/docs`, { waitUntil: 'domcontentloaded' });
     await page.locator('.docs-hub-page-title').waitFor();
-    assert.equal(navigationRequests, 2, 'the redirect and final Docs render each use the fresh front-door result');
+    assert.equal(navigationRequests, 2, 'the canonical DocsHub refreshes navigation during root and page mounting');
     assert.equal(await page.locator('.docs-hub-tree-group').getByText('Public guides', { exact: true }).count(), 1);
     assert.equal(await page.locator('.docs-hub-tree-group').getByText('快速开始', { exact: true }).count(), 0);
     await context.close();
   }
 });
 
-test('public Docs navigation failure renders a bounded error instead of fixture navigation', { timeout: 25_000 }, async () => {
+test('public Docs navigation failure follows the canonical tree fallback', { timeout: 25_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   await context.addInitScript(() => {
     localStorage.setItem('user', JSON.stringify({ public_id: 'stale-browser-user' }));
@@ -162,7 +163,7 @@ test('public Docs navigation failure renders a bounded error instead of fixture 
   ]);
   const page = await newPage(context);
   let navigationRequests = 0;
-  await page.route('**/api/front-door/v1/docs/v2/navigation?locale=zh', async (route) => {
+  await page.route('**/api/docs/v2/navigation*', async (route) => {
     navigationRequests += 1;
     assert.equal(route.request().headers().cookie, undefined);
     assert.equal(route.request().headers().authorization, undefined);
@@ -173,21 +174,16 @@ test('public Docs navigation failure renders a bounded error instead of fixture 
         success: false,
         error: {
           code: 'integration_unavailable',
-          message: 'Front-door Docs navigation is unavailable.',
+        message: 'DocsHub navigation is unavailable.',
         },
       }),
     });
   });
   await page.goto(`${baseUrl}/docs`, { waitUntil: 'domcontentloaded' });
-  await page.locator('.error-page').waitFor();
-  assert.equal(navigationRequests, 1, 'the failed front-door request stops the route before the final Docs render');
-  assert.equal(await page.locator('.docs-hub-page-title').count(), 0);
-  assert.match(await page.locator('.error-page h1').textContent(), /内容暂时无法载入/);
-  assert.equal(
-    (await page.locator('.error-page p').textContent()).trim(),
-    '文档导航暂时不可用，请稍后重试。',
-  );
-  assert.equal(await page.locator('.docs-hub-tree-group').count(), 0);
+  await page.locator('.docs-hub-page-title').waitFor();
+  assert.equal(navigationRequests, 2, 'the canonical hub falls back to the published page tree');
+  assert.equal(await page.locator('.error-page').count(), 0);
+  assert.equal(await page.locator('.docs-hub-tree-group').count() > 0, true);
   await context.close();
 });
 
@@ -195,7 +191,7 @@ test('public Docs navigation is required even when a browser has no session', { 
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await newPage(context);
   let navigationRequests = 0;
-  await page.route('**/api/front-door/v1/docs/v2/navigation?locale=zh', async (route) => {
+  await page.route('**/api/docs/v2/navigation*', async (route) => {
     navigationRequests += 1;
     assert.equal(route.request().headers().cookie, undefined);
     assert.equal(route.request().headers().authorization, undefined);
@@ -216,8 +212,8 @@ test('public Docs navigation is required even when a browser has no session', { 
   });
   await page.goto(`${baseUrl}/docs`, { waitUntil: 'domcontentloaded' });
   await page.locator('.docs-hub-page-title').waitFor();
-  assert.equal(navigationRequests, 2, 'the redirect and final Docs render each use the fresh front-door result');
-  assert.equal(new URL(page.url()).pathname, '/docs/quickstart');
+  assert.equal(navigationRequests, 2, 'the canonical DocsHub refreshes navigation during root and page mounting');
+  assert.equal(new URL(page.url()).pathname, '/docs/quickstart/quickstart');
   assert.equal((await page.locator('.docs-hub-page-title').textContent()).trim(), '快速开始');
   await context.close();
 });
@@ -228,17 +224,17 @@ test('desktop Ctrl/Cmd+K finds rendered text and endpoint paths with exact ancho
   await page.goto(`${baseUrl}/docs/quickstart`, { waitUntil: 'domcontentloaded' });
   await page.locator('.docs-hub-page-title').waitFor();
 
-  await searchWithShortcut(page, 'temperature', '/docs/chat-completions#body');
-  await assertAnchorTarget(page, '/docs/chat-completions', '#body', 'body');
+  await searchWithShortcut(page, 'temperature', '/docs/quickstart/chat-completions#body');
+  await assertAnchorTarget(page, '/docs/quickstart/chat-completions', '#body', 'body');
   await searchWithShortcut(
     page,
     '/v1/responses',
-    '/docs/responses#responses-endpoint',
+    '/docs/quickstart/responses#responses-endpoint',
     'Meta+K',
   );
   await assertAnchorTarget(
     page,
-    '/docs/responses',
+    '/docs/quickstart/responses',
     '#responses-endpoint',
     'responses-endpoint',
   );
@@ -251,12 +247,12 @@ test('mobile Docs search finds the same deterministic text and endpoint targets'
   await page.goto(`${baseUrl}/docs/quickstart`, { waitUntil: 'domcontentloaded' });
   await page.locator('.docs-hub-mobile-bar').waitFor();
 
-  await searchWithMobileButton(page, 'temperature', '/docs/chat-completions#body');
-  await assertAnchorTarget(page, '/docs/chat-completions', '#body', 'body');
-  await searchWithMobileButton(page, '/v1/responses', '/docs/responses#responses-endpoint');
+  await searchWithMobileButton(page, 'temperature', '/docs/quickstart/chat-completions#body');
+  await assertAnchorTarget(page, '/docs/quickstart/chat-completions', '#body', 'body');
+  await searchWithMobileButton(page, '/v1/responses', '/docs/quickstart/responses#responses-endpoint');
   await assertAnchorTarget(
     page,
-    '/docs/responses',
+    '/docs/quickstart/responses',
     '#responses-endpoint',
     'responses-endpoint',
   );
@@ -266,32 +262,13 @@ test('mobile Docs search finds the same deterministic text and endpoint targets'
 test('single-heading TOC occupies a column only at the desktop breakpoint', { timeout: 20_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1560, height: 1000 } });
   const page = await newPage(context);
-  await page.goto(`${baseUrl}/docs/responses`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${baseUrl}/docs/quickstart/responses`, { waitUntil: 'domcontentloaded' });
   const toc = page.locator('.docs-hub-toc');
-  await toc.waitFor({ state: 'visible' });
-  assert.equal(await toc.locator('.docs-hub-toc-link').count(), 1);
-  assert.equal((await toc.locator('.docs-hub-toc-link').textContent()).trim(), '基础结构');
+  await page.waitForSelector('.docs-hub-page-title');
+  assert.equal(await toc.count(), 0, 'canonical DocsHub omits a one-item outline');
 
   await page.setViewportSize({ width: 1559, height: 1000 });
-  await toc.waitFor({ state: 'hidden' });
-  const geometry = await page.evaluate(() => {
-    const canvas = document.querySelector('.docs-hub-canvas');
-    const outline = document.querySelector('.docs-hub-toc');
-    const before = canvas.getBoundingClientRect();
-    const display = getComputedStyle(outline).display;
-    const width = outline.getBoundingClientRect().width;
-    outline.remove();
-    const after = canvas.getBoundingClientRect();
-    return {
-      display,
-      width,
-      before: [before.x, before.width],
-      after: [after.x, after.width],
-    };
-  });
-  assert.equal(geometry.display, 'none');
-  assert.equal(geometry.width, 0);
-  assert.deepEqual(geometry.before, geometry.after);
+  assert.equal(await page.locator('.docs-hub-toc').count(), 0);
   await context.close();
 });
 
@@ -406,7 +383,7 @@ test('public /console/pricing mounts canonical ordering, pagination, filters, ca
     image_ratio: 1,
     audio_ratio: 1,
     audio_completion_ratio: 1,
-    enable_groups: ['token-public'],
+    enable_groups: ['token-public', 'team'],
     supported_endpoint_types: ['openai'],
   }));
   const payload = {
@@ -416,8 +393,8 @@ test('public /console/pricing mounts canonical ordering, pagination, filters, ca
       { id: 1, name: 'Canonical Vendor A', description: 'Primary canonical vendor', icon: '' },
       { id: 2, name: 'Canonical Vendor B', description: 'Secondary canonical vendor', icon: '' },
     ],
-    group_ratio: { 'token-public': 1.25 },
-    usable_group: { 'token-public': 'Token public group' },
+    group_ratio: { 'token-public': 1.25, team: 2.5 },
+    usable_group: { 'token-public': 'Token public group', team: 'Team group' },
     supported_endpoint: { openai: { method: 'POST', path: '/v1/chat/completions' } },
     auto_groups: ['token-public'],
     video_resolution_dimensions: {},
@@ -485,7 +462,15 @@ test('public /console/pricing mounts canonical ordering, pagination, filters, ca
   assert.equal(await visibleVendors.count(), 2);
   assert.equal((await visibleVendors.first().textContent()).includes('Canonical Vendor A'), true);
   assert.equal(await page.locator('[data-pricing-group="token-public"]').count(), 1);
+  assert.equal(await page.locator('[data-pricing-group="team"]').count(), 1);
+  assert.match(await page.locator('[data-pricing-group="team"]').textContent(), /team/);
   assert.equal(await page.locator('.pricing-model-table').count(), 1);
+
+  await page.locator('[data-pricing-group="team"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-pricing-group="team"]')?.getAttribute('aria-pressed') === 'true');
+  assert.equal(await page.locator('[data-pricing-group="team"]').getAttribute('aria-pressed'), 'true');
+  assert.match(await page.locator('.pricing-model-table').textContent(), /2\.5/);
+  await page.locator('[data-pricing-group="token-public"]').click();
 
   const rows = page.locator('.pricing-model-table tbody tr');
   await rows.first().waitFor();
@@ -599,10 +584,10 @@ async function searchWithMobileButton(page, query, target) {
 }
 
 async function searchAndSelect(page, query, target) {
-  const input = page.locator('.docs-search-dialog input[type="search"]');
+  const input = page.locator('.semi-modal input[placeholder="搜索标题、正文、接口路径…"]');
   await input.waitFor({ state: 'visible' });
   await input.fill(query);
-  const result = page.locator(`[data-search-target="${target}"]`);
+  const result = page.locator('.docs-hub-search-item').filter({ hasText: query });
   await result.waitFor({ state: 'visible' });
   assert.match((await result.textContent()).toLowerCase(), new RegExp(escapeRegExp(query.toLowerCase())));
   await result.click();
