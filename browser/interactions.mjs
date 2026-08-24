@@ -101,6 +101,21 @@ test('direct /docs replace-navigates before the canonical page renders', { timeo
   await context.close();
 });
 
+test('console Docs alias mounts the same runtime for root and nested paths', { timeout: 25_000 }, async () => {
+  for (const pathname of ['/console/docs', '/console/docs/quickstart']) {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const page = await newPage(context);
+    await page.goto(`${baseUrl}${pathname}`, { waitUntil: 'domcontentloaded' });
+    await page.locator('.docs-hub-page-title').waitFor();
+
+    assert.equal(new URL(page.url()).pathname, '/docs/quickstart/quickstart');
+    assert.equal(await page.locator('.error-page').count(), 0);
+    assert.equal(await page.locator('a[data-nav="docs"][aria-current="page"]').count(), 1);
+    assert.equal((await page.locator('.docs-hub-page-title').textContent()).trim(), '快速开始');
+    await context.close();
+  }
+});
+
 test('public Docs navigation ignores browser sessions and stale localStorage', { timeout: 30_000 }, async () => {
   for (const storedUser of [null, { public_id: 'stale-browser-user' }]) {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });

@@ -49,6 +49,7 @@ let canonicalDocsScriptPromise = null;
 let canonicalDocsMounted = false;
 
 window.addEventListener('popstate', () => {
+  canonicalizeDocsLocation();
   if (document.body.classList.contains('canonical-docs-active')) return;
   renderRoute();
 });
@@ -122,7 +123,7 @@ function handlePricingViewportChange() {
 }
 
 async function renderRoute() {
-  let path = normalizePath(window.location.pathname);
+  const path = canonicalizeDocsLocation();
   const canonicalPricing = isPricingPath(path);
   document.body.classList.toggle('canonical-pricing-active', canonicalPricing);
   const canonicalStyles = document.querySelector('link[data-canonical-pricing-css]');
@@ -136,7 +137,7 @@ async function renderRoute() {
   main.setAttribute('aria-busy', 'true');
 
   try {
-    if (path === '/docs' || path.startsWith('/docs/')) {
+    if (isDocsPath(path)) {
       await renderCanonicalDocs();
       return;
     }
@@ -640,6 +641,35 @@ function normalizePath(path) {
 
 function isPricingPath(path) {
   return path === '/console/pricing' || path === '/pricing';
+}
+
+function isDocsPath(path) {
+  return path === '/docs'
+    || path.startsWith('/docs/')
+    || isConsoleDocsPath(path);
+}
+
+function isConsoleDocsPath(path) {
+  return path === '/console/docs' || path.startsWith('/console/docs/');
+}
+
+function canonicalDocsPath(path) {
+  return isConsoleDocsPath(path)
+    ? `/docs${path.slice('/console/docs'.length)}`
+    : path;
+}
+
+function canonicalizeDocsLocation() {
+  const currentPath = normalizePath(window.location.pathname);
+  const path = canonicalDocsPath(currentPath);
+  if (path !== currentPath) {
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${path}${window.location.search}${window.location.hash}`,
+    );
+  }
+  return path;
 }
 
 function docsPath(slug) {

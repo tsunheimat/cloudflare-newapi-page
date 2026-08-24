@@ -4,7 +4,7 @@
 
 ```text
 Browser
-  ├─ /docs/*, /console/pricing, /pricing ──> Worker Assets (canonical SPA surfaces)
+  ├─ /docs/*, /console/docs/*, /console/pricing, /pricing ──> Worker Assets (canonical SPA surfaces)
   ├─ /api/content/* ─────> ContentAdapter
   │                          └─ FixtureAdapter (Phase 1 only)
   └─ download routes ─────> explicit runtime gate

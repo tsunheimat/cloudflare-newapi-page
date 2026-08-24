@@ -54,6 +54,15 @@ test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader state
   assert.match(docsStyles, /\.docs-code-group\s*\{[\s\S]*?--docs-code-bg:\s*#0f1218/);
 });
 
+test('Docs compatibility alias maps root and nested console paths to the canonical runtime', async () => {
+  const [app] = await sources;
+  assert.match(app, /function isDocsPath\(path\)[\s\S]*?isConsoleDocsPath\(path\)/);
+  assert.match(app, /function isConsoleDocsPath\(path\)[\s\S]*?path === '\/console\/docs'[\s\S]*?path\.startsWith\('\/console\/docs\/'\)/);
+  assert.match(app, /function canonicalDocsPath\(path\)[\s\S]*?`\/docs\$\{path\.slice\('\/console\/docs'\.length\)\}`/);
+  assert.match(app, /function canonicalizeDocsLocation\(\)[\s\S]*?window\.history\.replaceState[\s\S]*?window\.location\.search[\s\S]*?window\.location\.hash/);
+  assert.match(app, /if \(isDocsPath\(path\)\)[\s\S]*?await renderCanonicalDocs\(\)/);
+});
+
 test('Pricing presentation mounts one canonical runtime at both public URLs', async () => {
   const [app, _styles, index] = await sources;
   assert.match(index, /href="\/console\/pricing" data-link data-nav="pricing"/);
