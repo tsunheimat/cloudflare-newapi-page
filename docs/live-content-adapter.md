@@ -77,21 +77,22 @@ recursive folder/layer/group/page tree; the Worker applies a bounded public
 allowlist, omits unknown/private fields, and fails closed on malformed known
 fields. Public Docs responses preserve validated upstream ETags and use the
 Worker's `no-cache` response policy; a verified conditional `304` remains an
-empty `304`. `/api/content/pricing` is the public Pricing route and remains on
+empty `304`. `/api/pricing` is the canonical public Pricing route (with
+`/api/content/pricing` retained only as a compatibility alias) and remains on
 the existing service-token adapter regardless of `New-Api-User` or any browser
 session.
 
 The browser boundary follows the same rule: the canonical Pricing bundle makes
-a fresh public `/api/content/pricing` request with credentials and secure-API
-signing disabled. It uses no browser user/session state. Only the legacy public
-`/api/content/*` compatibility layer may use its existing public cache path.
+a fresh public `/api/pricing` request with credentials and secure-API signing
+disabled. It uses no browser user/session state. Both `/console/pricing` and
+`/pricing` mount this same bundle and data path.
 
 The canonical `/console/pricing` bundle separately calls the public same-origin
-`/api/status` bootstrap. This is a read-only fixed `GET /api/status` through
-`NEWAPI_VPC_SERVICE`; it sends only `Accept: application/json` and never copies
-browser cookies, Authorization, API keys, provider credentials, or arbitrary
-headers. The Worker always sets `secure_api_enabled` to false and omits secure-
-API public keys, key ids, server-time signing windows, and other signing
+`/api/status` bootstrap. This is a read-only fixed token-authenticated
+`GET /api/internal/live-content/v1/status` through `NEWAPI_VPC_SERVICE`; it
+sends only the Worker token Authorization and `Accept: application/json` and
+never copies browser cookies, browser Authorization, API keys, provider
+credentials, or arbitrary headers. The Worker omits secure-API signing
 material. The Worker
 bounds the response to 256 KiB and five seconds, requires a
 JSON `{ success: true, data: object }` envelope, validates any canonical display
@@ -108,58 +109,20 @@ An upstream Docs `304` becomes an empty public `304` only when this request
 forwarded a browser `If-None-Match` validator and the upstream `ETag` weakly
 matches one of its quote-aware entity tags (or its wildcard); missing or
 mismatched validators fail closed with 503. A Docs `200` is never converted to
-a local `304`. Pricing
-projects models in deterministic ascending code-unit order by the public
-`model_name` key (using the canonical projected model as a duplicate-name
-tie-breaker), sorts vendors by their stable public `id`, and sorts projected
-public identifier arrays such as `enable_groups` and
-`supported_endpoint_types`. These order-only canonicalization steps do not
-change values or semantics. It derives the public pricing `ETag` from that
-projected payload, so an equivalent upstream `200` with different model,
-vendor, or identifier-array order still returns the same validator and a
-matching browser validator is converted to an empty public `304`. Cookies,
-sessions, browser authorization, user API keys, and unrelated headers are not
-forwarded by the public Docs or Pricing adapter. The five-second deadline
-covers binding fetch, body streaming, UTF-8 decoding, JSON parsing, validation,
-and projection.
+a local `304`. Pricing is passed through byte-for-byte from the canonical
+backend; the Worker does not sort, project, redact, reconstruct, or derive a
+pricing ETag from parsed values. Cookies, sessions, browser authorization, user
+API keys, and unrelated headers are not forwarded by the public Docs or Pricing
+adapter. The five-second deadline covers binding fetch, body streaming, UTF-8
+decoding, and the minimal envelope check.
 
 The live Docs projection must provide the existing catalog/page block contract.
 Both `schema_version` and `renderer_version` must equal the currently supported
 value `1`; future or unknown versions fail closed until explicitly reviewed.
-Pricing remains identity-independent and is accepted only when the locked
-ordinary-user context is present and every public group ratio is a finite,
-non-negative value supplied by NewAPI. The adapter preserves those upstream
-ratios, including `group_ratio.default`; it does not normalize, clamp, or
-substitute a configured value. The public context is:
-
-```text
-context.user_group      = default
-context.selected_group  = default
-context.locked          = true
-group_ratio.default     = <finite upstream value>
-```
-
-The live model projection is an explicit compatibility allowlist, not a raw
-JSON pass-through. It retains the current NewAPI public fields (`model_name`,
-description/icon/tags/vendor/owner presentation, image/video flags, quota and
-all legacy ratios, enabled groups and endpoint types, `endpoint_map`,
-`billing_mode`/`billing_expr`, `codex_fast_pricing`/`codex_fast_base_model`,
-`video_pricing`, video geometry/route/input-duration contracts,
-`video_capability`, and row `pricing_version`). Endpoint maps, Fast profiles,
-video rate matrices, resolution dimensions, and capability/media objects are
-schema-validated with finite numeric, identifier, depth/entry, and byte-size
-bounds. Top-level and model endpoint maps are limited to 500 entries, and every
-global or capability geometry dimension is a positive integer no greater than
-100,000. Only documented public fields are projected. Dynamic map keys with
-separator-delimited or camel-case secret-bearing segments (for example,
-`client_secret`, `service_token`, `oauth_secret`, `api_token`, or
-`authorization_header`) and unknown object fields are redacted; ordinary
-public identifiers remain available. The canonical projected payload (including every
-retained nested field) is the input to the stable pricing ETag, so a capability
-or route-contract-only change cannot produce a false `304`. The
-`video_capability.max_serialized_request_bytes` field has an inclusive finite
-upper bound of `64,000,000` bytes, matching the current Seedance 2.5 public
-contract; larger or non-integer values fail closed.
+Pricing remains identity-independent and is accepted when the canonical backend
+returns a successful JSON envelope. All public fields, ordering, arbitrary
+group names, ratios, capabilities, and future fields are retained exactly;
+there is no Worker-side pricing allowlist or context reconstruction.
 
 The browser keeps NewAPI's two pricing modes: official mode uses effective
 ratio `1` and raw/base official USD prices, while ordinary group mode uses the

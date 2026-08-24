@@ -22,7 +22,7 @@ Future/live:
 
 Public Pricing:
   Browser (no session or user auth)
-    └─ `/api/content/pricing`
+    └─ `/api/pricing` (compatibility alias: `/api/content/pricing`)
          └─ ContentAdapter -> NEWAPI_VPC_SERVICE -> `/api/internal/live-content/v1/pricing`
 
 Public canonical DocsHub:
@@ -32,8 +32,8 @@ Public canonical DocsHub:
               -> `/api/internal/live-content/v1/docs/v2/*`
 
 Public canonical bootstrap:
-  `/api/status` (read-only, fixed anonymous GET)
-         └─ NEWAPI_VPC_SERVICE -> canonical NewAPI `/api/status`
+  `/api/status` (read-only, fixed token-only GET)
+         └─ NEWAPI_VPC_SERVICE -> `/api/internal/live-content/v1/status`
 ```
 
 The public `/api/docs/v2/*` routes are same-origin adapters for the canonical
@@ -49,17 +49,18 @@ from the approved NewAPI `web/src/pages/DocsHub` and `packages/docs-core`
 sources, preserving the original layout, strings, reader, search, TOC,
 navigation, and block rendering behavior.
 
-`/console/pricing` is the public canonical React SPA route; `/pricing` remains a
-Worker fixture compatibility alias. Its canonical bundle bootstraps through the
-public same-origin `/api/status` route and then calls `/api/content/pricing`.
-Pricing calls are fresh, same-origin, and explicitly disable credentials and
-secure-API signing. The status route performs a bounded fixed anonymous GET
-through `NEWAPI_VPC_SERVICE`, forwards no browser headers or credentials, emits
-only bounded safe display/bootstrap fields, and always sets
-`secure_api_enabled=false` without exposing key material or signing windows.
+`/console/pricing` and `/pricing` mount the same canonical React SPA runtime.
+Its canonical bundle bootstraps through the public same-origin `/api/status`
+route and calls `/api/pricing`; both paths are fresh, same-origin, and
+explicitly disable browser credentials and secure-API signing. The status
+route performs a bounded fixed token-only GET through `NEWAPI_VPC_SERVICE`,
+forwards no browser headers or credentials, and exposes only the dedicated
+backend display/conversion bootstrap fields. The live pricing adapter returns
+the canonical backend body byte-for-byte: it does not sort arrays, filter
+identifiers, reconstruct maps, fabricate context, or rewrite future fields.
 Schema drift, timeout, oversized bodies, and upstream errors fail closed. The
-Worker never manufactures display settings from localStorage or varies Pricing
-with cookies, sessions, or browser identity.
+Worker never manufactures display settings, exchange rates, recharge behavior,
+or group ratios from localStorage or browser identity.
 
 `ContentAdapter` 是唯一可替换资料边界。UI 不读取硬编码的 NewAPI hostname，也不直接访问 private/VPC/Tunnel。Fixture 和 live adapter 必须返回同一个 public display contract。Live adapter 的 secret、schema、failure 和 cutover contract 见 [live-content-adapter.md](live-content-adapter.md)。
 
@@ -98,51 +99,17 @@ Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、
 
 ## Pricing contract 与不变量
 
-Pricing response 保留 NewAPI dedicated-token `/api/internal/live-content/v1/pricing` 的主要字段：`data`、`vendors`、`group_ratio`、`usable_group`、`supported_endpoint`、`auto_groups`、`video_resolution_dimensions` 和 `pricing_version`，并保留 canonical `context`、`display` 与 `meta` fields. The public output is the existing ContentAdapter projection; there is no front-door Pricing output or browser-session context.
+Pricing response is the exact body from NewAPI's dedicated-token
+`/api/internal/live-content/v1/pricing`, which delegates to canonical
+`/api/pricing`. All groups (including names with spaces), ratios, vendor/model
+ordering, endpoint/capability maps, auto groups, video dimensions, pricing
+version, and future public fields remain unchanged. The Worker does not add a
+context or display object and does not compute prices.
 
-`/api/content/pricing` 的 fixture/internal-live adapter 必须强制 locked
-ordinary-user presentation context supplied by NewAPI's dedicated-token endpoint. 只接受 NewAPI
-上游提供的公开 group ratios：每一个 ratio 都必须是 finite、non-negative
-number。适配器保留 NewAPI 的 group ratios 原值（包括 `default` 和其他公开
-groups），不得 hard-code 任何 ratio 或其他数值，也不得 normalize、clamp、
-substitute、fabricate 或以其他方式改写 ratio。这个 adapter move 不重写
-NewAPI 的 pricing logic：
-
-```text
-content.context.user_group       = default
-content.context.selected_group   = default
-content.context.locked           = true
-group_ratio.default              = finite non-negative upstream default value
-group_ratio.*                    = NewAPI upstream public map unchanged
-usable_group.selected            exists
-```
-
-Pricing presentation 同样复用 pinned NewAPI 的供应商 → 分组 → 价格清单、计价规则、table/card、filter 与 detail-sheet hierarchy。Locked public/default context 只渲染一个 disabled group card；供应商、计费类型、端点、标签、货币、单位与 recharge display 继续使用 canonical payload。
-
-价格模式仍遵循 NewAPI 的 `resolvePricingContext`：`official` 使用
-`usedGroupRatio=1` 和原始美元基础价，`group` 使用当前 selected group 的
-upstream ratio（locked content adapter 的 selected group 是 `default`）。这个
-effective ratio 同时用于普通、按次、tiered、Codex Fast 和 video 分支；不会把
-任何 group ratio 套到 official 模式，也不会引入固定倍率。
-
-模型可见性沿用 NewAPI group 规则：空 `enable_groups`、`all` 或包含当前 selected group 才可显示。`billing_mode` 是 `tiered_expr`、`codex_fast` 与 `video` 的优先判别字段，不能被 legacy `quota_type` 覆盖。
-
-Versioned tiered display contract 目前只接受 NewAPI v1 的完整静态单位价格子集：`tier(name, p * price + c * price + ...)`、`p/c/len` 档位条件、完整 v1 variable registry，以及 `|||when(...) * multiplier` 请求规则后缀。任何未覆盖的有效 backend expression 也必须显示为不可计算；public Worker 不会执行 provider request function、取局部 regex 命中或把第一档投影成最终价格。
-
-Video display contract 会保存 `video_pricing.currency` 来源币种，先将 CNY/USD rate 正规化为 USD，再应用真实的 selected group ratio，最后与所有其他 pricing card 共用充值与 USD/CNY/CUSTOM conversion。一个 resolution row 缺少必要字段会使整份 video profile 不可计算，不会用剩余 row 产生起价。
-
-Live adapter 保留结构化 video pricing、capability、route contract、input-duration policy 和 billing expression；Worker 只验证/转发公开 payload，不执行 billing expression。新版或不支持的 contract 必须 fail closed 或由现有页面明确显示不可计算，不能取第一项、最低价或 legacy 字段自行猜测。
-
-Model projection explicitly retains the current public NewAPI row contract:
-presentation (`model_name`, `description`, `icon`, `tags`, `vendor_id`,
-`owner_by`), image/video flags, quota and all legacy ratios, group and endpoint
-capabilities (`enable_groups`, `supported_endpoint_types`, `endpoint_map`),
-`billing_mode`/`billing_expr`, `video_pricing`, Fast profile/base model, video
-geometry/route/input-duration contracts, `video_capability`, and row
-`pricing_version`. Nested maps and capability objects use field allowlists plus
-bounded identifier arrays, finite numeric values, dimensions, media modes and
-serialized-request/image limits. Unknown or secret-like keys are dropped, and
-the complete projected payload is canonicalized for the stable pricing ETag.
+The canonical bundle retains NewAPI's supplier/group/list, table/card, filter,
+detail-sheet, billing, conversion, and capability presentation. Those browser
+calculations consume the exact Pricing and status bootstrap values; the Worker
+does not duplicate them or impose a locked/default group.
 
 ## Download service binding
 

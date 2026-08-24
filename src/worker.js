@@ -2,7 +2,6 @@ import {
   createContentAdapter,
   CONTENT_ADAPTER_LIVE,
   createDocsNavigationAdapter,
-  LOCKED_PRICING_CONTEXT,
   PUBLIC_DOCS_NAVIGATION_ROUTE,
 } from './adapters/content-adapter.js';
 import {
@@ -47,7 +46,6 @@ export async function route(request, env = {}) {
       content_adapter: content.mode,
       content_adapter_selected: content.mode,
       content_adapter_configured: content.configured,
-      pricing_context: LOCKED_PRICING_CONTEXT,
       live_newapi: content.healthy,
       live_newapi_healthy: content.healthy,
       downloads: downloadServiceStatus(env),
@@ -59,8 +57,8 @@ export async function route(request, env = {}) {
   }
 
   // Canonical NewAPI status is a public read-only bootstrap. The adapter
-  // reconstructs a fixed request and never forwards browser credentials or
-  // arbitrary headers to the private service binding.
+  // reconstructs a fixed token-authenticated request and never forwards
+  // browser credentials or arbitrary headers to the private service binding.
   if (request.method === 'GET' && pathname === '/api/status') {
     const adapter = createStatusAdapter(env);
     const result = await adapter.getResponse();
@@ -113,6 +111,19 @@ export async function route(request, env = {}) {
   }
 
   if (request.method === 'GET' && pathname === '/api/content/pricing') {
+    const adapter = createContentAdapter(env);
+    return publicContentResponse(
+      await adapter.getPricingResponse({
+        ifNoneMatch: conditionalValidator(request),
+      }),
+      (payload) => payload,
+    );
+  }
+
+  // Canonical NewAPI Pricing path. The live adapter consumes the dedicated
+  // token endpoint, which delegates to `/api/pricing`; its response body is
+  // passed through without Worker-side sorting, filtering, or reconstruction.
+  if (request.method === 'GET' && pathname === '/api/pricing') {
     const adapter = createContentAdapter(env);
     return publicContentResponse(
       await adapter.getPricingResponse({
@@ -178,6 +189,10 @@ function publicContentResponse(result, envelope) {
   }
   const headers = { 'cache-control': 'no-cache' };
   if (result.etag) headers.etag = result.etag;
+  if (typeof result.body === 'string' || result.body instanceof Uint8Array) {
+    headers['content-type'] = 'application/json; charset=utf-8';
+    return withSecurityHeaders(new Response(result.body, { status: 200, headers }));
+  }
   return json(envelope(result.payload), 200, headers);
 }
 

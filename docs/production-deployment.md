@@ -104,8 +104,6 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/health" \
       .content_adapter == "newapi" and
       .live_newapi == true and
       .live_newapi_healthy == true and
-      .pricing_context.user_group == "default" and
-      .pricing_context.selected_group == "default" and
       .downloads.mode == "production-service-binding" and
       .downloads.configured == true and
       .downloads.bound == true and
@@ -154,13 +152,13 @@ curl --fail-with-body --silent --show-error \
       (.data.page.blocks | length > 0)
     '
 
-curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/pricing" \
+curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/pricing" \
   | jq -e '
       .meta.source == "newapi" and
       .meta.fixture == false and
       .meta.live == true and
-      .context == {user_group:"default", selected_group:"default", locked:true} and
-      (.group_ratio.default | type == "number" and isfinite and . >= 0)
+      (.success == true) and
+      (.group_ratio | type == "object")
     '
 ```
 
@@ -206,8 +204,6 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/health" \
       .phase == "2" and
       .content_adapter == "fixture" and
       .live_newapi == false and
-      .pricing_context.user_group == "default" and
-      .pricing_context.selected_group == "default" and
       .downloads.mode == "production-service-binding" and
       .downloads.configured == true and
       .downloads.bound == true and
@@ -229,12 +225,12 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/do
       .data.page.updated_at == null and
       (.data.page.blocks | length > 0)
     '
-curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/content/pricing" \
+curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/pricing" \
   | jq -e '
       .meta.source == "fixture" and
       .meta.fixture == true and
       .meta.live == false and
-      .context == {user_group:"default", selected_group:"default", locked:true}
+      .success == true
     '
 ```
 

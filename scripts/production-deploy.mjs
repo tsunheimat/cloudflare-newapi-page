@@ -171,20 +171,28 @@ export async function assertProductionRuntimeContract() {
         const url = new URL(request.url);
         upstreamPaths.push(url.pathname);
         assert.equal(request.method, 'GET');
-        if (url.pathname === '/api/status') {
-          assert.deepEqual(Object.fromEntries(request.headers), {
-            accept: 'application/json',
-          });
+        if (url.pathname === '/api/internal/live-content/v1/status') {
+            assert.deepEqual(Object.fromEntries(request.headers), {
+              accept: 'application/json',
+              authorization: `Bearer ${liveToken}`,
+            });
           return new Response(JSON.stringify({
             success: true,
             message: '',
             data: {
-              secure_api_enabled: true,
-              secure_api_key_id: 'default',
-              secure_api_public_key: 'production-public-key',
-              server_time: 1_725_000_000,
+              quota_display_type: 'USD',
+              price: 7.2,
+              usd_exchange_rate: 7.2,
+              custom_currency_exchange_rate: 1,
+              custom_currency_symbol: '¤',
+              display_in_currency: true,
+              quota_per_unit: 500000,
+              model_marketplace_default: { vendor: '', group: '' },
             },
-          }), { headers: { 'content-type': 'application/json; charset=utf-8' } });
+          }), { headers: {
+            'content-type': 'application/json; charset=utf-8',
+            'x-newapi-content-contract': 'v1',
+          } });
         }
         assert.equal(
           request.headers.get('authorization'),
@@ -319,10 +327,6 @@ export async function assertProductionRuntimeContract() {
   assert.equal(health.content_adapter, 'newapi');
   assert.equal(health.live_newapi, true);
   assert.equal(health.live_newapi_healthy, true);
-  assert.deepEqual(health.pricing_context, {
-    user_group: 'default',
-    selected_group: 'default',
-  });
   assert.equal(health.downloads.mode, 'production-service-binding');
   assert.equal(health.downloads.configured, true);
   assert.equal(health.downloads.bound, true);
@@ -332,13 +336,7 @@ export async function assertProductionRuntimeContract() {
   assert.equal(health.downloads.phase, 'bound-unverified');
 
   const status = await fetchJson('/api/status', env);
-  assert.deepEqual(status, {
-    success: true,
-    message: '',
-    data: {
-      secure_api_enabled: false,
-    },
-  });
+  assert.equal(status.success, true);
 
   const docs = await fetchJson('/api/content/docs', env);
   assert.equal(docs.data.meta.source, 'newapi');
@@ -363,15 +361,11 @@ export async function assertProductionRuntimeContract() {
   assert.ok(docsPage.data.page.blocks.length > 0);
   assert.equal(docsPage.data.page.blocks[0].type, 'lead');
 
-  const pricing = await fetchJson('/api/content/pricing', env);
+  const pricing = await fetchJson('/api/pricing', env);
   assert.equal(pricing.meta.source, 'newapi');
   assert.equal(pricing.meta.fixture, false);
   assert.equal(pricing.meta.live, true);
-  assert.deepEqual(pricing.context, {
-    user_group: 'default',
-    selected_group: 'default',
-    locked: true,
-  });
+  assert.equal(pricing.success, true);
   assert.equal(pricing.group_ratio.default, 10);
 
   const downstream = await worker.fetch(
@@ -382,7 +376,7 @@ export async function assertProductionRuntimeContract() {
   assert.equal(forwarded, true);
   assert.deepEqual(upstreamPaths, [
     '/api/internal/live-content/v1/health',
-    '/api/status',
+    '/api/internal/live-content/v1/status',
     '/api/internal/live-content/v1/docs',
     `/api/internal/live-content/v1/docs/${PRODUCTION_CONTRACT.docsProbeSlug}`,
     '/api/internal/live-content/v1/pricing',

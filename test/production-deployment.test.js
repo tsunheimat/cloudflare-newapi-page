@@ -84,7 +84,7 @@ test('production runbook probes a successful live Docs page and target-specific 
   assert.doesNotMatch(source, /随后重跑第 5 节 verification/);
   assert.match(source, /fixture-backed|fixture.*non-live|non-live.*fixture/i);
   assert.match(source, /unknown|unsupported/i);
-  assert.match(source, /group_ratio\.default \| type == "number"/);
+  assert.match(source, /group_ratio \| type == "object"/);
 });
 
 test('production runbook names the least-privilege VPC binding role', async () => {

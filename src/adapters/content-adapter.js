@@ -15,20 +15,9 @@ export const LIVE_CONTENT_MAX_BODY_BYTES = 2 * 1024 * 1024;
 export const LIVE_CONTENT_DOCS_NAVIGATION_PATH = '/api/internal/live-content/v1/docs/v2/navigation?locale=zh';
 export const LIVE_CONTENT_DOCS_NAVIGATION_MAX_BODY_BYTES = 8 * 1024 * 1024;
 export const LIVE_CONTENT_DOCS_V2_MAX_BODY_BYTES = 8 * 1024 * 1024;
-export const LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES = 500;
-// Match the finite coordinate limit already enforced by capability geometry.
-export const LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION = 100_000;
-// Seedance 2.5 currently publishes this inclusive request-size bound. Keep
-// the compatibility limit finite so an upstream value cannot disable
-// Worker-side validation entirely.
-export const LIVE_CONTENT_MAX_SERIALIZED_REQUEST_BYTES = 64_000_000;
 export const PUBLIC_DOCS_NAVIGATION_ROUTE = '/api/front-door/v1/docs/v2/navigation';
 export const DOCS_NAVIGATION_MAX_NODES = 50_000;
 export const DOCS_NAVIGATION_MAX_DEPTH = 100;
-export const LOCKED_PRICING_CONTEXT = Object.freeze({
-  user_group: 'default',
-  selected_group: 'default',
-});
 
 export function createContentAdapter(env = {}) {
   const mode = String(env.CONTENT_ADAPTER || CONTENT_ADAPTER_FIXTURE)
@@ -257,7 +246,6 @@ export function createFixtureAdapter() {
     return clone({ meta: docsFixture.meta, page });
   };
   const pricing = () => {
-    assertOrdinaryUserPricingContext(pricingFixture);
     return clone(pricingFixture);
   };
   return {
@@ -314,6 +302,7 @@ export function createLiveContentAdapter(
       ifNoneMatch: options.ifNoneMatch,
       transform: options.transform,
       etag: options.etag,
+      preserveBody: options.preserveBody,
     });
   const getDocsCatalogResponse = (options = {}) => fetchAndValidate(
     '/api/internal/live-content/v1/docs?locale=zh',
@@ -335,7 +324,8 @@ export function createLiveContentAdapter(
     'pricing',
     options,
     assertLivePricing,
-    stablePricingEtag,
+    undefined,
+    { preserveBody: true },
   );
   const getDocsV2Response = (path, options = {}) => {
     if (typeof path !== 'string' || !path.startsWith('/api/internal/live-content/v1/docs/v2/')) {
@@ -395,11 +385,12 @@ export function createLiveContentAdapter(
     },
   };
 
-  async function fetchAndValidate(path, kind, options, validator, etag) {
+  async function fetchAndValidate(path, kind, options, validator, etag, extra = {}) {
     return fetchPayload(path, kind, {
       ...options,
       transform: (payload) => clone(validator(payload)),
       etag,
+      ...extra,
     });
   }
 
@@ -413,34 +404,6 @@ export function createLiveContentAdapter(
   }
 }
 
-export function assertOrdinaryUserPricingContext(payload) {
-  const userGroup = payload?.context?.user_group;
-  const selectedGroup = payload?.context?.selected_group;
-  if (
-    userGroup !== LOCKED_PRICING_CONTEXT.user_group ||
-    selectedGroup !== LOCKED_PRICING_CONTEXT.selected_group
-  ) {
-    throw new HttpError(500, 'Pricing adapter returned an invalid user context.');
-  }
-  if (payload?.context?.locked !== true) {
-    throw new HttpError(500, 'Pricing adapter must lock the public pricing group.');
-  }
-  if (!(LOCKED_PRICING_CONTEXT.selected_group in (payload.group_ratio || {}))) {
-    throw new HttpError(500, 'Pricing adapter omitted the default group ratio.');
-  }
-  const defaultGroupRatio = payload.group_ratio[LOCKED_PRICING_CONTEXT.selected_group];
-  if (!isFiniteNumber(defaultGroupRatio) || defaultGroupRatio < 0) {
-    throw new HttpError(
-      500,
-      'Pricing adapter returned an invalid default group ratio.',
-    );
-  }
-  if (!(LOCKED_PRICING_CONTEXT.selected_group in (payload.usable_group || {}))) {
-    throw new HttpError(500, 'Pricing adapter omitted the default usable group.');
-  }
-  return payload;
-}
-
 function fetchLivePayload(
   env,
   token,
@@ -452,6 +415,7 @@ function fetchLivePayload(
     ifNoneMatch = undefined,
     transform = (value) => value,
     etag: projectEtag = undefined,
+    preserveBody = false,
   },
 ) {
   const binding = env[LIVE_CONTENT_VPC_BINDING];
@@ -580,7 +544,12 @@ function fetchLivePayload(
       if (projectEtag && publicEtag && etagMatches(ifNoneMatch, publicEtag)) {
         return { status: 304, payload: null, etag: publicEtag };
       }
-      return { status: 200, payload: validated, etag: publicEtag };
+      return {
+        status: 200,
+        payload: validated,
+        etag: publicEtag,
+        ...(preserveBody ? { body: raw } : {}),
+      };
     })();
   return Promise.race([operation, timeout])
     .catch((error) => {
@@ -847,78 +816,12 @@ function assertLiveDocsPage(payload) {
 }
 
 function assertLivePricing(payload) {
+  // The backend token endpoint delegates directly to the canonical public
+  // `/api/pricing` handler.  Do not project, sort, redact, or synthesize any
+  // pricing field here: the raw response body is returned by the Worker so
+  // native ordering and future fields remain byte-for-byte intact.
   if (!isRecord(payload) || payload.success !== true) schemaFailure();
-  // The internal token route is the canonical `/api/pricing` payload. Older
-  // adapter fixtures may additionally carry Worker context/display metadata;
-  // validate those fields when present without requiring them upstream.
-  if (payload.meta !== undefined) assertLiveMeta(payload.meta, false);
-  if (payload.context !== undefined) {
-    const context = payload.context;
-    if (!isRecord(context) || context.user_group !== 'default' || context.selected_group !== 'default' || context.locked !== true) schemaFailure();
-  }
-  if (payload.display !== undefined) {
-    if (!isRecord(payload.display)) schemaFailure();
-    if (payload.display.quota_display_type !== undefined) assertString(payload.display.quota_display_type, 40);
-    if (payload.display.default_currency !== undefined) assertString(payload.display.default_currency, 40);
-    ['price', 'usd_exchange_rate', 'custom_currency_exchange_rate'].forEach((key) => {
-      if (payload.display[key] !== undefined && (!isFiniteNumber(payload.display[key]) || payload.display[key] <= 0)) schemaFailure();
-    });
-    if (payload.display.custom_currency_symbol !== undefined) assertString(payload.display.custom_currency_symbol, 20, { allowEmpty: true });
-    if (payload.display.show_with_recharge !== undefined && typeof payload.display.show_with_recharge !== 'boolean') schemaFailure();
-  }
-  if (!Array.isArray(payload.data) || payload.data.length > 5_000) schemaFailure();
-  payload.data.forEach((item) => {
-    if (!isRecord(item)) schemaFailure();
-    assertString(item.model_name, 300);
-    ['description', 'icon', 'tags', 'owner_by', 'billing_mode', 'billing_expr', 'codex_fast_base_model', 'video_geometry_contract', 'video_route_contract', 'video_input_duration_policy', 'pricing_version'].forEach((field) => {
-      if (item[field] !== undefined) assertString(item[field], field === 'billing_expr' ? 50_000 : 5_000, { allowEmpty: true });
-    });
-    if (item.vendor_id !== undefined && (!Number.isInteger(item.vendor_id) || item.vendor_id < 0)) schemaFailure();
-    if (item.quota_type !== undefined && !Number.isInteger(item.quota_type)) schemaFailure();
-    [
-      'model_ratio',
-      'model_price',
-      'completion_ratio',
-      'cache_ratio',
-      'create_cache_ratio',
-      'image_ratio',
-      'audio_ratio',
-      'audio_completion_ratio',
-    ].forEach((field) => {
-      if (item[field] !== undefined && !isFiniteNumber(item[field])) schemaFailure();
-    });
-    ['image_generation_model', 'video_generation_model'].forEach((field) => {
-      if (item[field] !== undefined && typeof item[field] !== 'boolean') schemaFailure();
-    });
-    if (item.enable_groups !== undefined) assertLiveIdentifierArray(item.enable_groups);
-    if (item.supported_endpoint_types !== undefined) assertLiveIdentifierArray(item.supported_endpoint_types);
-    if (item.endpoint_map !== undefined) assertLiveEndpointMap(item.endpoint_map);
-    if (item.video_pricing !== undefined) assertLiveVideoPricing(item.video_pricing);
-    if (item.codex_fast_pricing !== undefined) assertLiveCodexFastPricing(item.codex_fast_pricing);
-    if (item.video_capability !== undefined) assertLiveVideoCapability(item.video_capability);
-  });
-  if (!Array.isArray(payload.vendors) || payload.vendors.length > 1_000) schemaFailure();
-  payload.vendors.forEach((vendor) => {
-    if (!isRecord(vendor)) schemaFailure();
-    if (!Number.isInteger(vendor.id) || vendor.id < 0) schemaFailure();
-    assertString(vendor.name, 300);
-    if (vendor.description !== undefined) assertString(vendor.description, 5_000, { allowEmpty: true });
-    if (vendor.icon !== undefined) assertString(vendor.icon, 5_000, { allowEmpty: true });
-  });
-  assertLiveGroupRatios(payload.group_ratio);
-  if (!isRecord(payload.usable_group) || typeof payload.usable_group.default !== 'string' || payload.usable_group.default.trim() === '') schemaFailure();
-  if (!isRecord(payload.supported_endpoint)) schemaFailure();
-  if (Object.keys(payload.supported_endpoint).length > LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES) schemaFailure();
-  Object.entries(payload.supported_endpoint).forEach(([key, endpoint]) => {
-    if (!isPublicMapKey(key)) return;
-    if (!isRecord(endpoint)) schemaFailure();
-    assertString(endpoint.method, 20);
-    assertString(endpoint.path, 500);
-  });
-  assertLiveIdentifierArray(payload.auto_groups);
-  assertVideoResolutionDimensions(payload.video_resolution_dimensions);
-  if (typeof payload.pricing_version !== 'string' || payload.pricing_version.trim() === '') schemaFailure();
-  return projectLivePricing(payload);
+  return payload;
 }
 
 function assertLiveHealth(payload) {
@@ -932,166 +835,6 @@ function assertLiveHealth(payload) {
     schemaFailure();
   }
   return payload;
-}
-
-function assertVideoResolutionDimensions(value) {
-  if (!isRecord(value)) schemaFailure();
-  if (Object.keys(value).length > 500) schemaFailure();
-  Object.entries(value).forEach(([key, resolutionSet]) => {
-    if (!isPublicMapKey(key)) return;
-    if (!isRecord(resolutionSet)) schemaFailure();
-    if (Object.keys(resolutionSet).length > 100) schemaFailure();
-    Object.entries(resolutionSet).forEach(([geometryKey, geometrySet]) => {
-      if (!isPublicMapKey(geometryKey)) return;
-      if (!isRecord(geometrySet)) schemaFailure();
-      if (Object.keys(geometrySet).length > 100) schemaFailure();
-      Object.entries(geometrySet).forEach(([dimensionKey, dimensions]) => {
-        if (!isPublicMapKey(dimensionKey)) return;
-        if (!Array.isArray(dimensions) || dimensions.length !== 2 || dimensions.some((dimension) => !Number.isInteger(dimension) || dimension <= 0 || dimension > LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION)) schemaFailure();
-      });
-    });
-  });
-}
-
-function assertLiveVideoPricing(profile) {
-  if (!isRecord(profile) || profile.version !== 1) schemaFailure();
-  assertString(profile.currency, 20);
-  assertString(profile.unit, 80);
-  if (!['USD', 'CNY'].includes(profile.currency) || profile.unit !== 'per_1m_completion_tokens') schemaFailure();
-  if (!isFiniteNumber(profile.rate_multiplier) || profile.rate_multiplier <= 0) schemaFailure();
-  if (!isRecord(profile.resolution_rates)) schemaFailure();
-  if (Object.keys(profile.resolution_rates).length > 100) schemaFailure();
-  Object.entries(profile.resolution_rates).forEach(([key, rates]) => {
-    if (!isPublicMapKey(key)) return;
-    if (!isRecord(rates)) schemaFailure();
-    ['without_video', 'with_video'].forEach((field) => {
-      if (!isFiniteNumber(rates[field]) || rates[field] < 0) schemaFailure();
-    });
-  });
-}
-
-function assertLiveIdentifierArray(value, maxLength = 500) {
-  if (!Array.isArray(value) || value.length > maxLength || value.some((entry) => typeof entry !== 'string' || entry.length > 200)) schemaFailure();
-}
-
-function assertLiveEndpointMap(value) {
-  if (!isRecord(value) || Object.keys(value).length > LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES) schemaFailure();
-  Object.entries(value).forEach(([key, endpoint]) => {
-    if (!isPublicMapKey(key)) return;
-    if (!isRecord(endpoint)) schemaFailure();
-    assertString(endpoint.method, 20);
-    assertString(endpoint.path, 500);
-  });
-}
-
-function assertLiveCodexFastPricing(profile) {
-  if (!isRecord(profile) || profile.version !== 1 || !['multiplier', 'prices'].includes(profile.mode)) schemaFailure();
-  const hasMultiplier = Object.hasOwn(profile, 'multiplier');
-  const hasExplicit = ['input_price', 'cached_input_price', 'output_price'].some((field) => Object.hasOwn(profile, field));
-  if (profile.mode === 'multiplier') {
-    if (!hasMultiplier || !isFiniteNumber(profile.multiplier) || profile.multiplier <= 0 || hasExplicit) schemaFailure();
-  } else {
-    if (hasMultiplier || ['input_price', 'cached_input_price', 'output_price'].some((field) => !isFiniteNumber(profile[field]) || profile[field] < 0)) schemaFailure();
-  }
-}
-
-function assertLiveVideoCapability(value) {
-  if (!isRecord(value)) schemaFailure();
-  assertString(value.model, 300);
-  assertLiveIdentifierArray(value.mapped_upstream_models);
-  if (!Number.isInteger(value.schema_version) || value.schema_version < 1 || value.schema_version > 100) schemaFailure();
-  if (!isRecord(value.profile)) schemaFailure();
-  assertString(value.profile.name, 300);
-  assertString(value.profile.label, 1_000, { allowEmpty: true });
-  if (!Number.isInteger(value.profile.revision) || value.profile.revision < 1) schemaFailure();
-  assertString(value.profile.checksum, 300);
-  assertLiveVideoCapabilityOutput(value.output);
-  if (!isRecord(value.audio) || typeof value.audio.generate_audio_supported !== 'boolean') schemaFailure();
-  if (value.audio.generate_audio_default !== undefined && typeof value.audio.generate_audio_default !== 'boolean') schemaFailure();
-  assertLiveVideoCapabilityMedia(value.media);
-  assertLiveVideoGeometry(value.geometry);
-  if (value.image_size !== undefined) {
-    const image = value.image_size;
-    if (!isRecord(image) || !Number.isInteger(image.max_single_decoded_bytes) || image.max_single_decoded_bytes < 0 || image.max_single_decoded_bytes > 100 * 1024 * 1024 || typeof image.single_limit_exclusive !== 'boolean') schemaFailure();
-    if (image.single_limit_label !== undefined) assertString(image.single_limit_label, 200, { allowEmpty: true });
-    if (image.max_total_decoded_bytes !== undefined && (!Number.isInteger(image.max_total_decoded_bytes) || image.max_total_decoded_bytes < 0 || image.max_total_decoded_bytes > 500 * 1024 * 1024)) schemaFailure();
-    if (image.total_limit_label !== undefined) assertString(image.total_limit_label, 200, { allowEmpty: true });
-  }
-  if (
-    value.max_serialized_request_bytes !== undefined &&
-    (!Number.isInteger(value.max_serialized_request_bytes) ||
-      value.max_serialized_request_bytes < 0 ||
-      value.max_serialized_request_bytes > LIVE_CONTENT_MAX_SERIALIZED_REQUEST_BYTES)
-  ) schemaFailure();
-}
-
-function assertLiveVideoCapabilityOutput(value) {
-  if (!isRecord(value)) schemaFailure();
-  assertLiveIdentifierArray(value.resolutions);
-  assertString(value.default_resolution, 100);
-  if (value.known_unsupported_resolutions !== undefined) assertLiveIdentifierArray(value.known_unsupported_resolutions);
-  assertLiveIdentifierArray(value.ratios);
-  assertString(value.default_ratio, 100);
-  ['duration_min', 'duration_max'].forEach((field) => {
-    if (!Number.isInteger(value[field]) || value[field] < 0 || value[field] > 100_000) schemaFailure();
-  });
-  if (!Number.isInteger(value.default_duration) || value.default_duration < -1 || value.default_duration > 100_000) schemaFailure();
-  if (typeof value.allow_auto_duration !== 'boolean') schemaFailure();
-  assertLiveIdentifierArray(value.output_formats);
-  if (value.default_output_format !== undefined) assertString(value.default_output_format, 100, { allowEmpty: true });
-}
-
-function assertLiveVideoCapabilityMedia(value) {
-  if (!isRecord(value)) schemaFailure();
-  ['max_images', 'max_videos', 'max_audios'].forEach((field) => {
-    if (!Number.isInteger(value[field]) || value[field] < 0 || value[field] > 500) schemaFailure();
-  });
-  ['allow_video_only_reference', 'allow_audio_only_reference'].forEach((field) => {
-    if (typeof value[field] !== 'boolean') schemaFailure();
-  });
-  if (!isRecord(value.modes) || Object.keys(value.modes).length > 100) schemaFailure();
-  Object.entries(value.modes).forEach(([key, mode]) => {
-    if (!isPublicMapKey(key)) return;
-    if (!isRecord(mode)) schemaFailure();
-    if (typeof mode.selectable !== 'boolean') schemaFailure();
-    assertLiveIdentifierArray(mode.ratios);
-    ['duration_min', 'duration_max', 'min_images', 'max_images', 'min_reference_videos'].forEach((field) => {
-      if (mode[field] !== undefined && (!Number.isInteger(mode[field]) || mode[field] < 0 || mode[field] > 100_000)) schemaFailure();
-    });
-    ['allow_auto_duration', 'duration_upstream_validated'].forEach((field) => {
-      if (mode[field] !== undefined && typeof mode[field] !== 'boolean') schemaFailure();
-    });
-    if (mode.required_video_roles !== undefined) assertLiveIdentifierArray(mode.required_video_roles);
-  });
-}
-
-function assertLiveVideoGeometry(value) {
-  if (value === undefined) return;
-  if (!isRecord(value) || Object.keys(value).length > 500) schemaFailure();
-  Object.entries(value).forEach(([resolution, ratios]) => {
-    if (!isPublicMapKey(resolution)) return;
-    if (!isRecord(ratios) || Object.keys(ratios).length > 100) schemaFailure();
-    Object.entries(ratios).forEach(([ratio, dimensions]) => {
-      if (!isPublicMapKey(ratio)) return;
-      if (!Array.isArray(dimensions) || dimensions.length !== 2 || dimensions.some((dimension) => !Number.isInteger(dimension) || dimension <= 0 || dimension > LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION)) schemaFailure();
-    });
-  });
-}
-
-function assertLiveGroupRatios(value) {
-  if (!isRecord(value) || !Object.hasOwn(value, LOCKED_PRICING_CONTEXT.selected_group)) {
-    schemaFailure();
-  }
-  Object.entries(value).forEach(([key, ratio]) => {
-    if (!isPublicMapKey(key)) return;
-    if (!isFiniteNumber(ratio) || ratio < 0) schemaFailure();
-  });
-  if (
-    !isFiniteNumber(value[LOCKED_PRICING_CONTEXT.selected_group]) ||
-    value[LOCKED_PRICING_CONTEXT.selected_group] < 0
-  ) {
-    schemaFailure();
-  }
 }
 
 function assertEnvelope(payload, kind) {
@@ -1200,39 +943,6 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isFiniteNumber(value) {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-const PUBLIC_PRICING_MODEL_FIELDS = [
-  'model_name',
-  'description',
-  'icon',
-  'tags',
-  'vendor_id',
-  'owner_by',
-  'quota_type',
-  'model_ratio',
-  'model_price',
-  'completion_ratio',
-  'cache_ratio',
-  'create_cache_ratio',
-  'image_ratio',
-  'audio_ratio',
-  'audio_completion_ratio',
-  'billing_mode',
-  'billing_expr',
-  'codex_fast_base_model',
-  'video_geometry_contract',
-  'video_route_contract',
-  'video_input_duration_policy',
-  'pricing_version',
-  'image_generation_model',
-  'video_generation_model',
-  'enable_groups',
-  'supported_endpoint_types',
-];
-
 function projectLiveDocsCatalog(data) {
   return {
     meta: projectLiveMeta(data.meta, true),
@@ -1317,273 +1027,6 @@ function projectDocsBlock(block) {
     default:
       schemaFailure();
   }
-}
-
-function projectLivePricing(payload) {
-  const models = payload.data.map(projectPricingModel);
-  models.sort(comparePricingModels);
-  const vendors = payload.vendors.map((vendor) => {
-    const projected = { id: vendor.id, name: vendor.name };
-    if (vendor.description !== undefined) projected.description = vendor.description;
-    if (vendor.icon !== undefined) projected.icon = vendor.icon;
-    return projected;
-  });
-  vendors.sort(comparePricingVendors);
-  const result = {
-    success: true,
-    context: {
-      user_group: payload.context?.user_group || 'default',
-      selected_group: payload.context?.selected_group || 'default',
-      locked: payload.context?.locked ?? true,
-    },
-    data: models,
-    vendors,
-    group_ratio: projectPublicMap(payload.group_ratio, (ratio) => ratio),
-    // Preserve every public group option supplied by canonical /api/pricing;
-    // browser presentation decides which tabs are selectable. The Worker must
-    // not collapse live mode to a single default group.
-    usable_group: projectPublicMap(payload.usable_group, (label) => label),
-    supported_endpoint: projectEndpointMap(payload.supported_endpoint),
-    auto_groups: projectPublicIdentifierArray(payload.auto_groups),
-    video_resolution_dimensions: projectPublicMap(
-      payload.video_resolution_dimensions,
-      (value) => projectVideoDimensionSet(value),
-    ),
-    pricing_version: payload.pricing_version,
-  };
-  if (payload.meta !== undefined) result.meta = projectLiveMeta(payload.meta, false);
-  if (payload.display !== undefined) {
-    result.display = {
-      quota_display_type: payload.display.quota_display_type,
-      default_currency: payload.display.default_currency,
-      price: payload.display.price,
-      usd_exchange_rate: payload.display.usd_exchange_rate,
-      custom_currency_exchange_rate: payload.display.custom_currency_exchange_rate,
-      custom_currency_symbol: payload.display.custom_currency_symbol,
-      show_with_recharge: payload.display.show_with_recharge,
-    };
-  }
-  return result;
-}
-
-// NewAPI may serialize equivalent model sets in different array orders. Use
-// the public model_name as the primary, locale-independent ordering key; the
-// canonical projected model is only a deterministic tie-breaker for duplicate
-// names. Neither step changes a model field or value.
-function comparePricingModels(left, right) {
-  const byName = compareStableStrings(left.model_name, right.model_name);
-  if (byName !== 0) return byName;
-  return compareStableStrings(canonicalJson(left), canonicalJson(right));
-}
-
-// Vendor ids are the stable public identity. The remaining comparisons make
-// duplicate or malformed identities deterministic without changing values.
-function comparePricingVendors(left, right) {
-  if (left.id !== right.id) return left.id < right.id ? -1 : 1;
-  const byName = compareStableStrings(left.name, right.name);
-  if (byName !== 0) return byName;
-  return compareStableStrings(canonicalJson(left), canonicalJson(right));
-}
-
-function compareStableStrings(left, right) {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-}
-
-function stablePricingEtag(payload) {
-  return `"pricing-${fnv1a64(canonicalJson(payload))}"`;
-}
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
-  }
-  if (isRecord(value)) {
-    return `{${Object.keys(value)
-      .sort(compareStableStrings)
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
-      .join(',')}}`;
-  }
-  const serialized = JSON.stringify(value);
-  return serialized === undefined ? 'null' : serialized;
-}
-
-function fnv1a64(value) {
-  let hash = 14695981039346656037n;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= BigInt(value.charCodeAt(index));
-    hash = BigInt.asUintN(64, hash * 1099511628211n);
-  }
-  return hash.toString(16).padStart(16, '0');
-}
-
-function projectPricingModel(model) {
-  const projected = {};
-  const projectIdentifiers = projectPublicIdentifierArray;
-  const projectMap = projectPublicMap;
-  PUBLIC_PRICING_MODEL_FIELDS.forEach((field) => {
-    if (!Object.hasOwn(model, field)) return;
-    if (field === 'enable_groups' || field === 'supported_endpoint_types') {
-      projected[field] = projectIdentifiers(model[field]);
-    } else {
-      projected[field] = model[field];
-    }
-  });
-  if (Object.hasOwn(model, 'video_pricing')) {
-    projected.video_pricing = projectVideoPricing(model.video_pricing, projectMap);
-  }
-  if (Object.hasOwn(model, 'codex_fast_pricing')) {
-    projected.codex_fast_pricing = projectCodexFastPricing(model.codex_fast_pricing);
-  }
-  if (Object.hasOwn(model, 'endpoint_map')) {
-    projected.endpoint_map = projectEndpointMap(model.endpoint_map, projectMap);
-  }
-  if (Object.hasOwn(model, 'video_capability')) {
-    projected.video_capability = projectVideoCapability(model.video_capability, projectIdentifiers, projectMap);
-  }
-  return projected;
-}
-
-function projectPublicIdentifierArray(values) {
-  return values
-    .filter((value) => isPublicMapKey(value))
-    .sort(compareStableStrings);
-}
-
-function projectVideoPricing(profile, projectMap = projectPublicMap) {
-  if (!isRecord(profile)) return profile;
-  const projected = {};
-  ['version', 'currency', 'unit', 'rate_multiplier'].forEach((field) => {
-    if (Object.hasOwn(profile, field)) projected[field] = profile[field];
-  });
-  if (isRecord(profile.resolution_rates)) {
-    projected.resolution_rates = projectMap(profile.resolution_rates, (rates) => {
-      if (!isRecord(rates)) return rates;
-      const projectedRates = {};
-      ['without_video', 'with_video'].forEach((field) => {
-        if (Object.hasOwn(rates, field)) projectedRates[field] = rates[field];
-      });
-      return projectedRates;
-    });
-  }
-  return projected;
-}
-
-function projectCodexFastPricing(profile) {
-  const projected = { version: profile.version, mode: profile.mode };
-  if (Object.hasOwn(profile, 'multiplier')) projected.multiplier = profile.multiplier;
-  ['input_price', 'cached_input_price', 'output_price'].forEach((field) => {
-    if (Object.hasOwn(profile, field)) projected[field] = profile[field];
-  });
-  return projected;
-}
-
-function projectVideoCapability(value, projectIdentifiers = projectPublicIdentifierArray, projectMap = projectPublicMap) {
-  const projected = {
-    model: value.model,
-    mapped_upstream_models: projectIdentifiers(value.mapped_upstream_models),
-    schema_version: value.schema_version,
-    profile: {
-      name: value.profile.name,
-      label: value.profile.label,
-      revision: value.profile.revision,
-      checksum: value.profile.checksum,
-    },
-    output: {
-      resolutions: projectIdentifiers(value.output.resolutions),
-      default_resolution: value.output.default_resolution,
-      ratios: projectIdentifiers(value.output.ratios),
-      default_ratio: value.output.default_ratio,
-      duration_min: value.output.duration_min,
-      duration_max: value.output.duration_max,
-      allow_auto_duration: value.output.allow_auto_duration,
-      default_duration: value.output.default_duration,
-      output_formats: projectIdentifiers(value.output.output_formats),
-    },
-    audio: {
-      generate_audio_supported: value.audio.generate_audio_supported,
-    },
-    media: {
-      max_images: value.media.max_images,
-      max_videos: value.media.max_videos,
-      max_audios: value.media.max_audios,
-      allow_video_only_reference: value.media.allow_video_only_reference,
-      allow_audio_only_reference: value.media.allow_audio_only_reference,
-      modes: projectMap(value.media.modes, (mode) => projectVideoCapabilityMode(mode, projectIdentifiers, projectMap)),
-    },
-  };
-  if (value.output.known_unsupported_resolutions !== undefined) projected.output.known_unsupported_resolutions = projectIdentifiers(value.output.known_unsupported_resolutions);
-  if (value.output.default_output_format !== undefined) projected.output.default_output_format = value.output.default_output_format;
-  if (Object.hasOwn(value.audio, 'generate_audio_default')) projected.audio.generate_audio_default = value.audio.generate_audio_default;
-  if (value.geometry !== undefined) projected.geometry = projectVideoCapabilityGeometry(value.geometry, projectMap);
-  if (value.image_size !== undefined) {
-    projected.image_size = {
-      max_single_decoded_bytes: value.image_size.max_single_decoded_bytes,
-      single_limit_exclusive: value.image_size.single_limit_exclusive,
-    };
-    ['single_limit_label', 'max_total_decoded_bytes', 'total_limit_label'].forEach((field) => {
-      if (Object.hasOwn(value.image_size, field)) projected.image_size[field] = value.image_size[field];
-    });
-  }
-  if (value.max_serialized_request_bytes !== undefined) projected.max_serialized_request_bytes = value.max_serialized_request_bytes;
-  return projected;
-}
-
-function projectVideoCapabilityMode(mode, projectIdentifiers = projectPublicIdentifierArray, projectMap = projectPublicMap) {
-  const projected = {
-    selectable: mode.selectable,
-    ratios: projectIdentifiers(mode.ratios),
-    min_images: mode.min_images,
-    max_images: mode.max_images,
-  };
-  ['duration_min', 'duration_max', 'allow_auto_duration', 'min_reference_videos', 'duration_upstream_validated'].forEach((field) => {
-    if (Object.hasOwn(mode, field)) projected[field] = mode[field];
-  });
-  if (mode.required_video_roles !== undefined) projected.required_video_roles = projectIdentifiers(mode.required_video_roles);
-  return projected;
-}
-
-function projectVideoCapabilityGeometry(value, projectMap = projectPublicMap) {
-  return projectMap(value, (ratios) => projectMap(ratios, (dimensions) => [...dimensions]));
-}
-
-function projectEndpointMap(endpoints, projectMap = projectPublicMap) {
-  return projectMap(endpoints, (endpoint) => {
-    if (!isRecord(endpoint)) return undefined;
-    return { method: endpoint.method, path: endpoint.path };
-  });
-}
-
-function projectVideoDimensionSet(value, projectMap = projectPublicMap) {
-  if (!isRecord(value)) return value;
-  return projectMap(value, (geometrySet) => {
-    if (!isRecord(geometrySet)) return undefined;
-    return projectMap(geometrySet, (dimensions) => (
-      Array.isArray(dimensions) ? [...dimensions] : undefined
-    ));
-  });
-}
-
-function projectPublicMap(value, projectValue) {
-  if (!isRecord(value)) return value;
-  const projected = {};
-  Object.entries(value).forEach(([key, entry]) => {
-    // Map keys are public identifiers, not free-form object fields. Restrict
-    // them to the identifier shape used by the reviewed NewAPI contract so
-    // names such as private_secret can never cross the public boundary.
-    if (!isPublicMapKey(key)) return;
-    const projectedValue = projectValue(entry);
-    if (projectedValue === undefined) return;
-    projected[key] = projectedValue;
-  });
-  return projected;
-}
-
-function isPublicMapKey(key) {
-  if (typeof key !== 'string' || key.startsWith('__')) return false;
-  if (isCredentialPublicIdentifier(key)) return false;
-  return /^[A-Za-z0-9][A-Za-z0-9_:.\/-]{0,79}$/.test(key);
 }
 
 function clone(value) {

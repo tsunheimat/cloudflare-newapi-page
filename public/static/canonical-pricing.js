@@ -191293,7 +191293,7 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
         }
       )
     ] });
-  }, kto = "/api/content/pricing", eJe = dy.get.bind(dy);
+  }, kto = "/api/pricing", eJe = dy.get.bind(dy);
   dy.get = (e, t = {}) => e === "/api/pricing" ? eJe(kto, {
     ...t,
     withCredentials: !1,

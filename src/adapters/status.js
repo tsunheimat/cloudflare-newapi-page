@@ -1,7 +1,12 @@
 import { HttpError } from '../http.js';
+import { LIVE_CONTENT_ADAPTER_TOKEN } from './content-adapter.js';
 
 export const STATUS_ORIGIN = 'http://newapi-api.newapi:3000';
-export const STATUS_PATH = '/api/status';
+// This is the dedicated service-token companion added by the backend parity
+// contract. It is intentionally distinct from the anonymous public status
+// route, whose security surface does not contain the commercial display data
+// consumed by the canonical Pricing runtime.
+export const STATUS_PATH = '/api/internal/live-content/v1/status';
 export const STATUS_TIMEOUT_MS = 5_000;
 export const STATUS_MAX_BODY_BYTES = 256 * 1024;
 export const STATUS_MAX_DATA_FIELDS = 64;
@@ -20,6 +25,7 @@ const STATUS_NUMBER_LIMITS = Object.freeze({
   price: [0, Number.MAX_SAFE_INTEGER],
   usd_exchange_rate: [0, Number.MAX_SAFE_INTEGER],
   custom_currency_exchange_rate: [0, Number.MAX_SAFE_INTEGER],
+  quota_per_unit: [0, Number.MAX_SAFE_INTEGER],
 });
 
 const STATUS_PUBLIC_FIELDS = new Set([
@@ -39,6 +45,12 @@ export function createStatusAdapter(
   if (typeof env.NEWAPI_VPC_SERVICE?.fetch !== 'function') {
     throw statusUnavailable('missing_vpc_binding');
   }
+  const token = typeof env[LIVE_CONTENT_ADAPTER_TOKEN] === 'string'
+    ? env[LIVE_CONTENT_ADAPTER_TOKEN].trim()
+    : '';
+  if (new TextEncoder().encode(token).byteLength < 32 || !/^[\x21-\x7e]+$/.test(token)) {
+    throw statusUnavailable('missing_adapter_token');
+  }
 
   const boundedTimeoutMs = boundedPositiveInteger(timeoutMs, STATUS_TIMEOUT_MS);
   const boundedBodyBytes = boundedPositiveInteger(maxBodyBytes, STATUS_MAX_BODY_BYTES);
@@ -50,12 +62,13 @@ export function createStatusAdapter(
       return fetchStatusPayload(env, {
         timeoutMs: boundedTimeoutMs,
         maxBodyBytes: boundedBodyBytes,
+        token,
       });
     },
   };
 }
 
-async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes }) {
+async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes, token }) {
   const binding = env.NEWAPI_VPC_SERVICE;
   const controller = new AbortController();
   const deadline = Date.now() + timeoutMs;
@@ -76,7 +89,10 @@ async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes }) {
   // headers are copied across the private service boundary.
   const upstreamRequest = new Request(`${STATUS_ORIGIN}${STATUS_PATH}`, {
     method: 'GET',
-    headers: { Accept: 'application/json' },
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
     signal: controller.signal,
   });
 
@@ -92,6 +108,9 @@ async function fetchStatusPayload(env, { timeoutMs, maxBodyBytes }) {
     assertBeforeDeadline(deadline, controller);
     if (!response || response.status !== 200 || !response.headers || typeof response.headers.get !== 'function') {
       throw statusUnavailable('upstream_status');
+    }
+    if (response.headers.get('x-newapi-content-contract') !== 'v1') {
+      throw statusUnavailable('invalid_upstream_contract');
     }
     if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || '')) {
       throw statusUnavailable('invalid_upstream_content_type');
@@ -170,9 +189,6 @@ function projectStatusPayload(payload) {
     }
     response.message = payload.message;
   }
-  // This Worker exposes only public read-only APIs. Disable the canonical
-  // bundle's secure-API interceptor without exposing signing key material.
-  data.secure_api_enabled = false;
   response.data = data;
   return { status: 200, payload: response };
 }

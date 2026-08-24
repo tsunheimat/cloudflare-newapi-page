@@ -6,17 +6,18 @@
 
 - `/`：公共站点与 integration boundary 概览。
 - `/docs/*`：复用 pinned NewAPI Docs Hub 2.0 的信息层级与 reader chrome，包括分组侧栏、Ctrl/Cmd+K 搜索、页内目录、移动端 drawer、翻页、表格、callout 和可复制代码示例。
-- `/console/pricing`：面向未认证访客的 public default Pricing canonical SPA route；`/pricing` 保留兼容别名。复用 pinned NewAPI 模型价格页的供应商 → 分组 → 价格清单层级、table/card view、筛选与详情；保留 USD/CNY/CUSTOM、充值换算、1M/1K 展示以及 NewAPI supplied default/public context。
+- `/console/pricing` 与 `/pricing`：挂载同一个 canonical NewAPI Pricing runtime，使用同一 `/api/pricing` 数据路径；Worker 仅通过 token-only live-content adapter 读取后端 canonical Pricing。
 - `/api/content/docs`、`/api/content/docs/:slug`：可替换 Docs adapter contract。
 - `/api/front-door/v1/docs/v2/navigation?locale=zh`：public recursive Docs navigation compatibility route backed by the token-only NewAPI live-content endpoint; browser session and identity are not used。
-- `/api/content/pricing`：保留 NewAPI pricing fields contract；top-level/staging 使用 fixture，production 使用已验证的 live adapter。
+- `/api/pricing`（兼容别名 `/api/content/pricing`）：production live 模式逐字节转发 canonical NewAPI Pricing；top-level/staging 仍是 fixture。
+- `/api/status`：通过 Worker token 请求 `/api/internal/live-content/v1/status`，提供 canonical Pricing 的 display/conversion bootstrap。
 - `CONTENT_ADAPTER="newapi"`：通过 `NEWAPI_VPC_SERVICE` 读取私有 NewAPI live Docs/Pricing；仅 production named environment 选择该模式，top-level/staging 保持 fixture safety mode。
 - `/api/integrations/downloads`：既有下载 Worker Service Binding 的状态、route mode 与能力边界。
 - Worker security headers、API fail-closed 行为与 SPA asset fallback。
 
 Fixture 内容在 API 和 UI 都明确标记为演示数据；live badge 只会在经过 v1 response/schema 验证的 live payload 上出现，不代表尚未执行的生产部署或 provider 能力。
 
-Docs/Pricing presentation 的 canonical source 是 checked-in NewAPI frontend at approved commit `85143bc49260f9c7ab1efd6a5122558e58d0bee2`。`/docs/*` loads the original DocsHub plus `packages/docs-core` renderer from that source through same-origin Worker `/api/docs/v2/*` routes；`/console/pricing` loads the canonical React pricing surface and calls `/api/content/pricing`. The Worker privately uses `NEWAPI_VPC_SERVICE` plus its server-side `LIVE_CONTENT_ADAPTER_TOKEN`. Browser cookies, sessions, API keys, provider credentials, and arbitrary headers are not part of these content contracts. Legacy `/pricing` remains the Worker fixture compatibility surface. 本仓库保留 QuantumNous copyright 与 GNU AGPL v3-or-later license；完整 provenance 见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，license text 见 [LICENSE](LICENSE)。`/` 首页、现有 header、Worker adapter、download boundary 与 deployment contract 不属于该 presentation port。
+Docs/Pricing presentation 的 canonical source 是 checked-in NewAPI frontend at approved commit `85143bc49260f9c7ab1efd6a5122558e58d0bee2`。`/docs/*` loads the original DocsHub plus `packages/docs-core` renderer from that source through same-origin Worker `/api/docs/v2/*` routes；`/console/pricing` and `/pricing` load the same canonical React pricing surface and call `/api/pricing`. The Worker privately uses `NEWAPI_VPC_SERVICE` plus its server-side `LIVE_CONTENT_ADAPTER_TOKEN`. Browser cookies, sessions, API keys, provider credentials, and arbitrary headers are not part of these content contracts. The `/pricing` route is not a second handcrafted UI. 本仓库保留 QuantumNous copyright 与 GNU AGPL v3-or-later license；完整 provenance 见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，license text 见 [LICENSE](LICENSE)。`/` 首页、现有 header、Worker adapter、download boundary 与 deployment contract 不属于该 presentation port。
 
 ## 本地运行
 
@@ -54,29 +55,20 @@ npm run deploy:production -- --dry-run
 
 ## Pricing 产品语义
 
-Fixture 页面只呈现一个 disabled/locked `default` 分组卡片；canonical `/console/pricing` 和 legacy `/pricing` 都使用 NewAPI dedicated-token endpoint supplied `user_group`、`selected_group`、`locked` 和 `usable_group` values, with the public endpoint accepted only when the context is the locked default/default contract. No browser session or end-user identity participates in Pricing. `src/adapters/content-adapter.js` 和浏览器端 `public/static/pricing.js` 都会检查 fixture/public context：
+Both public Pricing URLs mount the same canonical NewAPI runtime. In live mode,
+`/api/pricing` and its `/api/content/pricing` compatibility alias return the
+canonical backend Pricing body byte-for-byte: model/vendor order, arbitrary
+space-containing group names, every ratio, endpoint/capability field, auto
+Group, video dimensions, pricing version, and future fields are preserved. The
+Worker does not sort, regex-filter, allowlist/reconstruct, fabricate a locked
+context, or calculate a price. `/api/status` supplies the token-only canonical
+display and conversion bootstrap (`price`, exchange rates, display mode, custom
+currency values, quota unit, and marketplace default pair).
 
-```json
-{
-  "user_group": "default",
-  "selected_group": "default",
-  "locked": true
-}
-```
-
-当前展示和计算分支与已核对的 NewAPI 行为保持一致：
-
-- 官方价格模式使用未分组的原始美元基础价（effective ratio `1`）；分组价格模式才使用 NewAPI 提供的 selected group ratio，不会把分组倍率套到官方价格上。
-- 普通按量：`model_ratio × 2 × selected group ratio` 得到 USD / 1M 输入 tokens；输出、缓存、图片和音频再乘对应 ratio。
-- 按次：`model_price × selected group ratio`。
-- `billing_mode=tiered_expr` 优先于 legacy `quota_type`。Versioned v1 parser 的变量 registry 与 NewAPI 对齐为 `p`、`c`、`cr`、`cc`、`cc1h`、`img`、`img_o`、`ai`、`ao`；价格项采用 `p * 3 + c * 15` 语法，并保留 `|||when(...) * multiplier` 请求规则后缀。
-- `billing_mode=codex_fast` 保留 version 1 Fast profile：显式 `prices` 使用 input/cached-input/output 三个公开价格，`multiplier` 对完整 tiered expression 统一缩放；profile 或表达式不能完整验证时显示不可计算，不回退到 `model_ratio`、`model_price` 或固定倍率。
-- 动态表达式必须整段解析成功；未知版本、未知字段、任一损坏档位或请求规则都会把该模型明确标记为不可计算，不会保留部分价格，也不会回退到 legacy 字段。即使全部档位可解析，页面也不会把第一档冒充没有请求上下文的最终价格。
-- `billing_mode=video` 只在完整的 version 1 `video_pricing` 存在时生效；每一个分辨率都必须同时包含有/无输入视频价格。来源 CNY/USD 先正规化成 USD，再应用真实 selected group ratio，之后与普通价格共用充值及 USD/CNY/CUSTOM 显示换算。
-- Live model projection retains the complete public NewAPI row families: presentation (`description`, `icon`, `tags`, `owner_by`, `vendor_id`), capability flags/endpoints, legacy ratios, `billing_mode`/`billing_expr`, Fast profile/base model, video pricing/capability/route/geometry/duration contracts, and row `pricing_version`. Nested endpoint, video, Fast, geometry, and capability objects use explicit public allowlists and size/type bounds; private or unknown fields are dropped before the stable public ETag is calculated. Public identifiers such as `token`, `tokenization`, or `api_endpoint` remain intact.
-- 充值价格和所有卡片、动态档位、影片详情矩阵共用 `price`、`usd_exchange_rate`、`custom_currency_exchange_rate` 的换算顺序。
-
-Fixture 数字只验证以上路径。未来 adapter 必须投影 NewAPI 的公开价格 response，而不是建立另一套价格表。
+The checked-in `public/static/pricing.js` and canonical bundle retain the NewAPI
+pricing calculation/display implementation for the browser. Worker-side live
+content is transport-only; status and Pricing values are never derived from
+localStorage, cookies, sessions, or hard-coded defaults.
 
 ## Phase 2 download integration
 
@@ -139,7 +131,7 @@ npm run deploy:production
 - default 仍是 `disabled`；staging contract 未被破坏；
 - production 必须是已授权的 `CONTENT_ADAPTER=newapi`、`DOWNLOADS_INTEGRATION=production-service-binding`；default/top-level 与 staging 必须继续是 fixture；
 - production 必须且只能有 `DOWNLOADS_SERVICE -> cloudflare-download-site`；
-- Docs/Pricing runtime 必须通过 NewAPI v1 health/schema contract，metadata 为 `source=newapi`、`fixture=false`、`live=true`，价格上下文继续锁定 `default/default`，并保留 NewAPI 实际提供的 default group ratio；
+- Docs/Pricing runtime 必须通过 NewAPI v1 health/schema contract，metadata 为 `source=newapi`、`fixture=false`、`live=true`，Pricing body must remain byte-for-byte canonical and retain arbitrary groups, ratios, ordering, and future fields；
 - 完整 tests 与 default/staging/production dry-run 全部通过，且 validation 后仍是同一 HEAD 与 clean tracked/untracked worktree；
 - 真正 spawn Wrangler 前再次重验 commit、worktree、ignored dotenv 与 process environment。
 
