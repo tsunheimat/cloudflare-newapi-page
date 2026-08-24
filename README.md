@@ -8,6 +8,7 @@
 - `/docs/*`：复用 pinned NewAPI Docs Hub 2.0 的信息层级与 reader chrome，包括分组侧栏、Ctrl/Cmd+K 搜索、页内目录、移动端 drawer、翻页、表格、callout 和可复制代码示例。
 - `/console/pricing`：面向未认证访客的 public default Pricing canonical SPA route；`/pricing` 保留兼容别名。复用 pinned NewAPI 模型价格页的供应商 → 分组 → 价格清单层级、table/card view、筛选与详情；保留 USD/CNY/CUSTOM、充值换算、1M/1K 展示以及 NewAPI supplied default/public context。
 - `/api/content/docs`、`/api/content/docs/:slug`：可替换 Docs adapter contract。
+- `/api/front-door/v1/docs/v2/navigation?locale=zh`：public recursive Docs navigation compatibility route backed by the token-only NewAPI live-content endpoint; browser session and identity are not used。
 - `/api/content/pricing`：保留 NewAPI pricing fields contract；top-level/staging 使用 fixture，production 使用已验证的 live adapter。
 - `CONTENT_ADAPTER="newapi"`：通过 `NEWAPI_VPC_SERVICE` 读取私有 NewAPI live Docs/Pricing；仅 production named environment 选择该模式，top-level/staging 保持 fixture safety mode。
 - `/api/integrations/downloads`：既有下载 Worker Service Binding 的状态、route mode 与能力边界。

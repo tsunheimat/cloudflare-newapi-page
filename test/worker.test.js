@@ -224,15 +224,10 @@ test('/console/pricing is an asset route and never falls back to fixture pricing
   const response = await fetchWorker('/console/pricing', fixtureEnv);
   assert.equal(response.status, 200);
   assert.equal(await response.text(), 'asset:/console/pricing');
-
-  const missingDocsSession = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', {
-    ...fixtureEnv,
-    NEWAPI_VPC_SERVICE: { fetch: async () => { throw new Error('must not run'); } },
-  });
-  assert.equal((await missingDocsSession.json()).error.details.reason, 'missing_session');
 });
 
-test('front-door Docs projection preserves recursive folder/layer fields and drops private fields', async () => {
+test('public Docs navigation uses the token endpoint and preserves recursive public fields', async () => {
+  const token = `worker-public-docs-${'x'.repeat(32)}`;
   const payload = {
     success: true,
     data: [{
@@ -248,42 +243,92 @@ test('front-door Docs projection preserves recursive folder/layer fields and dro
     }],
     private_secret: 'drop',
   };
+  const seen = [];
   const response = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', {
     ...fixtureEnv,
-    NEWAPI_VPC_SERVICE: { fetch: async () => new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } }) },
-  }, { headers: { cookie: 'session=signed', 'New-Api-User': 'user' } });
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+    NEWAPI_VPC_SERVICE: { fetch: async (request) => {
+      seen.push({
+        path: new URL(request.url).pathname,
+        method: request.method,
+        headers: Object.fromEntries(request.headers),
+      });
+      return new Response(JSON.stringify(payload), {
+        headers: {
+          'content-type': 'application/json',
+          'x-newapi-content-contract': 'v1',
+          etag: '"docs-navigation-v1"',
+        },
+      });
+    } },
+  }, {
+    headers: {
+      cookie: 'session=browser-secret',
+      'New-Api-User': 'browser-user',
+      authorization: 'Bearer browser-key',
+      'x-api-key': 'browser-api-key',
+      'x-provider-credential': 'provider-secret',
+      'x-random': 'must-not-forward',
+    },
+  });
   assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-cache');
+  assert.equal(response.headers.get('etag'), '"docs-navigation-v1"');
   const body = await response.json();
   assert.equal(body.data[0].children[0].children[0].path, 'guides/quickstart/nested');
   assert.equal(body.data[0].description, 'Public folder');
   assert.doesNotMatch(JSON.stringify(body), /private_secret/);
+  assert.deepEqual(seen, [{
+    path: '/api/internal/live-content/v1/docs/v2/navigation',
+    method: 'GET',
+    headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+  }]);
 });
 
-test('front-door recursive Docs responses are private and session-isolated without validators', async () => {
+test('public Docs navigation is identity-independent and never forwards browser credentials', async () => {
+  const token = `worker-public-docs-${'x'.repeat(32)}`;
   const seen = [];
   const env = {
     ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
     NEWAPI_VPC_SERVICE: {
       fetch: async (request) => {
-        const cookie = request.headers.get('cookie');
-        seen.push({ cookie, validator: request.headers.get('if-none-match') });
+        seen.push({ headers: Object.fromEntries(request.headers) });
         return new Response(JSON.stringify({
-          success: true,
-          data: [{ type: 'group', id: 1, slug: 'guides', title: cookie, space_id: 1, locale: 'zh', children: [] }],
-        }), { headers: { 'content-type': 'application/json', etag: '"docs-upstream"' } });
+          success: true, data: [{
+            type: 'group', id: 1, slug: 'guides', title: 'Public',
+            space_id: 1, locale: 'zh', children: [],
+          }],
+        }), {
+          headers: {
+            'content-type': 'application/json',
+            'x-newapi-content-contract': 'v1',
+            etag: '"docs-upstream"',
+          },
+        });
       },
     },
   };
-  const responseA = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', env, { headers: { cookie: 'session=a', 'If-None-Match': '"same"' } });
-  const responseB = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', env, { headers: { cookie: 'session=b', 'If-None-Match': '"same"' } });
+  const hostile = {
+    cookie: 'session=browser-secret',
+    'New-Api-User': 'browser-user',
+    authorization: 'Bearer browser-key',
+    'x-api-key': 'browser-api-key',
+    'x-provider-credential': 'provider-secret',
+  };
+  const responseA = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', env, { headers: hostile });
+  const responseB = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', env, { headers: hostile });
   assert.equal(responseA.status, 200);
   assert.equal(responseB.status, 200);
-  assert.equal(responseA.headers.get('cache-control'), 'private, no-store');
-  assert.equal(responseB.headers.get('cache-control'), 'private, no-store');
-  assert.equal(responseA.headers.get('etag'), null);
-  assert.equal(responseB.headers.get('etag'), null);
-  assert.notDeepEqual(await responseA.json(), await responseB.json());
-  assert.deepEqual(seen, [{ cookie: 'session=a', validator: null }, { cookie: 'session=b', validator: null }]);
+  assert.equal(responseA.headers.get('cache-control'), 'no-cache');
+  assert.equal(responseB.headers.get('cache-control'), 'no-cache');
+  assert.deepEqual(await responseA.json(), await responseB.json());
+  assert.deepEqual(seen, [
+    { headers: { accept: 'application/json', authorization: `Bearer ${token}` } },
+    { headers: { accept: 'application/json', authorization: `Bearer ${token}` } },
+  ]);
 });
 
 test('content pricing remains on its configured adapter even with New-Api-User', async () => {

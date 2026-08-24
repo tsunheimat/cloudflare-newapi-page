@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   assertOrdinaryUserPricingContext,
   CONTENT_ADAPTER_LIVE,
+  createDocsNavigationAdapter,
   createContentAdapter,
   createFixtureAdapter,
   createLiveContentAdapter,
@@ -185,6 +186,69 @@ test('live adapter uses only the VPC binding and private GET contract', async ()
   assert.equal(calls[0].headers.get('authorization'), `Bearer ${liveToken}`);
   assert.equal(calls[0].headers.get('cookie'), null);
   assert.equal(calls[0].headers.get('if-none-match'), null);
+});
+
+test('Docs navigation adapter uses the approved token-only recursive endpoint', async () => {
+  const seen = [];
+  const payload = {
+    success: true,
+    data: [{
+      type: 'group', id: 1, slug: 'guides', title: 'Guides',
+      description: 'Public folder', space_id: 2, locale: 'zh', enabled: true,
+      children: [{
+        type: 'page', id: 2, slug: 'quickstart', path: 'guides/quickstart',
+        title: 'Quickstart', space_id: 2, parent_id: 1, locale: 'zh',
+        children: [{
+          type: 'page', id: 3, slug: 'nested', path: 'guides/quickstart/nested',
+          title: 'Nested', space_id: 2, parent_id: 2, locale: 'zh', children: [],
+          private_secret: 'drop',
+        }],
+        private_secret: 'drop',
+      }],
+      private_secret: 'drop',
+    }],
+    private_secret: 'drop',
+  };
+  const adapter = createDocsNavigationAdapter(liveEnv(async (request) => {
+    seen.push({
+      path: new URL(request.url).pathname,
+      search: new URL(request.url).search,
+      method: request.method,
+      headers: Object.fromEntries(request.headers),
+    });
+    return liveResponse(payload, 200, { etag: '"navigation-v1"' });
+  }));
+  const result = await adapter.getDocsNavigationResponse();
+  assert.equal(adapter.name, 'docs-navigation-token');
+  assert.equal(adapter.live, true);
+  assert.equal(result.status, 200);
+  assert.equal(result.etag, '"navigation-v1"');
+  assert.equal(result.payload.data[0].children[0].children[0].path, 'guides/quickstart/nested');
+  assert.doesNotMatch(JSON.stringify(result.payload), /private_secret/);
+  assert.deepEqual(seen, [{
+    path: '/api/internal/live-content/v1/docs/v2/navigation',
+    search: '?locale=zh',
+    method: 'GET',
+    headers: { accept: 'application/json', authorization: `Bearer ${liveToken}` },
+  }]);
+});
+
+test('Docs navigation adapter fails closed on schema drift and upstream failure', async () => {
+  for (const response of [
+    liveResponse({ success: true, data: [{ type: 'page', id: 1, slug: 'bad', title: 'Bad', space_id: 1, locale: 'zh' }] }),
+    new Response('private upstream details', {
+      status: 502,
+      headers: { 'content-type': 'application/json', 'x-newapi-content-contract': 'v1' },
+    }),
+  ]) {
+    const adapter = createDocsNavigationAdapter(liveEnv(async () => response.clone()));
+    await assert.rejects(
+      () => adapter.getDocsNavigationResponse(),
+      (error) => error instanceof HttpError && error.status === 503 &&
+        ['invalid_upstream_schema', 'upstream_status'].includes(error.details.reason) &&
+        !JSON.stringify(error).includes('private upstream details'),
+    );
+  }
 });
 
 test('live adapter forwards only a browser validator and preserves verified ETags', async () => {

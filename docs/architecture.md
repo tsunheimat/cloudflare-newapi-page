@@ -25,33 +25,30 @@ Public Pricing:
     └─ `/api/content/pricing`
          └─ ContentAdapter -> NEWAPI_VPC_SERVICE -> `/api/internal/live-content/v1/pricing`
 
-Session-bound recursive Docs navigation:
-  Browser session (`session` cookie; browser identity is not forwarded)
+Public recursive Docs navigation:
+  Browser (credentials omitted by the SPA)
     └─ `/api/front-door/v1/docs/v2/navigation?locale=zh`
-         └─ NEWAPI_VPC_SERVICE -> canonical NewAPI front-door Docs alias
+         └─ NEWAPI_VPC_SERVICE + LIVE_CONTENT_ADAPTER_TOKEN
+              -> `/api/internal/live-content/v1/docs/v2/navigation?locale=zh`
 
 Public canonical bootstrap:
   `/api/status` (read-only, fixed anonymous GET)
          └─ NEWAPI_VPC_SERVICE -> canonical NewAPI `/api/status`
 ```
 
-The recursive Docs route is a distinct session-only boundary. The Worker
-forwards only the signed `session` cookie; conditional validators, locale, and
-all other browser headers are ignored and never forwarded. It rejects
-Authorization, API keys, provider credentials, secure-API/WebSocket
-credentials, credential query parameters,
-malformed/duplicate session cookies, and credential-shaped headers. Each
-canonical response is validated and reconstructed through an
-explicit bounded public projection that preserves every reviewed canonical
-field; unknown/private fields are dropped and malformed known fields fail
-closed. Public identifier values remain intact even when they contain words
-such as `token`. The Docs response is the typed recursive
-`group`/`page` tree; the sidebar renders that tree recursively, including
-nested page descendants. Missing session,
-identity mismatch, administrator/API-key auth, upstream schema drift, timeout,
-or oversized response fails closed. Pricing does not use this session route.
-The existing service-token live adapter is the sole public Pricing path and
-does not read browser cookies, sessions, or user identity.
+The recursive Docs route is a public compatibility URL backed only by the
+Worker-held service token. The Worker constructs a fixed GET over the VPC
+binding and forwards only `Accept`, the Worker token Authorization header, and
+an optional `If-None-Match` validator. Browser cookies, `New-Api-User`, browser
+Authorization, API keys, provider/admin credentials, arbitrary headers, and
+end-user logic are not inspected or forwarded. Published normal/public pages
+and enabled navigation groups are validated and reconstructed through an
+explicit bounded public projection that preserves recursive folder/layer/page
+`children` and canonical `path`; unknown/private fields are dropped and
+malformed known fields fail closed. The sidebar renders that tree recursively,
+including nested page descendants. Upstream navigation failure, schema drift,
+timeout, or oversized response fails closed. Pricing does not use this route;
+the existing service-token live adapter remains the sole public Pricing path.
 
 `/console/pricing` is the public canonical React SPA route; `/pricing` remains a
 Worker fixture compatibility alias. Its canonical bundle bootstraps through the
@@ -98,7 +95,7 @@ Page：
 }
 ```
 
-Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、`bullets`、`endpoint`、`table` 和 `link-cards`。Docs presentation 的 source authority 是 approved NewAPI commit `85143bc49260f9c7ab1efd6a5122558e58d0bee2`；the authenticated navigation response preserves and renders recursive folder/page layers. Live adapter 对 NewAPI v1 renderer 做同样的受控 projection，未知 block/schema 会 fail closed，不从 private Admin response 直接透传内部字段。
+Fixture renderer 支持 `lead`、`paragraph`、`heading`、`callout`、`code`、`bullets`、`endpoint`、`table` 和 `link-cards`。Docs presentation 的 source authority 是 approved NewAPI commit `85143bc49260f9c7ab1efd6a5122558e58d0bee2`；the token-only public navigation response preserves and renders recursive folder/page layers. Live adapter 对 NewAPI v1 renderer 做同样的受控 projection，未知 block/schema 会 fail closed，不从 private Admin response 直接透传内部字段。
 
 ## Pricing contract 与不变量
 

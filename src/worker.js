@@ -1,8 +1,9 @@
 import {
   createContentAdapter,
   CONTENT_ADAPTER_LIVE,
-  createFrontDoorSessionAdapter,
+  createDocsNavigationAdapter,
   LOCKED_PRICING_CONTEXT,
+  PUBLIC_DOCS_NAVIGATION_ROUTE,
 } from './adapters/content-adapter.js';
 import {
   downloadServiceStatus,
@@ -68,13 +69,20 @@ export async function route(request, env = {}) {
     return json(result.payload, 200, { 'cache-control': 'no-store' });
   }
 
-  // Recursive Docs navigation remains a separate browser-session boundary.
+  // The compatibility URL is public, but navigation is fetched through the
+  // Worker-held service token. Browser cookies, identity, and credentials are
+  // intentionally irrelevant to this route.
   if (
     request.method === 'GET' &&
-    pathname === '/api/front-door/v1/docs/v2/navigation'
+    pathname === PUBLIC_DOCS_NAVIGATION_ROUTE
   ) {
-    const adapter = createFrontDoorSessionAdapter(env, request);
-    return frontDoorResponse(await adapter.getDocsNavigationResponse());
+    const adapter = createDocsNavigationAdapter(env);
+    return publicContentResponse(
+      await adapter.getDocsNavigationResponse({
+        ifNoneMatch: conditionalValidator(request),
+      }),
+      (payload) => payload,
+    );
   }
 
 
@@ -162,18 +170,6 @@ function publicContentResponse(result, envelope) {
   if (result.etag) headers.etag = result.etag;
   return json(envelope(result.payload), 200, headers);
 }
-
-function frontDoorResponse(result) {
-  if (!result || result.status !== 200) {
-    throw new HttpError(503, 'Live content is temporarily unavailable.');
-  }
-  const headers = { 'cache-control': 'private, no-store' };
-  // The Docs adapter has already reconstructed the bounded public subset of
-  // the canonical NewAPI envelope. Do not add Worker-owned labels or rewrite
-  // its session-bound values here.
-  return json(result.payload, 200, headers);
-}
-
 
 function conditionalValidator(request) {
   const value = request.headers.get('if-none-match');

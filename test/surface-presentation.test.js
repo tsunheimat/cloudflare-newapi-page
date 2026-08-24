@@ -42,7 +42,9 @@ test('Docs presentation carries the pinned NewAPI Hub hierarchy and reader state
   assert.match(app, /docsNavigationSlug\(catalog\)/);
   assert.match(app, /docsPath\(slug\)/);
   assert.match(app, /front-door\/v1\/docs\/v2\/navigation\?locale=zh/);
-  assert.match(app, /reason === 'missing_session'/);
+  assert.match(app, /publicDocsNavigation: true/);
+  assert.match(app, /credentials: path\.startsWith\('\/api\/content\/docs'\) \|\| publicDocsNavigation \? 'omit'/);
+  assert.doesNotMatch(app, /missing_session/);
   assert.match(app, /文档导航暂时不可用，请稍后重试。/);
   assert.doesNotMatch(app, /readBrowserUser/);
   assert.match(app, /renderDocsNavigationNodes/);
@@ -133,8 +135,8 @@ test('public Pricing route ships the canonical component bundle without browser 
   assert.match(bundle, /localStorage\.setItem\("status", JSON\.stringify\(statusResponse\.data\.data\)\)/);
   assert.match(bundle, /__mountCanonicalPricing/);
   assert.match(bundle, /__unmountCanonicalPricing/);
-  assert.match(app, /cache: frontDoor \? 'no-store' : 'no-cache'/);
-  assert.doesNotMatch(app, /const cacheKey = options\.frontDoor/);
+  assert.match(app, /cache: publicDocsNavigation \? 'no-store' : 'no-cache'/);
+  assert.doesNotMatch(app, /const cacheKey = options\.publicDocsNavigation/);
   assert.doesNotMatch(app, /contentApiCache\.set\(cacheKey/);
   assert.doesNotMatch(bundle, /Lto = 3e4|class Hto|new Hto/);
   assert.match(bundle, /cache: "no-store"/);

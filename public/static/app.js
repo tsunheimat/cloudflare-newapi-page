@@ -50,8 +50,8 @@ let activeDocsTocObserver = null;
 let surfaceReturnFocus = null;
 let activeSurfaceDismiss = null;
 // Only legacy public `/api/content/*` responses may be reused in this
-// compatibility layer. Authenticated front-door bodies are always fetched
-// afresh and are never retained in browser memory or validators.
+// compatibility layer. Public Docs navigation is fetched afresh and is never
+// retained in browser memory or validators.
 const contentApiCache = new Map();
 let canonicalPricingScriptPromise = null;
 
@@ -303,13 +303,9 @@ async function ensureDocsNavigation() {
   try {
     return await api(
       '/api/front-door/v1/docs/v2/navigation?locale=zh',
-      { frontDoor: true },
+      { publicDocsNavigation: true },
     );
   } catch (error) {
-    // Only the Worker-authenticated result can establish that this is an
-    // anonymous public request. Browser localStorage is stale/client-owned
-    // and must never decide whether a session-specific response is required.
-    if (error?.status === 401 && error?.details?.reason === 'missing_session') return null;
     const unavailable = new Error('文档导航暂时不可用，请稍后重试。');
     unavailable.cause = error;
     throw unavailable;
@@ -720,9 +716,9 @@ async function renderPricing() {
     return;
   }
   // `/pricing` is the public compatibility surface. Keep its fixture/live
-  // public-content state remains separate from recursive Docs navigation.
+  // public-content state separate from recursive Docs navigation.
   // The public API helper may reuse only this legacy response and its ETag;
-  // no front-door body, validator, or in-flight promise is retained here.
+  // no Docs navigation body, validator, or in-flight promise is retained here.
   const payload = state.legacyPricing || await api('/api/content/pricing');
   state.legacyPricing ||= payload;
   state.currency = payload.display?.default_currency || 'CNY';
@@ -1827,18 +1823,19 @@ function renderError(error) {
 }
 
 async function api(path, options = {}) {
-  const frontDoor = options.frontDoor === true;
-  const cached = frontDoor ? null : contentApiCache.get(path);
+  const publicDocsNavigation = options.publicDocsNavigation === true;
+  const cached = publicDocsNavigation ? null : contentApiCache.get(path);
   const headers = new Headers({ accept: 'application/json' });
-  if (!frontDoor && cached?.etag) headers.set('if-none-match', cached.etag);
+  if (!publicDocsNavigation && cached?.etag) headers.set('if-none-match', cached.etag);
   const response = await fetch(path, {
     headers,
-    ...(path.startsWith('/api/content/') || frontDoor
-      ? { cache: frontDoor ? 'no-store' : 'no-cache' }
+    credentials: path.startsWith('/api/content/docs') || publicDocsNavigation ? 'omit' : undefined,
+    ...(path.startsWith('/api/content/') || publicDocsNavigation
+      ? { cache: publicDocsNavigation ? 'no-store' : 'no-cache' }
       : {}),
   });
   if (response.status === 304) {
-    if (frontDoor || !cached || response.headers.get('etag') !== cached.etag) {
+    if (publicDocsNavigation || !cached || response.headers.get('etag') !== cached.etag) {
       throw new Error('API 返回了无法验证的缓存响应。');
     }
     return cached.body;
@@ -1856,7 +1853,7 @@ async function api(path, options = {}) {
     error.details = body?.error?.details;
     throw error;
   }
-  if (path.startsWith('/api/content/') && !frontDoor) {
+  if (path.startsWith('/api/content/') && !publicDocsNavigation) {
     contentApiCache.set(path, {
       body,
       etag: response.headers.get('etag'),

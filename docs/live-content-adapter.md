@@ -37,6 +37,7 @@ The adapter sends only `GET` requests with `Authorization: Bearer <secret>` to:
 ```text
 /api/internal/live-content/v1/health
 /api/internal/live-content/v1/docs?locale=zh
+/api/internal/live-content/v1/docs/v2/navigation?locale=zh
 /api/internal/live-content/v1/docs/:slug?locale=zh
 /api/internal/live-content/v1/pricing
 ```
@@ -48,22 +49,28 @@ service: "newapi-live-content", contract_version: "v1", read_only: true }`
 response contract; a health `304` is unhealthy. Non-2xx responses (other than a
 verified Docs page 404 or a validated conditional `304` for Docs/Pricing), transport/timeouts, invalid JSON,
 oversized bodies, contract mismatches, and schema violations fail closed with
-a generic 503. Backend response bodies and messages are never exposed to the
-browser. There is no session-cookie, user API-key, public-origin, or fixture
-fallback path in live mode.
+a generic 503. Navigation is bounded to 8 MiB because it is recursive; the
+catalog/page/Pricing paths retain their 2 MiB bound. Backend response bodies
+and messages are never exposed to the browser. There is no session-cookie,
+user API-key, public-origin, or fixture fallback path in live mode.
 
-The separate recursive Docs front-door adapter calls only the approved
-session alias (`/api/front-door/v1/docs/v2/navigation?locale=zh`). It forwards only the signed
-`session` cookie. Browser identity, conditional-request validators, secure-API
-headers, the internal live adapter token, Authorization/API-key/provider
-credentials, arbitrary credential headers, and credential query parameters
-never cross this boundary. Its recursive Docs responses use a
-bounded public allowlist; unknown/private fields are omitted, malformed known
-fields fail closed, and legitimate public identifiers are retained even when
-their values contain words such as `token`. Authenticated Docs responses are
-`private, no-store` with no ETag/304 path. `/api/content/pricing` is the public
-Pricing route and remains on this existing service-token adapter regardless of
-`New-Api-User` or any browser session.
+The public recursive Docs compatibility URL
+(`/api/front-door/v1/docs/v2/navigation?locale=zh`) uses the approved
+token-only NewAPI endpoint
+(`/api/internal/live-content/v1/docs/v2/navigation?locale=zh`) over the same
+VPC binding. It forwards only the Worker-held
+`Authorization: Bearer <LIVE_CONTENT_ADAPTER_TOKEN>` and fixed
+`Accept: application/json`, plus an optional `If-None-Match` validator.
+Browser cookies, `New-Api-User`, browser Authorization, API keys,
+admin/provider credentials, arbitrary browser headers, and end-user logic are
+never inspected or forwarded. The response is the published normal/public
+recursive folder/layer/group/page tree; the Worker applies a bounded public
+allowlist, omits unknown/private fields, and fails closed on malformed known
+fields. Public Docs responses preserve validated upstream ETags and use the
+Worker's `no-cache` response policy; a verified conditional `304` remains an
+empty `304`. `/api/content/pricing` is the public Pricing route and remains on
+the existing service-token adapter regardless of `New-Api-User` or any browser
+session.
 
 The browser boundary follows the same rule: the canonical Pricing bundle makes
 a fresh public `/api/content/pricing` request with credentials and secure-API
@@ -101,13 +108,11 @@ public identifier arrays such as `enable_groups` and
 change values or semantics. It derives the public pricing `ETag` from that
 projected payload, so an equivalent upstream `200` with different model,
 vendor, or identifier-array order still returns the same validator and a
-matching browser validator is converted to an empty public `304`. The separate
-Docs front-door adapter strips upstream validators and rejects upstream `304`
-responses; its authenticated Docs responses are `private, no-store` with no
-ETag or 304 reuse. Cookies, sessions, browser authorization, user API keys, and
-unrelated headers are not forwarded by the public Pricing adapter. The five-second deadline covers binding
-fetch, body streaming,
-UTF-8 decoding, JSON parsing, validation, and projection.
+matching browser validator is converted to an empty public `304`. Cookies,
+sessions, browser authorization, user API keys, and unrelated headers are not
+forwarded by the public Docs or Pricing adapter. The five-second deadline
+covers binding fetch, body streaming, UTF-8 decoding, JSON parsing, validation,
+and projection.
 
 The live Docs projection must provide the existing catalog/page block contract.
 Both `schema_version` and `renderer_version` must equal the currently supported

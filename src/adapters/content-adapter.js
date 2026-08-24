@@ -12,6 +12,8 @@ export const LIVE_CONTENT_DOCS_RENDERER_VERSION = 1;
 export const LIVE_CONTENT_ORIGIN = 'http://newapi-api.newapi:3000';
 export const LIVE_CONTENT_TIMEOUT_MS = 5_000;
 export const LIVE_CONTENT_MAX_BODY_BYTES = 2 * 1024 * 1024;
+export const LIVE_CONTENT_DOCS_NAVIGATION_PATH = '/api/internal/live-content/v1/docs/v2/navigation?locale=zh';
+export const LIVE_CONTENT_DOCS_NAVIGATION_MAX_BODY_BYTES = 8 * 1024 * 1024;
 export const LIVE_CONTENT_MAX_ENDPOINT_MAP_ENTRIES = 500;
 // Match the finite coordinate limit already enforced by capability geometry.
 export const LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION = 100_000;
@@ -19,13 +21,9 @@ export const LIVE_CONTENT_MAX_VIDEO_RESOLUTION_DIMENSION = 100_000;
 // the compatibility limit finite so an upstream value cannot disable
 // Worker-side validation entirely.
 export const LIVE_CONTENT_MAX_SERIALIZED_REQUEST_BYTES = 64_000_000;
-export const FRONT_DOOR_CONTENT_VPC_BINDING = LIVE_CONTENT_VPC_BINDING;
-export const FRONT_DOOR_CONTENT_ORIGIN = LIVE_CONTENT_ORIGIN;
-export const FRONT_DOOR_CONTENT_TIMEOUT_MS = LIVE_CONTENT_TIMEOUT_MS;
-export const FRONT_DOOR_CONTENT_MAX_BODY_BYTES = 8 * 1024 * 1024;
-export const FRONT_DOOR_DOCS_NAVIGATION_PATH = '/api/front-door/v1/docs/v2/navigation?locale=zh';
-export const FRONT_DOOR_MAX_NAVIGATION_NODES = 50_000;
-export const FRONT_DOOR_MAX_NAVIGATION_DEPTH = 100;
+export const PUBLIC_DOCS_NAVIGATION_ROUTE = '/api/front-door/v1/docs/v2/navigation';
+export const DOCS_NAVIGATION_MAX_NODES = 50_000;
+export const DOCS_NAVIGATION_MAX_DEPTH = 100;
 export const LOCKED_PRICING_CONTEXT = Object.freeze({
   user_group: 'default',
   selected_group: 'default',
@@ -55,159 +53,138 @@ export function createContentAdapter(env = {}) {
 }
 
 /**
- * Browser-session-only adapter for the approved recursive Docs front door.
- *
- * The private service binding is the only origin selector. The upstream
- * request is deliberately assembled from the signed `session` cookie alone;
- * browser identity, validators, secure-API headers, Authorization/API-key/
- * provider credentials, and arbitrary browser headers never cross this boundary.
+ * Public Docs navigation adapter. The public Worker URL is retained for
+ * client compatibility, but this adapter is service-token-only: it never
+ * accepts a browser Request and never reads browser cookies or identity.
  */
-export function createFrontDoorSessionAdapter(
+export function createDocsNavigationAdapter(
   env = {},
-  request,
   {
-    timeoutMs = FRONT_DOOR_CONTENT_TIMEOUT_MS,
-    maxBodyBytes = FRONT_DOOR_CONTENT_MAX_BODY_BYTES,
+    timeoutMs = LIVE_CONTENT_TIMEOUT_MS,
+    maxBodyBytes = LIVE_CONTENT_DOCS_NAVIGATION_MAX_BODY_BYTES,
   } = {},
 ) {
-  const credentials = extractFrontDoorCredentials(request);
-  if (typeof env[FRONT_DOOR_CONTENT_VPC_BINDING]?.fetch !== 'function') {
-    throw frontDoorUnavailable('missing_vpc_binding');
+  const mode = String(env.CONTENT_ADAPTER || CONTENT_ADAPTER_FIXTURE).trim().toLowerCase();
+  if (mode === CONTENT_ADAPTER_FIXTURE) return createFixtureDocsNavigationAdapter();
+  if (mode !== CONTENT_ADAPTER_LIVE) {
+    throw new HttpError(503, `Content adapter "${mode}" is not configured.`, {
+      configured_adapter: mode,
+      live_integration: false,
+    });
   }
-  const fetchResponse = (path) => fetchFrontDoorPayload(
-    env,
-    credentials,
-    path,
-    { timeoutMs, maxBodyBytes },
-  );
+  const token = getLiveContentToken(env);
+  if (typeof env[LIVE_CONTENT_VPC_BINDING]?.fetch !== 'function') {
+    throw liveUnavailable('missing_vpc_binding');
+  }
   return {
-    name: 'front-door-session',
+    name: 'docs-navigation-token',
     live: true,
+    getDocsNavigationResponse(options = {}) {
+      return fetchAndValidateNavigation(options);
+    },
+  };
+
+  function fetchAndValidateNavigation(options = {}) {
+    return fetchLivePayload(
+      env,
+      token,
+      LIVE_CONTENT_DOCS_NAVIGATION_PATH,
+      'docs_navigation',
+      {
+        timeoutMs,
+        maxBodyBytes,
+        ifNoneMatch: options.ifNoneMatch,
+        transform: (payload) => clone(assertDocsNavigation(payload)),
+      },
+    );
+  }
+}
+
+function createFixtureDocsNavigationAdapter() {
+  const sections = docsFixture.sections || [];
+  return {
+    name: CONTENT_ADAPTER_FIXTURE,
+    live: false,
     async getDocsNavigationResponse() {
-      return fetchResponse(FRONT_DOOR_DOCS_NAVIGATION_PATH);
+      const data = sections.map((section, sectionIndex) => ({
+        type: 'group',
+        id: sectionIndex + 1,
+        slug: `fixture-${sectionIndex + 1}`,
+        title: section.title,
+        space_id: sectionIndex + 1,
+        locale: 'zh',
+        enabled: true,
+        children: (section.items || []).map((item, itemIndex) => ({
+          type: 'page',
+          id: (sectionIndex + 1) * 10_000 + itemIndex + 1,
+          slug: item.slug,
+          path: item.slug,
+          title: item.title,
+          space_id: sectionIndex + 1,
+          parent_id: 0,
+          sort_key: itemIndex + 1,
+          locale: 'zh',
+          enabled: true,
+          children: [],
+        })),
+      }));
+      return { status: 200, payload: { success: true, data }, etag: null };
     },
   };
 }
 
-export function extractFrontDoorCredentials(request) {
-  if (!(request instanceof Request)) {
-    throw new HttpError(401, 'Browser session is required.', {
-      reason: 'invalid_session_request',
-    });
+function assertDocsNavigation(payload) {
+  if (!isRecord(payload) || payload.success !== true || !Array.isArray(payload.data) || payload.data.length > 5_000) {
+    schemaFailure();
   }
-  if (hasFrontDoorCredentialQuery(request.url)) {
-    throw new HttpError(401, 'Browser session is required.', {
-      reason: 'invalid_session_request',
-    });
-  }
-  for (const header of FRONT_DOOR_REJECTED_HEADERS) {
-    if (String(request.headers.get(header) || '').trim() !== '') {
-      throw new HttpError(401, 'Browser session is required.', {
-        reason: 'invalid_session_request',
-      });
+  let nodeCount = 0;
+  const visit = (nodes, depth = 0) => {
+    if (depth > DOCS_NAVIGATION_MAX_DEPTH || !Array.isArray(nodes) || nodes.length > 5_000 || nodeCount + nodes.length > DOCS_NAVIGATION_MAX_NODES) {
+      schemaFailure();
     }
-  }
-  if (hasCredentialBearingHeader(request)) {
-    throw new HttpError(401, 'Browser session is required.', {
-      reason: 'invalid_session_request',
-    });
-  }
-  const cookie = extractSessionCookie(request.headers.get('cookie'));
-  if (!cookie) throw new HttpError(401, 'Browser session is required.', {
-    reason: 'missing_session',
-  });
-  return Object.freeze({ cookie });
+    nodeCount += nodes.length;
+    for (const node of nodes) {
+      if (!isRecord(node) || !['group', 'page'].includes(node.type) || !Number.isInteger(node.id) || node.id <= 0 || node.id > 2_147_483_647) {
+        schemaFailure();
+      }
+      if (typeof node.title !== 'string' || node.title.trim() === '' || node.title.length > 300) {
+        schemaFailure();
+      }
+      if (typeof node.slug !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,199}$/.test(node.slug)) {
+        schemaFailure();
+      }
+      if (!Number.isInteger(node.space_id) || node.space_id <= 0 || typeof node.locale !== 'string' || node.locale.length > 40 || node.locale.trim() === '') schemaFailure();
+      if (node.type === 'page' && (typeof node.path !== 'string' || node.path === '')) schemaFailure();
+      if (node.path !== undefined && (typeof node.path !== 'string' || node.path.length > 500 || !/^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/.test(node.path))) {
+        schemaFailure();
+      }
+      for (const field of ['description', 'icon_key', 'locale']) {
+        if (node[field] !== undefined && (typeof node[field] !== 'string' || node[field].length > 1_000)) schemaFailure();
+      }
+      for (const field of ['space_id', 'parent_id', 'sort_key']) {
+        if (node[field] !== undefined && (!Number.isInteger(node[field]) || node[field] < 0)) schemaFailure();
+      }
+      if (node.enabled !== undefined && typeof node.enabled !== 'boolean') schemaFailure();
+      visit(node.children || [], depth + 1);
+    }
+  };
+  visit(payload.data);
+  return { success: true, data: projectDocsNavigationNodes(payload.data) };
 }
 
-const FRONT_DOOR_REJECTED_HEADERS = Object.freeze([
-  'authorization',
-  'proxy-authorization',
-  'x-api-key',
-  'x-goog-api-key',
-  'api-key',
-  'new-api-key',
-  'x-newapi-live-content-token',
-  'sec-websocket-protocol',
-]);
-
-function extractSessionCookie(header) {
-  if (
-    typeof header !== 'string' ||
-    header.length > 16_384 ||
-    header.includes(',') ||
-    /[\u0000-\u001f\u007f]/.test(header)
-  ) return '';
-  const pairs = header.split(';');
-  const sessionValues = [];
-  for (const rawPair of pairs) {
-    const pair = rawPair.trim();
-    if (!pair) return '';
-    const separator = pair.indexOf('=');
-    if (separator <= 0) return '';
-    const name = pair.slice(0, separator);
-    // Whitespace/case variants of the session name are malformed rather than
-    // an unrelated cookie. This also catches duplicate forms such as
-    // `session=a; session =b`.
-    if (/^session\s*=/i.test(pair)) {
-      if (!pair.startsWith('session=')) return '';
-      sessionValues.push(pair.slice('session='.length));
-    } else if (isCredentialIdentifier(name, { rejectBareKey: true })) {
-      return '';
-    }
-  }
-  if (sessionValues.length !== 1) return '';
-  const value = sessionValues[0];
-  if (!value || value !== value.trim() || /[;\s,"]/g.test(value)) return '';
-  return `session=${value}`;
-}
-
-function hasFrontDoorCredentialQuery(rawUrl) {
-  let url;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    return true;
-  }
-  return [...url.searchParams.keys()].some((key) => {
-    return isCredentialIdentifier(key, { rejectBareKey: true });
+function projectDocsNavigationNodes(nodes) {
+  return nodes.map((node) => {
+    const projected = { type: node.type, id: node.id, slug: node.slug, title: node.title };
+    ['path', 'description', 'icon_key', 'space_id', 'parent_id', 'sort_key', 'locale', 'enabled'].forEach((field) => {
+      if (node[field] !== undefined) projected[field] = node[field];
+    });
+    if (Array.isArray(node.children)) projected.children = projectDocsNavigationNodes(node.children);
+    return projected;
   });
 }
 
-function hasCredentialBearingHeader(request) {
-  for (const [name, value] of request.headers.entries()) {
-    const lower = name.toLowerCase();
-    if (FRONT_DOOR_REJECTED_HEADERS.includes(lower)) continue;
-    if (lower === 'cookie' || lower === 'new-api-user') continue;
-    if (lower.startsWith('x-secure-')) return true;
-    if (String(value).trim() !== '' && isCredentialIdentifier(name)) return true;
-  }
-  return false;
-}
-
-function isCredentialIdentifier(value, { rejectBareKey = false } = {}) {
-  if (typeof value !== 'string') return false;
-  const normalized = normalizePublicIdentifier(value);
-  const compact = normalized.replace(/_/g, '');
-  if (rejectBareKey && ['key', 'apikey', 'clientid'].includes(compact)) return true;
-  if (isCredentialPublicIdentifier(value)) return true;
-  if (/(?:^|_)(?:auth|authorization|bearer|password|passwd|credential|credentials|key|secret|signature|token)(?:_|$)/.test(normalized)) return true;
-  if (/(?:^|_)(?:api|access|client|provider|signing|private|admin)[_-]?(?:key|token|secret|credential|id)(?:_|$)/.test(normalized)) return true;
-  return /^(?:authorization|proxyauthorization|accesstoken|clientsecret|clientid|providerkey|apikey|newapikey)$/.test(compact);
-}
-
-function normalizePublicIdentifier(value) {
-  return value
-    .trim()
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .replace(/[^A-Za-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .toLowerCase();
-}
-
-// Public map keys are identifiers, but NewAPI can serialize credentials into
-// those same maps. Reject qualifier + secret pairs while retaining ordinary
-// public names such as `token`, `tokenrouter`, and `token-group`.
+// Dynamic public maps can contain credential-shaped identifiers. Keep the
+// existing redaction contract shared by Pricing and Docs projections.
 function isCredentialPublicIdentifier(value) {
   if (typeof value !== 'string') return false;
   const segments = normalizePublicIdentifier(value).split('_').filter(Boolean);
@@ -217,10 +194,9 @@ function isCredentialPublicIdentifier(value) {
     'credentials', 'secret', 'privatekey', 'privatesecret', 'apikey',
     'apitoken', 'accesstoken', 'privatetoken', 'admintoken', 'clientid',
     'clientkey', 'clientsecret', 'clienttoken', 'clientprivatekey',
-    'clientapikey',
-    'providercredential', 'providerkey', 'providertoken', 'servicecredential',
-    'servicekey', 'servicetoken', 'signingprivatekey', 'oauthsecret',
-    'oauthkey', 'oauthtoken',
+    'clientapikey', 'providercredential', 'providerkey', 'providertoken',
+    'servicecredential', 'servicekey', 'servicetoken', 'signingprivatekey',
+    'oauthsecret', 'oauthkey', 'oauthtoken',
   ]);
   if (segments.length === 1 && bareCredentialWords.has(segments[0])) return true;
   const qualifiers = new Set([
@@ -234,11 +210,6 @@ function isCredentialPublicIdentifier(value) {
   for (let index = 0; index < segments.length - 1; index += 1) {
     if (qualifiers.has(segments[index]) && secrets.has(segments[index + 1])) return true;
   }
-  // NewAPI identifiers also arrive as compact camel/acronym spellings where
-  // normalization cannot recover a separator (`accesskey`, `authkey`,
-  // `serviceid`, `privatekeyid`, `servicesecret`, `APIKEY`). Recognize the
-  // complete qualifier + one-or-more secret-word forms without rejecting
-  // ordinary public names such as `token`, `tokenrouter`, or `api_endpoint`.
   const compact = segments.join('');
   const credentialWords = new Set([...qualifiers, ...secrets]);
   for (const qualifier of qualifiers) {
@@ -261,140 +232,14 @@ function isCredentialPublicIdentifier(value) {
   return false;
 }
 
-async function fetchFrontDoorPayload(
-  env,
-  credentials,
-  path,
-  { timeoutMs, maxBodyBytes },
-) {
-  const binding = env[FRONT_DOOR_CONTENT_VPC_BINDING];
-  const controller = new AbortController();
-  const deadline = Date.now() + timeoutMs;
-  let rejectTimeout;
-  const timeout = new Promise((_, reject) => {
-    rejectTimeout = reject;
-  });
-  const timer = setTimeout(() => {
-    controller.abort();
-    rejectTimeout(frontDoorUnavailable('upstream_timeout'));
-  }, timeoutMs);
-  const headers = new Headers({ Accept: 'application/json', Cookie: credentials.cookie });
-  try {
-    let response;
-    try {
-      const operation = binding.fetch(new Request(`${FRONT_DOOR_CONTENT_ORIGIN}${path}`, {
-          method: 'GET',
-          headers,
-          signal: controller.signal,
-        }));
-      response = await Promise.race([operation, timeout]);
-    } catch {
-      if (controller.signal.aborted || Date.now() >= deadline) {
-        throw frontDoorUnavailable('upstream_timeout');
-      }
-      throw frontDoorUnavailable('upstream_transport');
-    }
-    if (!response || !response.headers || response.status !== 200) {
-      if (response?.status === 401 || response?.status === 403) {
-        throw new HttpError(401, 'Browser session is required.', {
-          reason: 'upstream_unauthorized',
-        });
-      }
-      throw frontDoorUnavailable('upstream_status');
-    }
-    if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || '')) {
-      throw frontDoorUnavailable('invalid_upstream_content_type');
-    }
-    let raw;
-    try {
-      raw = await readBoundedBody(
-        response,
-        maxBodyBytes,
-        controller.signal,
-        deadline,
-      );
-    } catch (error) {
-      if (controller.signal.aborted) throw frontDoorUnavailable('upstream_timeout');
-      throw frontDoorUnavailable(
-        error?.message === 'upstream response too large'
-          ? 'upstream_body_too_large'
-          : 'invalid_upstream_body',
-      );
-    }
-    let payload;
-    try {
-      payload = JSON.parse(raw);
-    } catch {
-      throw frontDoorUnavailable('invalid_upstream_json');
-    }
-    if (!payload || payload.success !== true || !Object.hasOwn(payload, 'data')) {
-      throw frontDoorUnavailable('invalid_upstream_schema');
-    }
-    const projected = assertFrontDoorNavigation(payload);
-    // Authenticated payloads are session-specific. Do not reflect upstream
-    // validators or derive a reusable identity-free ETag at this boundary.
-    return { status: 200, payload: projected };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function assertFrontDoorNavigation(payload) {
-  if (!isRecord(payload) || payload.success !== true || !Array.isArray(payload.data) || payload.data.length > 5_000) {
-    throw frontDoorUnavailable('invalid_upstream_schema');
-  }
-  let nodeCount = 0;
-  const visit = (nodes, depth = 0) => {
-    if (depth > FRONT_DOOR_MAX_NAVIGATION_DEPTH || !Array.isArray(nodes) || nodes.length > 5_000 || nodeCount + nodes.length > FRONT_DOOR_MAX_NAVIGATION_NODES) {
-      throw frontDoorUnavailable('invalid_upstream_schema');
-    }
-    nodeCount += nodes.length;
-    for (const node of nodes) {
-      if (!isRecord(node) || !['group', 'page'].includes(node.type) || !Number.isInteger(node.id) || node.id <= 0 || node.id > 2_147_483_647) {
-        throw frontDoorUnavailable('invalid_upstream_schema');
-      }
-      if (typeof node.title !== 'string' || node.title.trim() === '' || node.title.length > 300) {
-        throw frontDoorUnavailable('invalid_upstream_schema');
-      }
-      if (typeof node.slug !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,199}$/.test(node.slug)) {
-        throw frontDoorUnavailable('invalid_upstream_schema');
-      }
-      if (!Number.isInteger(node.space_id) || node.space_id <= 0 || typeof node.locale !== 'string' || node.locale.length > 40 || node.locale.trim() === '') throw frontDoorUnavailable('invalid_upstream_schema');
-      if (node.type === 'page' && (typeof node.path !== 'string' || node.path === '')) throw frontDoorUnavailable('invalid_upstream_schema');
-      if (node.path !== undefined && (typeof node.path !== 'string' || node.path.length > 500 || !/^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/.test(node.path))) {
-        throw frontDoorUnavailable('invalid_upstream_schema');
-      }
-      for (const field of ['description', 'icon_key', 'locale']) {
-        if (node[field] !== undefined && (typeof node[field] !== 'string' || node[field].length > 1_000)) throw frontDoorUnavailable('invalid_upstream_schema');
-      }
-      for (const field of ['space_id', 'parent_id', 'sort_key']) {
-        if (node[field] !== undefined && (!Number.isInteger(node[field]) || node[field] < 0)) throw frontDoorUnavailable('invalid_upstream_schema');
-      }
-      if (node.enabled !== undefined && typeof node.enabled !== 'boolean') throw frontDoorUnavailable('invalid_upstream_schema');
-      visit(node.children || [], depth + 1);
-    }
-  };
-  visit(payload.data);
-  return { success: true, data: projectFrontDoorNavigationNodes(payload.data) };
-}
-
-function projectFrontDoorNavigationNodes(nodes) {
-  return nodes.map((node) => {
-    const projected = { type: node.type, id: node.id, slug: node.slug, title: node.title };
-    ['path', 'description', 'icon_key', 'space_id', 'parent_id', 'sort_key', 'locale', 'enabled'].forEach((field) => {
-      if (node[field] !== undefined) projected[field] = node[field];
-    });
-    if (Array.isArray(node.children)) projected.children = projectFrontDoorNavigationNodes(node.children);
-    return projected;
-  });
-}
-
-function frontDoorUnavailable(reason) {
-  return new HttpError(503, 'Live content is temporarily unavailable.', {
-    configured_adapter: 'front-door-session',
-    live_integration: true,
-    reason,
-  });
+function normalizePublicIdentifier(value) {
+  return value
+    .trim()
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase();
 }
 
 export function createFixtureAdapter() {
@@ -456,15 +301,7 @@ export function createLiveContentAdapter(
     maxBodyBytes = LIVE_CONTENT_MAX_BODY_BYTES,
   } = {},
 ) {
-  const token = typeof env[LIVE_CONTENT_ADAPTER_TOKEN] === 'string'
-    ? env[LIVE_CONTENT_ADAPTER_TOKEN].trim()
-    : '';
-  if (
-    new TextEncoder().encode(token).byteLength < 32 ||
-    !/^[\x21-\x7e]+$/.test(token)
-  ) {
-    throw liveUnavailable('missing_adapter_token');
-  }
+  const token = getLiveContentToken(env);
   if (typeof env[LIVE_CONTENT_VPC_BINDING]?.fetch !== 'function') {
     throw liveUnavailable('missing_vpc_binding');
   }
@@ -819,6 +656,19 @@ function liveUnavailable(reason) {
     live_integration: true,
     reason,
   });
+}
+
+function getLiveContentToken(env) {
+  const token = typeof env[LIVE_CONTENT_ADAPTER_TOKEN] === 'string'
+    ? env[LIVE_CONTENT_ADAPTER_TOKEN].trim()
+    : '';
+  if (
+    new TextEncoder().encode(token).byteLength < 32 ||
+    !/^[\x21-\x7e]+$/.test(token)
+  ) {
+    throw liveUnavailable('missing_adapter_token');
+  }
+  return token;
 }
 
 function schemaFailure() {
