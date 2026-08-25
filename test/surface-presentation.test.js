@@ -104,6 +104,35 @@ test('public Pricing route ships the canonical component bundle without browser 
   assert.ok(stylesheet.includes('.pricing-page-shell'));
 });
 
+test('public Pricing language control preserves canonical labels and runtime seam', async () => {
+  const [app, styles] = await sources;
+  assert.match(app, /canonical-pricing-surface/);
+  assert.match(app, /data-pricing-language-selector/);
+  assert.match(app, /window\.__i18n/);
+  assert.match(app, /i18n\.on\('languageChanged'/);
+  assert.match(app, /localStorage\.setItem\('i18nextLng', language\)/);
+  assert.match(app, /lower\.startsWith\('zh-hans'\)/);
+  assert.match(app, /lower\.startsWith\('zh-hant'\)/);
+  assert.doesNotMatch(app, /\/api\/user\/self/);
+  assert.doesNotMatch(app, /writeScopedPreference|readScopedPreference/);
+  for (const label of [
+    '简体中文',
+    '繁體中文',
+    'English',
+    'Français',
+    '日本語',
+    'Русский',
+    'Tiếng Việt',
+  ]) {
+    assert.match(app, new RegExp(label));
+  }
+  assert.match(styles, /\.pricing-language-bar/);
+  assert.match(styles, /\.pricing-language-menu/);
+  assert.match(styles, /\.pricing-language-trigger\s*\{[\s\S]*?border:\s*0 transparent solid/);
+  assert.match(styles, /\.pricing-language-option\s*\{[\s\S]*?padding:\s*6px 12px/);
+  assert.match(styles, /@media \(max-width: 820px\)/);
+});
+
 test('architecture pricing contract preserves upstream ratios without a fixed substitute', async () => {
   const architecture = await readFile(ARCHITECTURE_URL, 'utf8');
   assert.match(architecture, /byte-for-byte/);

@@ -17,6 +17,18 @@ const PRICING_MOBILE_QUERY = '(max-width: 767px)';
 const THEME_STORAGE_KEY = 'juapi-theme';
 const PRICING_GROUP_DATA_ATTRIBUTE = ['data', 'pricing', 'group'].join('-');
 const pricingMobileMedia = window.matchMedia?.(PRICING_MOBILE_QUERY) || null;
+// Keep this list aligned with the pinned NewAPI header LanguageSelector. The
+// canonical bundle owns all translations; the Worker shell only supplies the
+// missing public control that invokes its i18n instance.
+const CANONICAL_PRICING_LANGUAGES = [
+  { value: 'zh-CN', label: '简体中文' },
+  { value: 'zh-TW', label: '繁體中文' },
+  { value: 'en', label: 'English' },
+  { value: 'fr', label: 'Français' },
+  { value: 'ja', label: '日本語' },
+  { value: 'ru', label: 'Русский' },
+  { value: 'vi', label: 'Tiếng Việt' },
+];
 
 const state = {
   docsCatalog: null,
@@ -47,6 +59,8 @@ const contentApiCache = new Map();
 let canonicalPricingScriptPromise = null;
 let canonicalDocsScriptPromise = null;
 let canonicalDocsMounted = false;
+let pricingLanguageBinding = null;
+let pricingLanguageMenuId = 0;
 
 window.addEventListener('popstate', () => {
   canonicalizeDocsLocation();
@@ -64,9 +78,15 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     activeDocsSearchButton.click();
   }
-  if (event.key === 'Escape') dismissSurfaceOverlay();
+  if (event.key === 'Escape') {
+    dismissSurfaceOverlay();
+    closeAllPricingLanguageMenus();
+  }
 });
 document.addEventListener('click', (event) => {
+  if (!event.target.closest('[data-pricing-language-selector]')) {
+    closeAllPricingLanguageMenus();
+  }
   const link = event.target.closest('a[data-link]');
   if (!link || event.defaultPrevented || event.metaKey || event.ctrlKey) return;
   const target = new URL(link.href, window.location.href);
@@ -128,7 +148,10 @@ async function renderRoute() {
   document.body.classList.toggle('canonical-pricing-active', canonicalPricing);
   const canonicalStyles = document.querySelector('link[data-canonical-pricing-css]');
   if (canonicalStyles) canonicalStyles.disabled = !canonicalPricing;
-  if (!canonicalPricing) globalThis.__unmountCanonicalPricing?.();
+  if (!canonicalPricing) {
+    globalThis.__unmountCanonicalPricing?.();
+    unbindPricingLanguageSelector();
+  }
   activeDocsSearchButton = null;
   activeDocsTocObserver?.disconnect();
   activeDocsTocObserver = null;
@@ -324,12 +347,16 @@ async function renderCanonicalPricing() {
   // `/console/pricing` is the public default view. It has no browser session
   // or end-user credential boundary; the canonical bundle calls the public
   // Worker Pricing endpoint backed by the server-side live-content adapter.
+  const languageBar = node('div', { class: 'pricing-language-bar' });
+  languageBar.append(createPricingLanguageSelector());
   const root = node('div', {
     id: 'canonical-pricing-root',
     class: 'canonical-pricing-root',
     'aria-label': '模型价格',
   });
-  replaceMain(root);
+  const surface = node('div', { class: 'canonical-pricing-surface' });
+  surface.append(languageBar, root);
+  replaceMain(surface);
   // Semi's distributed CommonJS helpers retain a guarded process.env read;
   // provide the browser-safe production value before the canonical module is
   // evaluated without shipping a Node runtime shim.
@@ -358,6 +385,264 @@ async function renderCanonicalPricing() {
   }
   await canonicalPricingScriptPromise;
   await globalThis.__mountCanonicalPricing?.();
+  bindPricingLanguageSelector(languageBar.firstElementChild);
+}
+
+function createPricingLanguageSelector() {
+  const menuId = `pricing-language-menu-${++pricingLanguageMenuId}`;
+  let hoverCloseTimer = null;
+  let openedByHover = false;
+  const selector = node('div', {
+    class: 'pricing-language-selector',
+    'data-pricing-language-selector': '',
+  });
+  const trigger = node('button', {
+    type: 'button',
+    class: 'pricing-language-trigger',
+    'aria-haspopup': 'true',
+    'aria-expanded': 'false',
+    'aria-controls': menuId,
+    'aria-label': 'common.changeLanguage',
+  });
+  trigger.append(pricingLanguageIcon());
+  const menu = node('ul', {
+    id: menuId,
+    class: 'pricing-language-menu',
+    role: 'menu',
+    'aria-orientation': 'vertical',
+    hidden: '',
+  });
+  for (const { value, label } of CANONICAL_PRICING_LANGUAGES) {
+    const option = node('li', {
+      class: 'pricing-language-option',
+      role: 'menuitem',
+      tabindex: '-1',
+      'data-language': value,
+    }, label);
+    option.addEventListener('click', () => {
+      closePricingLanguageMenu(selector, true);
+      void changePricingLanguage(value, selector);
+    });
+    menu.append(option);
+  }
+  selector.addEventListener('pointerenter', (event) => {
+    if (event.pointerType !== 'mouse') return;
+    clearTimeout(hoverCloseTimer);
+    if (menu.hidden) {
+      closeAllPricingLanguageMenus(selector);
+      openedByHover = true;
+      openPricingLanguageMenu(selector);
+    }
+  });
+  selector.addEventListener('pointerleave', (event) => {
+    if (event.pointerType !== 'mouse') return;
+    clearTimeout(hoverCloseTimer);
+    hoverCloseTimer = setTimeout(() => {
+      openedByHover = false;
+      closePricingLanguageMenu(selector);
+    }, 100);
+  });
+  trigger.addEventListener('click', () => {
+    clearTimeout(hoverCloseTimer);
+    if (openedByHover && !menu.hidden) {
+      openedByHover = false;
+      openPricingLanguageMenu(selector, 'first');
+      return;
+    }
+    const willOpen = menu.hidden;
+    openedByHover = false;
+    closeAllPricingLanguageMenus(selector);
+    if (willOpen) openPricingLanguageMenu(selector, 'first');
+    else closePricingLanguageMenu(selector);
+  });
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closePricingLanguageMenu(selector, true);
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      openPricingLanguageMenu(selector, event.key === 'ArrowDown' ? 'first' : 'last');
+    }
+  });
+  menu.addEventListener('keydown', (event) => {
+    const options = [...menu.querySelectorAll('[role="menuitem"]')];
+    const current = event.target.closest('[role="menuitem"]');
+    if (!current) return;
+    const currentIndex = options.indexOf(current);
+    switch (event.key) {
+      case 'Escape':
+        event.preventDefault();
+        closePricingLanguageMenu(selector, true);
+        break;
+      case 'ArrowDown':
+        event.preventDefault();
+        options[(currentIndex + 1) % options.length]?.focus();
+        break;
+      case 'ArrowUp':
+        event.preventDefault();
+        options[(currentIndex - 1 + options.length) % options.length]?.focus();
+        break;
+      case 'Home':
+        event.preventDefault();
+        options[0]?.focus();
+        break;
+      case 'End':
+        event.preventDefault();
+        options.at(-1)?.focus();
+        break;
+      case 'Enter':
+      case ' ':
+        event.preventDefault();
+        current.click();
+        break;
+      case 'Tab':
+        closePricingLanguageMenu(selector);
+        break;
+      default:
+        focusPricingLanguageByFirstCharacter(options, currentIndex, event.key);
+    }
+  });
+  selector.append(trigger, menu);
+  return selector;
+}
+
+function openPricingLanguageMenu(selector, focusEdge = null) {
+  const trigger = selector.querySelector('.pricing-language-trigger');
+  const menu = selector.querySelector('.pricing-language-menu');
+  if (!trigger || !menu) return;
+  menu.hidden = false;
+  trigger.setAttribute('aria-expanded', 'true');
+  const options = [...menu.querySelectorAll('[role="menuitem"]')];
+  if (focusEdge === 'first') options[0]?.focus();
+  if (focusEdge === 'last') options.at(-1)?.focus();
+}
+
+function focusPricingLanguageByFirstCharacter(options, currentIndex, key) {
+  if (key.length !== 1 || key.trim() === '') return;
+  const character = key.toLocaleLowerCase();
+  for (let offset = 1; offset <= options.length; offset += 1) {
+    const candidate = options[(currentIndex + offset) % options.length];
+    if (candidate.textContent.trim().toLocaleLowerCase().startsWith(character)) {
+      candidate.focus();
+      return;
+    }
+  }
+}
+
+function closeAllPricingLanguageMenus(except = null) {
+  document.querySelectorAll('[data-pricing-language-selector]').forEach((selector) => {
+    if (selector !== except) closePricingLanguageMenu(selector);
+  });
+}
+
+function closePricingLanguageMenu(selector, restoreFocus = false) {
+  if (!selector) return;
+  const trigger = selector.querySelector('.pricing-language-trigger');
+  const menu = selector.querySelector('.pricing-language-menu');
+  if (!trigger || !menu) return;
+  menu.hidden = true;
+  trigger.setAttribute('aria-expanded', 'false');
+  if (restoreFocus) trigger.focus();
+}
+
+async function changePricingLanguage(language, selector) {
+  const i18n = window.__i18n;
+  if (!i18n || typeof i18n.changeLanguage !== 'function') return;
+  try {
+    // This is the anonymous half of canonical NewAPI's language handler. It
+    // deliberately excludes scoped/user persistence and its API request.
+    const languageChange = i18n.changeLanguage(language);
+    localStorage.setItem('i18nextLng', language);
+    document.documentElement.lang = language;
+    await languageChange;
+    syncPricingLanguageSelector(selector);
+  } catch (error) {
+    console.error('Unable to change Pricing language.', error);
+  }
+}
+
+function syncPricingLanguageSelector(selector) {
+  if (!selector) return;
+  const i18n = window.__i18n;
+  const current = normalizePricingLanguage(
+    i18n?.language || localStorage.getItem('i18nextLng') || 'zh-CN',
+  );
+  document.documentElement.lang = current;
+  const trigger = selector.querySelector('.pricing-language-trigger');
+  const label = i18n?.t?.('common.changeLanguage') || 'common.changeLanguage';
+  trigger?.setAttribute('aria-label', label);
+  selector.querySelectorAll('[data-language]').forEach((option) => {
+    const selected = option.getAttribute('data-language') === current;
+    option.classList.toggle('is-selected', selected);
+    option.setAttribute('aria-current', selected ? 'true' : 'false');
+  });
+}
+
+function bindPricingLanguageSelector(selector) {
+  unbindPricingLanguageSelector();
+  const i18n = window.__i18n;
+  if (i18n && typeof i18n.on === 'function') {
+    const handleLanguageChanged = () => syncPricingLanguageSelector(selector);
+    i18n.on('languageChanged', handleLanguageChanged);
+    pricingLanguageBinding = { i18n, handleLanguageChanged };
+  }
+  syncPricingLanguageSelector(selector);
+}
+
+function unbindPricingLanguageSelector() {
+  if (!pricingLanguageBinding) return;
+  const { i18n, handleLanguageChanged } = pricingLanguageBinding;
+  i18n.off?.('languageChanged', handleLanguageChanged);
+  pricingLanguageBinding = null;
+}
+
+function normalizePricingLanguage(language) {
+  if (!language) return language;
+  const normalized = language.trim().replace(/_/g, '-');
+  const lower = normalized.toLowerCase();
+  if (
+    lower === 'zh'
+    || lower === 'zh-cn'
+    || lower === 'zh-sg'
+    || lower.startsWith('zh-hans')
+  ) return 'zh-CN';
+  if (
+    lower === 'zh-tw'
+    || lower === 'zh-hk'
+    || lower === 'zh-mo'
+    || lower.startsWith('zh-hant')
+  ) return 'zh-TW';
+  return CANONICAL_PRICING_LANGUAGES.find(
+    ({ value }) => value.toLowerCase() === lower,
+  )?.value || normalized;
+}
+
+function pricingLanguageIcon() {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  for (const [attribute, value] of Object.entries({
+    viewBox: '0 0 24 24',
+    'aria-hidden': 'true',
+    fill: 'none',
+    stroke: 'currentColor',
+    'stroke-width': '2',
+    'stroke-linecap': 'round',
+    'stroke-linejoin': 'round',
+  })) {
+    svg.setAttribute(attribute, value);
+  }
+  for (const definition of [
+    'm5 8 6 6',
+    'm4 14 6-6 2-3',
+    'M2 5h12',
+    'M7 2h1',
+    'm22 22-5-10-5 10',
+    'M14 18h6',
+  ]) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', definition);
+    svg.append(path);
+  }
+  return svg;
 }
 
 
@@ -518,7 +803,8 @@ function node(tagName, attributes = {}, ...children) {
 }
 
 function icon(name) {
-  const svg = node('svg', {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  for (const [attribute, value] of Object.entries({
     viewBox: '0 0 24 24',
     'aria-hidden': 'true',
     fill: 'none',
@@ -526,7 +812,9 @@ function icon(name) {
     'stroke-width': '1.8',
     'stroke-linecap': 'round',
     'stroke-linejoin': 'round',
-  });
+  })) {
+    svg.setAttribute(attribute, value);
+  }
   const paths = {
     search: ['circle|11|11|6.5', 'M16 16l4 4'],
     menu: ['M4 7h16', 'M4 12h16', 'M4 17h16'],
@@ -541,9 +829,15 @@ function icon(name) {
   (paths[name] || []).forEach((definition) => {
     if (definition.startsWith('circle|')) {
       const [, cx, cy, r] = definition.split('|');
-      svg.append(node('circle', { cx, cy, r }));
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('cx', cx);
+      circle.setAttribute('cy', cy);
+      circle.setAttribute('r', r);
+      svg.append(circle);
     } else {
-      svg.append(node('path', { d: definition }));
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', definition);
+      svg.append(path);
     }
   });
   return svg;

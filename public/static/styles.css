@@ -417,6 +417,97 @@ body.canonical-docs-active main {
   min-height: 100vh;
 }
 
+/* The canonical Pricing bundle owns the page; this control remains outside it. */
+.canonical-pricing-surface {
+  min-height: 100vh;
+  background: var(--semi-color-bg-0, #fff);
+}
+
+.pricing-language-bar {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px clamp(16px, 4vw, 48px);
+  background: color-mix(in srgb, var(--semi-color-bg-0, #fff) 94%, transparent);
+  border-bottom: 1px solid var(--semi-color-border, #e5e6e8);
+  backdrop-filter: blur(12px);
+}
+
+.pricing-language-selector {
+  position: relative;
+}
+
+.pricing-language-trigger {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 6px;
+  color: currentColor;
+  background: var(--semi-color-fill-0, #f5f6f7);
+  border: 0 transparent solid;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.pricing-language-trigger:hover,
+.pricing-language-trigger:focus-visible {
+  background: var(--semi-color-fill-1, #edeff0);
+}
+
+.pricing-language-trigger svg {
+  width: 18px;
+  height: 18px;
+  fill: none !important;
+  stroke: currentColor !important;
+}
+
+.pricing-language-trigger path {
+  fill: none !important;
+  stroke: currentColor !important;
+}
+
+.pricing-language-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  min-width: max-content;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--semi-color-bg-overlay, #fff);
+  border: 1px solid var(--semi-color-border, #e5e6e8);
+  border-radius: 8px;
+  box-shadow: var(--semi-shadow-elevated, 0 10px 26px rgba(28, 31, 35, 0.14));
+}
+
+.pricing-language-option {
+  display: flex;
+  align-items: center;
+  max-width: 280px;
+  padding: 6px 12px;
+  color: var(--semi-color-text-0, #1c1f23);
+  background: transparent;
+  border: 0;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pricing-language-option:hover,
+.pricing-language-option:focus-visible {
+  background: var(--semi-color-fill-1, #edeff0);
+}
+
+.pricing-language-option.is-selected {
+  background: var(--semi-color-primary-light-default, #e8f1ff);
+  font-weight: 600;
+}
+
 /* ============================================================
    5. Footer, loading, toast
    ============================================================ */

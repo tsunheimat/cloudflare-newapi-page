@@ -350,6 +350,164 @@ test('both public Pricing URLs mount the canonical runtime and share the same re
   }
 });
 
+test('public Pricing exposes the canonical seven-language switch on desktop and mobile', { timeout: 45_000 }, async () => {
+  const languages = [
+    ['zh-CN', '简体中文'],
+    ['zh-TW', '繁體中文'],
+    ['en', 'English'],
+    ['fr', 'Français'],
+    ['ja', '日本語'],
+    ['ru', 'Русский'],
+    ['vi', 'Tiếng Việt'],
+  ];
+  for (const pathname of ['/console/pricing', '/pricing']) {
+    for (const viewport of [
+      { width: 1280, height: 900 },
+      { width: 390, height: 844 },
+    ]) {
+      const context = await browser.newContext({ viewport });
+      const page = await newPage(context);
+      await page.route('**/api/status', async (route) => {
+        assert.equal(route.request().headers().cookie, undefined);
+        assert.equal(route.request().headers().authorization, undefined);
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: true,
+            data: {
+              display_in_currency: true,
+              quota_display_type: 'CNY',
+              price: 7.2,
+              usd_exchange_rate: 7.2,
+              custom_currency_exchange_rate: 1,
+              custom_currency_symbol: '¤',
+              quota_per_unit: 500000,
+              model_marketplace_default: { vendor: '1', group: 'default' },
+            },
+          }),
+        });
+      });
+      await page.route('**/api/pricing', async (route) => {
+        assert.equal(route.request().headers().cookie, undefined);
+        assert.equal(route.request().headers().authorization, undefined);
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            success: true,
+            data: [{ model_name: 'language switch model', vendor_id: 1, quota_type: 0, model_ratio: 1, completion_ratio: 2, enable_groups: ['default'] }],
+            vendors: [{ id: 1, name: 'Canonical vendor' }],
+            group_ratio: { default: 1 },
+            usable_group: { default: 'Default' },
+            supported_endpoint: {},
+            auto_groups: [],
+            video_resolution_dimensions: {},
+          }),
+        });
+      });
+      await page.goto(`${baseUrl}${pathname}`, { waitUntil: 'domcontentloaded' });
+      await page.getByRole('heading', { name: '模型价格', exact: true }).first().waitFor();
+      const trigger = page.locator('.pricing-language-trigger');
+      await trigger.waitFor({ state: 'visible' });
+      await trigger.hover();
+      await page.locator('.pricing-language-menu').waitFor({ state: 'visible' });
+      assert.equal(await trigger.getAttribute('aria-haspopup'), 'true');
+      assert.equal(await trigger.getAttribute('aria-expanded'), 'true');
+      await trigger.click();
+      assert.equal(await trigger.getAttribute('aria-expanded'), 'true');
+      assert.equal(await page.locator('.pricing-language-menu').getAttribute('aria-orientation'), 'vertical');
+      assert.deepEqual(
+        await page.locator('[data-language]').evaluateAll((options) => options.map((option) => option.dataset.language)),
+        languages.map(([value]) => value),
+      );
+      for (const [, label] of languages) {
+        assert.equal(await page.getByRole('menuitem', { name: label, exact: true }).count(), 1, label);
+      }
+      assert.equal(
+        await page.locator('[role="menuitem"]:focus').getAttribute('data-language'),
+        'zh-CN',
+      );
+      await page.keyboard.press('ArrowDown');
+      assert.equal(
+        await page.locator('[role="menuitem"]:focus').getAttribute('data-language'),
+        'zh-TW',
+      );
+      await page.keyboard.press('e');
+      assert.equal(
+        await page.locator('[role="menuitem"]:focus').getAttribute('data-language'),
+        'en',
+      );
+      await page.keyboard.press('Escape');
+      assert.equal(await trigger.getAttribute('aria-expanded'), 'false');
+      assert.equal(await trigger.evaluate((element) => element === document.activeElement), true);
+      const runtimeLanguage = await page.evaluate(() => window.__i18n?.language);
+      assert.equal(
+        await page.locator('[aria-current="true"]').getAttribute('data-language'),
+        runtimeLanguage,
+      );
+      await context.close();
+    }
+  }
+});
+
+test('Pricing language switching changes the mounted runtime and persists anonymously', { timeout: 45_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await newPage(context);
+  const unexpectedAuthRequests = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/api/user/')) unexpectedAuthRequests.push(request.url());
+  });
+  await page.route('**/api/status', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { display_in_currency: true, quota_display_type: 'CNY', price: 7.2, usd_exchange_rate: 7.2, custom_currency_exchange_rate: 1, custom_currency_symbol: '¤', quota_per_unit: 500000, model_marketplace_default: { vendor: '1', group: 'default' } } }),
+    });
+  });
+  await page.route('**/api/pricing', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: [{ model_name: 'runtime language model', vendor_id: 1, quota_type: 0, model_ratio: 1, completion_ratio: 2, enable_groups: ['default'] }], vendors: [{ id: 1, name: 'Canonical vendor' }], group_ratio: { default: 1 }, usable_group: { default: 'Default' }, supported_endpoint: {}, auto_groups: [], video_resolution_dimensions: {} }),
+    });
+  });
+  await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: '模型价格', exact: true }).first().waitFor();
+  await page.evaluate(() => {
+    const originalChangeLanguage = window.__i18n.changeLanguage;
+    window.__languageChangeCalls = [];
+    window.__i18n.changeLanguage = function changeLanguage(language) {
+      window.__languageChangeCalls.push(language);
+      return originalChangeLanguage.call(this, language);
+    };
+  });
+  await page.locator('.pricing-language-trigger').click();
+  await page.getByRole('menuitem', { name: 'English', exact: true }).click();
+  await page.getByRole('heading', { name: 'Model price', exact: true }).first().waitFor();
+  const state = await page.evaluate(() => ({
+    language: window.__i18n?.language,
+    stored: localStorage.getItem('i18nextLng'),
+    html: document.documentElement.lang,
+    calls: window.__languageChangeCalls,
+  }));
+  assert.equal(state.language, 'en');
+  assert.equal(state.stored, 'en');
+  assert.equal(state.html, 'en');
+  assert.deepEqual(state.calls, ['en']);
+  assert.deepEqual(unexpectedAuthRequests, []);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: 'Model price', exact: true }).first().waitFor();
+  assert.equal(await page.evaluate(() => window.__i18n?.language), 'en');
+  await page.evaluate(() => window.__i18n.changeLanguage('fr'));
+  assert.equal(
+    await page.locator('[data-language="fr"]').getAttribute('aria-current'),
+    'true',
+  );
+  assert.equal(await page.evaluate(() => localStorage.getItem('i18nextLng')), 'fr');
+  await context.close();
+});
+
 async function newPage(context) {
   const page = await context.newPage();
   page.setDefaultTimeout(UI_TIMEOUT_MS);
