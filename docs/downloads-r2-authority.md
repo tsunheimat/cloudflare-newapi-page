@@ -26,7 +26,20 @@ upload. Admin sessions are HMAC-SHA256 cookies signed with
 access key, or other secret is stored in this repository.
 Every admin POST also requires a per-session constant-time CSRF token and
 same-origin validation. QR publication compensates metadata/state writes on
-failure and returns only a generic 503.
+failure and returns only a generic 503. Each upload owns a Web Crypto random
+operation ID and a separate immutable generation ID. The existing
+`state/pending.json`, `metadata/latest.json`, `state/latest.json`, and image
+key families remain in place, while R2 conditional puts prevent one operation
+from replacing another operation's fence. New metadata/state records include
+the exact generation and full publication identity.
+
+QR writers verify every ambiguous R2 put/delete outcome with an immediate
+read-back. Marker transitions use the owning operation and the current object
+ETag; marker deletion first advances to an owner-only deleting phase. Public
+metadata/image routes and authenticated admin reads return a bounded 503 for
+pending/deleting markers or mismatched latest/state records. Existing legacy
+metadata-only QR objects remain readable, and no migration rewrites existing
+R2 objects.
 
 When `DOWNLOADS` is present, migrated routes never call `DOWNLOADS_SERVICE`.
 The legacy service binding remains declared as a rollback path for the
