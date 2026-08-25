@@ -161,6 +161,35 @@ test('migrated routes prefer R2 and never call the rollback service binding', as
   assert.equal(called, false);
 });
 
+test('production R2 mode fails closed without get/put and never calls the rollback service', async () => {
+  let serviceCalled = false;
+  const runtime = env({
+    DOWNLOADS_INTEGRATION: 'production-r2-binding',
+    DOWNLOADS: undefined,
+    DOWNLOADS_SERVICE: { fetch: async () => { serviceCalled = true; return new Response('legacy'); } },
+  });
+  for (const path of [
+    '/api/downloads/catalog',
+    '/api/codex-installer/public',
+    '/downloads',
+    '/wechat-group-qrcode/latest',
+    '/admin',
+  ]) {
+    const response = await get(path, runtime);
+    assert.equal(response.status, 503, path);
+    assert.doesNotMatch(await response.text(), /legacy|DOWNLOADS_SERVICE/);
+  }
+  assert.equal(serviceCalled, false);
+
+  const getOnly = env({
+    DOWNLOADS_INTEGRATION: 'production-r2-binding',
+    DOWNLOADS: { get: async () => null },
+    DOWNLOADS_SERVICE: { fetch: async () => { serviceCalled = true; return new Response('legacy'); } },
+  });
+  assert.equal((await get('/api/codex-installer/public', getOnly)).status, 503);
+  assert.equal(serviceCalled, false);
+});
+
 test('direct assets use NewAPI ASSETS with R2 authority and retain service fallback without R2', async () => {
   let assetCalled = false;
   let serviceCalled = false;
@@ -234,7 +263,8 @@ test('authenticated QR upload validates bytes and writes object plus latest/prev
   assert.ok(runtime.DOWNLOADS.puts.some(({ key }) => key.startsWith('wechat-group-qrcode/images/')));
   assert.ok(runtime.DOWNLOADS.puts.some(({ key }) => key === 'wechat-group-qrcode/metadata/latest.json'));
   assert.ok(runtime.DOWNLOADS.puts.some(({ key }) => key === 'wechat-group-qrcode/state/previous.json'));
-  assert.equal(runtime.DOWNLOADS.objects.has('wechat-group-qrcode/state/pending.json'), false);
+  const marker = storedJson(runtime, 'wechat-group-qrcode/state/pending.json');
+  assert.equal(marker.phase, 'committed');
 });
 
 test('concurrent identical uploads have one conditional fence owner and never publish a mixed pair', async () => {
@@ -266,7 +296,7 @@ test('concurrent identical uploads have one conditional fence owner and never pu
   releaseSecond.resolve();
   const second = await secondPromise;
   assert.deepEqual([first.status, second.status].sort((a, b) => a - b), [303, 503]);
-  assert.equal(runtime.DOWNLOADS.objects.has('wechat-group-qrcode/state/pending.json'), false);
+  assert.equal(storedJson(runtime, 'wechat-group-qrcode/state/pending.json').phase, 'committed');
   const metadata = storedJson(runtime, 'wechat-group-qrcode/metadata/latest.json');
   const state = storedJson(runtime, 'wechat-group-qrcode/state/latest.json');
   assert.ok(metadata?.generation_id && state?.generation_id);
@@ -278,6 +308,36 @@ test('concurrent identical uploads have one conditional fence owner and never pu
   assert.equal(apiRead.status, 200);
   assert.equal((await apiRead.json()).generation_id, metadata.generation_id);
   assert.equal((await get('/wechat-group-qrcode/latest', runtime)).status, 302);
+});
+
+test('stale writer cannot delete or overwrite a foreign pending marker', async () => {
+  const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+  const session = await adminSession(runtime);
+  const originalPut = runtime.DOWNLOADS.put.bind(runtime.DOWNLOADS);
+  const originalDelete = runtime.DOWNLOADS.delete.bind(runtime.DOWNLOADS);
+  let foreignMarker;
+  const deleted = [];
+  runtime.DOWNLOADS.delete = async (key) => { deleted.push(key); return originalDelete(key); };
+  runtime.DOWNLOADS.put = async (key, value, options) => {
+    const result = await originalPut(key, value, options);
+    if (key === 'wechat-group-qrcode/state/pending.json' && !foreignMarker) {
+      const marker = JSON.parse(String(value));
+      foreignMarker = {
+        ...marker,
+        operation_id: 'foreign-operation',
+        generation_id: 'foreign-generation',
+        expected: { ...marker.expected, operation_id: 'foreign-operation', generation_id: 'foreign-generation' },
+      };
+      runtime.DOWNLOADS.objects.set(key, JSON.stringify(foreignMarker));
+    }
+    return result;
+  };
+  const response = await get('/admin/wechat-group-qrcode/upload', runtime, qrUploadInit(session, 'stale.png'));
+  assert.equal(response.status, 503);
+  assert.deepEqual(deleted, []);
+  assert.equal(storedJson(runtime, 'wechat-group-qrcode/state/pending.json').operation_id, 'foreign-operation');
+  assert.equal((await get('/api/wechat-group-qrcode/latest', runtime)).status, 503);
+  assert.equal((await get('/admin', runtime, { headers: { cookie: session.cookie } })).status, 503);
 });
 
 test('QR publication reconciles commit-then-throw for acquisition, image, projections, and marker commit', async () => {
@@ -302,7 +362,7 @@ test('QR publication reconciles commit-then-throw for acquisition, image, projec
   };
   const response = await get('/admin/wechat-group-qrcode/upload', runtime, qrUploadInit(session, 'commit-then-throw.png'));
   assert.equal(response.status, 303);
-  assert.equal(runtime.DOWNLOADS.objects.has('wechat-group-qrcode/state/pending.json'), false);
+  assert.equal(storedJson(runtime, 'wechat-group-qrcode/state/pending.json').phase, 'committed');
   const metadata = storedJson(runtime, 'wechat-group-qrcode/metadata/latest.json');
   const state = storedJson(runtime, 'wechat-group-qrcode/state/latest.json');
   assert.deepEqual([...thrown].sort(), ['image', 'marker-acquire', 'marker-commit', 'metadata', 'state']);
@@ -310,21 +370,34 @@ test('QR publication reconciles commit-then-throw for acquisition, image, projec
   assert.equal(metadata.filename, 'commit-then-throw.png');
 });
 
-test('QR marker cleanup treats delete-then-throw as committed only after read-after-delete verification', async () => {
+test('QR committed marker is retained and no unconditional cleanup delete is attempted', async () => {
   const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
   const session = await adminSession(runtime);
   const originalDelete = runtime.DOWNLOADS.delete.bind(runtime.DOWNLOADS);
-  let thrown = false;
+  let deleteCalled = false;
   runtime.DOWNLOADS.delete = async (key) => {
+    deleteCalled = true;
     await originalDelete(key);
-    if (key === 'wechat-group-qrcode/state/pending.json' && !thrown) {
-      thrown = true;
-      throw new Error('delete-response-lost');
-    }
   };
   const response = await get('/admin/wechat-group-qrcode/upload', runtime, qrUploadInit(session, 'delete-then-throw.png'));
   assert.equal(response.status, 303);
-  assert.equal(runtime.DOWNLOADS.objects.has('wechat-group-qrcode/state/pending.json'), false);
+  assert.equal(deleteCalled, false);
+  assert.equal(storedJson(runtime, 'wechat-group-qrcode/state/pending.json').phase, 'committed');
+});
+
+test('a later upload replaces a retained committed marker only with its current ETag', async () => {
+  const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+  const session = await adminSession(runtime);
+  assert.equal((await get('/admin/wechat-group-qrcode/upload', runtime, qrUploadInit(session, 'first.png'))).status, 303);
+  const first = storedJson(runtime, 'wechat-group-qrcode/state/pending.json');
+  assert.equal(first.phase, 'committed');
+  assert.equal((await get('/admin/wechat-group-qrcode/upload', runtime, qrUploadInit(session, 'second.png'))).status, 303);
+  const second = storedJson(runtime, 'wechat-group-qrcode/state/pending.json');
+  assert.equal(second.phase, 'committed');
+  assert.notEqual(second.operation_id, first.operation_id);
+  const metadata = storedJson(runtime, 'wechat-group-qrcode/metadata/latest.json');
+  assert.equal(metadata.operation_id, second.operation_id);
+  assert.equal((await get('/api/wechat-group-qrcode/latest', runtime)).status, 200);
 });
 
 test('QR readers reject filename/source mixes even when a legacy r2_key and digest agree', async () => {
@@ -340,6 +413,38 @@ test('QR readers reject filename/source mixes even when a legacy r2_key and dige
   assert.equal((await get('/api/wechat-group-qrcode/latest', runtime)).status, 503);
   assert.equal((await get('/wechat-group-qrcode/latest', runtime)).status, 503);
   assert.equal((await get('/admin', runtime, { headers: { cookie: session.cookie } })).status, 503);
+});
+
+test('QR readers reject incomplete or one-sided new-generation state identity', async () => {
+  const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+  const session = await adminSession(runtime);
+  const upload = await get('/admin/wechat-group-qrcode/upload', runtime, qrUploadInit(session, 'identity.png'));
+  assert.equal(upload.status, 303);
+  const stateKey = 'wechat-group-qrcode/state/latest.json';
+  const state = storedJson(runtime, stateKey);
+  delete state.operation_id;
+  runtime.DOWNLOADS.objects.set(stateKey, state);
+  for (const path of ['/api/wechat-group-qrcode/latest', '/wechat-group-qrcode/latest']) {
+    assert.equal((await get(path, runtime)).status, 503, path);
+  }
+  assert.equal((await get('/admin', runtime, { headers: { cookie: session.cookie } })).status, 503);
+});
+
+test('new-generation QR reads fail closed for deletion, replacement, size, and digest drift', async () => {
+  for (const mutate of [
+    (runtime, key) => runtime.DOWNLOADS.objects.delete(key),
+    (runtime, key) => runtime.DOWNLOADS.objects.set(key, { bytes: Uint8Array.from([...png.slice(0, -1), png[png.length - 1] ^ 1]), httpMetadata: { contentType: 'image/png' } }),
+    (runtime, key) => runtime.DOWNLOADS.objects.set(key, { bytes: Uint8Array.from([...png, 0]), httpMetadata: { contentType: 'image/png' } }),
+  ]) {
+    const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+    const session = await adminSession(runtime);
+    assert.equal((await get('/admin/wechat-group-qrcode/upload', runtime, qrUploadInit(session, 'integrity.png'))).status, 303);
+    const metadata = storedJson(runtime, 'wechat-group-qrcode/metadata/latest.json');
+    mutate(runtime, metadata.r2_key);
+    assert.equal((await get('/api/wechat-group-qrcode/latest', runtime)).status, 503);
+    assert.equal((await get('/wechat-group-qrcode/latest', runtime)).status, 503);
+    assert.equal((await get('/admin', runtime, { headers: { cookie: session.cookie } })).status, 503);
+  }
 });
 
 test('release lock action selects R2 state and writes public projections', async () => {
@@ -471,8 +576,8 @@ test('QR rollback verifies commit-then-throw restores and delete-then-throw clea
   assert.equal(restoreResponseLost, true);
   assert.ok(lostDeleteResponses.has('wechat-group-qrcode/state/latest.json'));
   assert.ok(lostDeleteResponses.has('wechat-group-qrcode/state/previous.json'));
-  assert.ok(lostDeleteResponses.has('wechat-group-qrcode/state/pending.json'));
-  assert.equal(runtime.DOWNLOADS.objects.has('wechat-group-qrcode/state/pending.json'), false);
+  assert.equal(lostDeleteResponses.has('wechat-group-qrcode/state/pending.json'), false);
+  assert.equal(storedJson(runtime, 'wechat-group-qrcode/state/pending.json').phase, 'tombstone');
   assert.equal(runtime.DOWNLOADS.objects.has('wechat-group-qrcode/state/latest.json'), false);
   assert.equal(runtime.DOWNLOADS.objects.has('wechat-group-qrcode/state/previous.json'), false);
   assert.equal(storedJson(runtime, 'wechat-group-qrcode/metadata/latest.json').r2_key, 'wechat-group-qrcode/images/current.png');

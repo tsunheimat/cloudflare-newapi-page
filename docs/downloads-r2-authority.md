@@ -33,15 +33,23 @@ key families remain in place, while R2 conditional puts prevent one operation
 from replacing another operation's fence. New metadata/state records include
 the exact generation and full publication identity.
 
-QR writers verify every ambiguous R2 put/delete outcome with an immediate
-read-back. Marker transitions use the owning operation and the current object
-ETag; marker deletion first advances to an owner-only deleting phase. Public
-metadata/image routes and authenticated admin reads return a bounded 503 for
-pending/deleting markers or mismatched latest/state records. Existing legacy
-metadata-only QR objects remain readable, and no migration rewrites existing
-R2 objects.
+QR writers verify every ambiguous R2 put outcome with an immediate read-back.
+Marker transitions use the owning operation and the current object ETag.
+Committed markers are retained as durable generation fences; failed
+compensations become owner-checked tombstones, and no read-to-delete cleanup
+is used. Public metadata/image routes and authenticated admin reads return a
+bounded 503 for unresolved pending/tombstone markers, mismatched latest/state
+records, or missing/replaced/drifted new-generation image objects. A tombstone
+is readable only after its recorded rollback pair and any prior new-generation
+image have been verified. Existing legacy
+metadata-only QR objects remain readable within their documented limits, and
+no migration rewrites existing R2 objects.
 
-When `DOWNLOADS` is present, migrated routes never call `DOWNLOADS_SERVICE`.
+When `DOWNLOADS_INTEGRATION=production-r2-binding`, migrated routes require
+callable `DOWNLOADS.get` and `DOWNLOADS.put`; missing or invalid bindings fail
+closed with a generic 503 and never call `DOWNLOADS_SERVICE`. When `DOWNLOADS`
+is present in the unqualified local/test mode, migrated routes likewise never
+call `DOWNLOADS_SERVICE`.
 The legacy service binding remains declared as a rollback path for the
 existing Worker and for environments that have not yet supplied the R2
 binding; that fallback is intentionally unreachable in the R2-shaped

@@ -7,6 +7,7 @@ import {
 import {
   downloadsAuthorityStatus,
   hasDownloadsBinding,
+  isProductionR2BindingMode,
   isDownloadsAuthorityRoute,
   routeDownloads,
 } from './adapters/downloads.js';
@@ -66,6 +67,9 @@ export async function route(request, env = {}) {
   // Discovery is a small public registry projection. Release/state authority
   // remains in R2 and is fetched by the detail/API routes below.
   if (request.method === 'GET' && pathname === '/api/downloads/catalog') {
+    if (isProductionR2BindingMode(env) && !hasDownloadsBinding(env)) {
+      throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+    }
     if (!hasDownloadsBinding(env)) {
       return json({
         success: true,
@@ -160,6 +164,10 @@ export async function route(request, env = {}) {
     throw new HttpError(404, 'Content API route not found.');
   }
 
+  if (isProductionR2BindingMode(env) && isDownloadsAuthorityRoute(pathname) && !hasDownloadsBinding(env)) {
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+
   if (request.method === 'GET' && isDownloadsSpaRoute(pathname) && !hasDownloadsBinding(env)) {
     if (!env.ASSETS?.fetch) throw new HttpError(503, 'Static asset binding is not configured.');
     return withSecurityHeaders(await env.ASSETS.fetch(request));
@@ -207,7 +215,9 @@ async function liveContentHealth(env) {
 }
 
 function downloadsStatus(env) {
-  return hasDownloadsBinding(env) ? downloadsAuthorityStatus(env) : downloadServiceStatus(env);
+  return isProductionR2BindingMode(env) || hasDownloadsBinding(env)
+    ? downloadsAuthorityStatus(env)
+    : downloadServiceStatus(env);
 }
 
 function publicContentResponse(result, envelope) {

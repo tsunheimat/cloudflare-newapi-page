@@ -22,8 +22,13 @@ const QR_MARKER_SCHEMA = 2;
 const QR_MARKER_SCHEMAS = new Set([1, QR_MARKER_SCHEMA]);
 const QR_IDENTITY_FIELDS = Object.freeze([
   'asset_id', 'generation_id', 'operation_id', 'version_id', 'r2_key',
-  'sha256', 'size', 'content_type', 'filename', 'uploaded_at', 'source', 'url',
+  'sha256', 'size', 'content_type', 'filename', 'uploaded_at', 'source',
 ]);
+// URL is derived from the reviewed public-base binding and is intentionally
+// excluded. Every listed field is written immutably for a new publication and
+// must be present in both latest records.
+const QR_GENERATION_IDENTITY_FIELDS = QR_IDENTITY_FIELDS;
+const QR_MARKER_PHASES = new Set(['pending', 'committed', 'tombstone']);
 const BRAND_ASSETS = { wordmark: '/assets/juapi-logo.png', mark: '/assets/juapi-mark.png', favicon: '/assets/favicon.png' };
 const SITE_PROFILES = {
   tokenrouter: {
@@ -49,6 +54,11 @@ const SOFTWARE_PROFILES = {
 export function hasDownloadsBinding(env = {}) {
   return typeof env.DOWNLOADS?.get === 'function'
     && typeof env.DOWNLOADS?.put === 'function';
+}
+
+export function isProductionR2BindingMode(env = {}) {
+  return String(env.DOWNLOADS_INTEGRATION || '').trim()
+    === 'production-r2-binding';
 }
 
 export function downloadsAuthorityStatus(env = {}) {
@@ -334,23 +344,42 @@ function qrIdentity(value) {
   return identity;
 }
 
+function hasQrGenerationIdentity(value) {
+  return Boolean(value && typeof value === 'object'
+    && (value.generation_id !== undefined || value.operation_id !== undefined));
+}
+
+function completeQrGenerationIdentity(value) {
+  const identity = qrIdentity(value);
+  if (!identity || !hasQrGenerationIdentity(identity)) return null;
+  for (const field of QR_GENERATION_IDENTITY_FIELDS) {
+    if (identity[field] === undefined || identity[field] === null || identity[field] === '') return null;
+  }
+  if (!Number.isSafeInteger(identity.size) || identity.size < 0) return null;
+  if (!/^[a-f0-9]{64}$/i.test(identity.sha256)) return null;
+  return identity;
+}
+
 function sameQrRecord(actual, expected) {
   const left = qrIdentity(actual);
-  if (!left || !expected || typeof expected !== 'object' || left.r2_key !== expected.r2_key) return false;
-  // New publications carry an immutable random generation. Once present, the
-  // generation and every identity field written with it must agree exactly;
-  // r2_key or digest alone is never sufficient.
-  if (expected.generation_id !== undefined && left.generation_id !== expected.generation_id) return false;
-  for (const field of QR_IDENTITY_FIELDS) {
-    if (expected[field] !== undefined && String(left[field]) !== String(expected[field])) return false;
+  const right = qrIdentity(expected);
+  if (!left || !right) return false;
+  const leftNew = hasQrGenerationIdentity(left);
+  const rightNew = hasQrGenerationIdentity(right);
+  if (leftNew || rightNew) {
+    const completeLeft = completeQrGenerationIdentity(left);
+    const completeRight = completeQrGenerationIdentity(right);
+    if (!completeLeft || !completeRight) return false;
+    return QR_GENERATION_IDENTITY_FIELDS.every((field) =>
+      String(completeLeft[field]) === String(completeRight[field]));
   }
-  return true;
+  return sameLegacyQrRecord(left, right);
 }
 
 function sameLegacyQrRecord(left, right) {
   const a = qrIdentity(left);
   const b = qrIdentity(right);
-  if (!a || !b || a.r2_key !== b.r2_key) return false;
+  if (!a || !b || hasQrGenerationIdentity(a) || hasQrGenerationIdentity(b) || a.r2_key !== b.r2_key) return false;
   for (const field of QR_IDENTITY_FIELDS) {
     // Keep old records readable when an older writer omitted a field, but do
     // not allow two records that both provide a field to disagree.
@@ -369,11 +398,68 @@ async function verifyQrImage(env, expected) {
   let object;
   try { object = await env.DOWNLOADS.get(expected.r2_key); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   if (!object) throw new Error('QR image did not reconcile');
-  if (typeof object.arrayBuffer === 'function') {
-    const bytes = new Uint8Array(await object.arrayBuffer());
-    if (expected.size !== undefined && bytes.length !== Number(expected.size)) throw new Error('QR image size did not reconcile');
-    if (expected.sha256 && await sha256(bytes) !== expected.sha256) throw new Error('QR image digest did not reconcile');
+  return verifyQrImageObject(object, expected);
+}
+
+async function verifyQrImageObject(object, expected) {
+  const expectedSize = Number(expected.size);
+  const expectedDigest = String(expected.sha256 || '').toLowerCase();
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 0 || !/^[a-f0-9]{64}$/.test(expectedDigest)) {
+    throw new Error('QR image integrity metadata is incomplete');
   }
+  let observedSize = object.size === undefined ? undefined : Number(object.size);
+  if (observedSize !== undefined && observedSize !== expectedSize) throw new Error('QR image size did not reconcile');
+  let bytes;
+  if (typeof object.arrayBuffer === 'function') {
+    bytes = new Uint8Array(await object.arrayBuffer());
+  } else if (object.body?.getReader) {
+    const reader = object.body.getReader();
+    const chunks = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > expectedSize) throw new Error('QR image size did not reconcile');
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
+    bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  }
+  let observedDigest = '';
+  const checksum = object.checksums?.sha256;
+  if (checksum !== undefined) observedDigest = checksumHex(checksum);
+  if (bytes) {
+    observedSize = bytes.length;
+    if (observedSize !== expectedSize) throw new Error('QR image size did not reconcile');
+    const computedDigest = await sha256(bytes);
+    if (computedDigest !== expectedDigest) throw new Error('QR image digest did not reconcile');
+    if (observedDigest && observedDigest !== computedDigest) throw new Error('QR image checksum did not reconcile');
+    observedDigest = computedDigest;
+  }
+  if (observedSize !== expectedSize) throw new Error('QR image size did not reconcile');
+  if (!observedDigest || observedDigest !== expectedDigest) throw new Error('QR image digest did not reconcile');
+  return { bytes };
+}
+
+function checksumHex(value) {
+  if (typeof value === 'string') {
+    const raw = value.trim();
+    const normalized = raw.toLowerCase();
+    if (/^[a-f0-9]{64}$/.test(normalized)) return normalized;
+    try {
+      const binary = atob(raw);
+      if (binary.length !== 32) return '';
+      return [...binary].map((char) => char.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+    } catch { return ''; }
+  }
+  const bytes = value instanceof ArrayBuffer
+    ? new Uint8Array(value)
+    : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : null;
+  return bytes?.length === 32 ? [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('') : '';
 }
 
 function etagOf(object) {
@@ -409,10 +495,11 @@ async function readMarker(env, pendingKey, { optional = true } = {}) {
   const marker = result.value;
   if (!marker || typeof marker !== 'object' || Array.isArray(marker)
     || !QR_MARKER_SCHEMAS.has(marker.schema_version)
-    || !['pending', 'committed', 'deleting'].includes(marker.phase)
+    || !QR_MARKER_PHASES.has(marker.phase)
     || typeof marker.operation_id !== 'string'
     || !marker.expected || typeof marker.expected !== 'object'
-    || (marker.generation_id !== undefined && marker.expected.generation_id !== marker.generation_id)) {
+    || (marker.generation_id !== undefined && marker.expected.generation_id !== marker.generation_id)
+    || (hasQrGenerationIdentity(marker.expected) && !completeQrGenerationIdentity(marker.expected))) {
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   }
   return { ...result, marker };
@@ -440,9 +527,10 @@ async function writeJsonVerified(env, key, payload, cacheControl = 'no-store', o
 
 async function acquireQrMarker(env, pendingKey, marker) {
   const existing = await readMarker(env, pendingKey);
-  if (existing) throw new Error('QR publication is already fenced');
+  if (existing?.marker.phase === 'pending') throw new Error('QR publication is already fenced');
   try {
-    const result = await writeJson(env, pendingKey, marker, 'no-store', { etagDoesNotMatch: '*' });
+    const condition = existing?.etag ? { etagMatches: existing.etag } : { etagDoesNotMatch: '*' };
+    const result = await writeJson(env, pendingKey, marker, 'no-store', condition);
     if (result === null) throw new Error('QR publication marker was acquired by another operation');
   } catch {
     const observed = await readMarker(env, pendingKey);
@@ -471,21 +559,14 @@ async function updateQrMarker(env, pendingKey, operationId, nextMarker) {
   return markerOwner(env, pendingKey, operationId);
 }
 
-async function deleteOwnedQrMarker(env, pendingKey, operationId) {
-  const current = await readMarker(env, pendingKey);
-  if (!current) return;
-  if (current.marker.operation_id !== operationId) throw new Error('QR publication marker ownership changed');
-  const deleting = current.marker.phase === 'deleting'
-    ? current.marker
-    : { ...current.marker, phase: 'deleting', cleanup_started_at: new Date().toISOString() };
-  await updateQrMarker(env, pendingKey, operationId, deleting);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try { await env.DOWNLOADS.delete(pendingKey); } catch { /* verify below; delete may have committed */ }
-    const after = await readMarker(env, pendingKey);
-    if (!after) return;
-    if (after.marker.operation_id !== operationId) throw new Error('QR publication marker ownership changed');
-  }
-  throw new Error('QR publication marker delete did not reconcile');
+async function tombstoneQrMarker(env, pendingKey, operationId) {
+  const current = await markerOwner(env, pendingKey, operationId);
+  if (current.marker.phase === 'tombstone') return current;
+  return updateQrMarker(env, pendingKey, operationId, {
+    ...current.marker,
+    phase: 'tombstone',
+    tombstoned_at: new Date().toISOString(),
+  });
 }
 
 async function readQrConsistency(env) {
@@ -498,20 +579,41 @@ async function readQrConsistency(env) {
   ]);
   // Only the owning upload invocation may reconcile or advance its marker.
   // Readers must fail closed while any pending marker remains unresolved.
-  if (marker && marker.phase !== 'committed') throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  if (marker?.phase === 'pending') throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  if (marker?.phase === 'tombstone') {
+    try {
+      const rollback = marker.rollback;
+      if (!rollback || !await verifyQrRollback(env, {
+        latestMetadata: rollback.latestMetadata,
+        latestState: rollback.latestState,
+        previousState: rollback.previousState,
+      })) {
+        throw new Error('QR tombstone did not reconcile');
+      }
+      if (hasQrGenerationIdentity(rollback.latestMetadata)) await verifyQrImage(env, rollback.latestMetadata);
+    } catch {
+      throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+    }
+  }
   if (marker?.phase === 'committed' && (!sameQrRecord(metadata, marker.expected)
-    || !sameQrRecord(state, marker.expected) || !sameLegacyQrRecord(metadata, state))) {
+    || !sameQrRecord(state, marker.expected) || !sameQrRecord(metadata, state))) {
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   }
   if (marker?.phase === 'committed') {
     try { await verifyQrImage(env, marker.expected); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   }
-  if (!marker && (metadata?.generation_id !== undefined || state?.generation_id !== undefined)
-    && (!metadata || !state || !sameQrRecord(metadata, state))) {
+  if (!marker && (hasQrGenerationIdentity(metadata) || hasQrGenerationIdentity(state))
+    && (!metadata || !state || !completeQrGenerationIdentity(metadata)
+      || !completeQrGenerationIdentity(state) || !sameQrRecord(metadata, state))) {
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   }
-  if (!marker && metadata && state && (metadata.r2_key || state.r2_key) && !sameLegacyQrRecord(metadata, state)) {
+  if (!marker && metadata && state && (metadata.r2_key || state.r2_key)
+    && !hasQrGenerationIdentity(metadata) && !hasQrGenerationIdentity(state)
+    && !sameLegacyQrRecord(metadata, state)) {
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+  if (!marker && (hasQrGenerationIdentity(metadata) || hasQrGenerationIdentity(state))) {
+    try { await verifyQrImage(env, metadata); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   }
   if (!marker && !metadata && state) throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   return { metadata, state, marker };
@@ -564,9 +666,13 @@ async function serveQr(env) {
   let object;
   try { object = await env.DOWNLOADS.get(validated.r2Key); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   if (!object) throw new HttpError(404, `WeChat group QR code not found: ${validated.r2Key}`);
+  let verified = null;
+  if (hasQrGenerationIdentity(metadata)) {
+    try { verified = await verifyQrImageObject(object, metadata); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
+  }
   const headers = new Headers({ 'content-type': validated.contentType || object.httpMetadata?.contentType || 'application/octet-stream', 'cache-control': 'no-store' });
   if (metadata.size) headers.set('content-length', String(metadata.size));
-  return new Response(object.body, { headers });
+  return new Response(verified?.bytes || object.body, { headers });
 }
 
 async function handleQrUpload(request, env) {
@@ -607,9 +713,9 @@ async function handleQrUpload(request, env) {
     generation_id: generationId,
     expected: qrIdentity(metadata),
     rollback: {
-      metadata: qrIdentity(snapshots.latestMetadata),
-      state: qrIdentity(snapshots.latestState),
-      previous: qrIdentity(snapshots.previousState),
+      latestMetadata: snapshots.latestMetadata,
+      latestState: snapshots.latestState,
+      previousState: snapshots.previousState,
     },
   };
   const touched = [];
@@ -622,7 +728,7 @@ async function handleQrUpload(request, env) {
     // available until the fence is owned. A completed upload can land between
     // those steps; never publish or roll back across that changed generation.
     if (!await verifyQrRollback(env, snapshots)) {
-      await deleteOwnedQrMarker(env, pendingKey, operationId);
+      await tombstoneQrMarker(env, pendingKey, operationId);
       markerAcquired = false;
       throw new Error('QR publication changed before marker acquisition');
     }
@@ -642,9 +748,6 @@ async function handleQrUpload(request, env) {
     await writeJsonVerified(env, qrKey(env, 'state/latest.json'), metadata);
     await verifyQrPublication(env, metadata, pendingKey, operationId);
     await updateQrMarker(env, pendingKey, operationId, { ...marker, phase: 'committed', committed_at: new Date().toISOString() });
-    if (typeof env.DOWNLOADS.delete === 'function') {
-      await deleteOwnedQrMarker(env, pendingKey, operationId);
-    }
   } catch {
     if (markerAcquired) await rollbackQrState(env, snapshots, touched, key, pendingKey, operationId);
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
@@ -704,10 +807,10 @@ async function rollbackQrState(env, snapshots, touched, uploadedKey, pendingKey,
     try { await deleteVerified(env, uploadedKey); } catch { /* retain fence on ambiguity */ }
   }
   try {
-    if (await verifyQrRollback(env, snapshots) && typeof env.DOWNLOADS.delete === 'function') await deleteOwnedQrMarker(env, pendingKey, operationId);
+    if (await verifyQrRollback(env, snapshots)) await tombstoneQrMarker(env, pendingKey, operationId);
   } catch {
-    // A pending marker is intentionally retained unless the old pair is read
-    // back and the marker removal itself succeeds.
+    // A pending marker is intentionally retained unless compensation and the
+    // owner-only tombstone both reconcile. Readers remain fail closed.
   }
 }
 
