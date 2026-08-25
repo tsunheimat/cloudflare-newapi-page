@@ -78,7 +78,9 @@ export function errorResponse(error) {
     );
   }
 
-  console.error(error);
+  // Keep unexpected error logs secret-safe.  Runtime values can include
+  // request/form material (including credentials); do not serialize them.
+  console.error(error?.name || 'InternalError');
   return json(
     {
       success: false,

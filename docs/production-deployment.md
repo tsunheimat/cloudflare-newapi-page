@@ -31,7 +31,9 @@ Entrypoint 也会 fail closed 拒绝下列会改变 pinned Wrangler 行为的 pr
 2. 名为 `cloudflare-download-site` 的 target Worker 已先部署在同一 account。Cloudflare Service Binding 只能绑定本 account 的 Worker，且 target 必须先于 caller 存在；本 repo 不创建或部署 target。见 [Service Bindings deployment](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/#deployment)。
 3. Production live content prerequisites are already controller-verified: Worker secret `LIVE_CONTENT_ADAPTER_TOKEN`, VPC binding `NEWAPI_VPC_SERVICE`, its reviewed service ID/private route, and the NewAPI runtime secret are present and healthy. Do not copy or record their values here.
 4. Account owner 已确认 deployed target 的生产语义与本 repo 审查的 transport contract 相容。Local sibling commit/hash 不是 deployed-source 证明。
-5. Operator 已明确 production URL 的访问控制。Service Binding 不提供浏览器侧 admin authorization；`/admin/*` 的 session/auth 仍由 downstream Worker 负责。
+5. Operator 已明确 production URL 的访问控制。`DOWNLOADS` R2 binding
+   supplies migrated Downloads authority; the retained Service Binding is
+   rollback-only and does not provide browser-side admin authorization.
 
 Local preflight 与 `wrangler deploy --dry-run` 不会查询已部署 target 是否存在，也不会证明 binding、R2 objects 或 production route 可用。实际 deployment request 才会由 Cloudflare 对 same-account target 做权威检查；target 缺失时部署必须失败。
 
@@ -83,7 +85,7 @@ wrangler deploy --config <repo>/wrangler.toml --env production --strict
 
 `--strict` 会拒绝冲突的 remote changes；`--env production` 与 config path 由 script 内部固定，调用者不能省略或改成 default/staging。成功输出是 actual deployment evidence，应记录 commit、Wrangler 输出的 version/deployment ID、URL 与时间，但不得记录 token。
 
-该 deploy 只上传本 repo 的 caller Worker code/assets/config：它不会修改 sibling checkout bytes，不会部署 `cloudflare-download-site`，也不会直接读取、写入或删除 downstream R2 objects。
+该 deploy 只上传本 repo 的 caller Worker code/assets/config：它不会修改 sibling checkout bytes，不会部署 `cloudflare-download-site`，也不会在 preflight 中直接读取、写入或删除 production R2 objects。Production config must include the reviewed `DOWNLOADS -> tokenrouter` R2 binding.
 
 ## 5. Current production cutover verification (live target only)
 
@@ -162,7 +164,7 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/pricing" \
     '
 ```
 
-再运行 repository-owned 的 production read-only downloads probe。它只接受 HTTPS production URL，输出每个请求的无 body summary；先检查 exact GET `/downloads` 是 downstream root HTML（`JuAPI 软件下载中心`、两个 configured software groups 与 `download-group-grid`），再检查 `/downloads/software/:softwareId` 是 Worker detail SPA shell（`main#main-content` 与 `/static/app.js`），然后从 `/api/downloads/catalog` 发现并校验每个 software ID，逐一读取 `/downloads/api/:softwareId/public`，对明确 404 的 ID 再读取对应 `latest` metadata，最后验证一个代表性的 mounted `/downloads/download/...` 与 direct `/download/...` 路由。代表性 download response 只读 headers 后立即取消 body，不下载大 artifact，也不 follow redirect：
+再运行 repository-owned 的 production read-only downloads probe。它只接受 HTTPS production URL，输出每个请求的无 body summary；先检查 exact GET `/downloads` 是 NewAPI R2-backed landing HTML（`JuAPI 软件下载中心`、两个 configured software groups 与 `download-group-grid`），再检查 `/downloads/software/:softwareId` 是 R2-backed software page，然后从 `/api/downloads/catalog` 发现并校验每个 software ID，逐一读取 `/downloads/api/:softwareId/public`，对明确 404 的 ID 再读取对应 `latest` metadata，最后验证一个代表性的 mounted `/downloads/download/...` 与 direct `/download/...` 路由。代表性 download response 只读 headers 后立即取消 body，不下载大 artifact，也不 follow redirect。旧版 `main#main-content` 与 `/static/app.js` detail-SPA markers 在 R2 migration 后不再是必要条件：
 
 ```bash
 PROBE_EVIDENCE_DIR="$(mktemp -d)"
@@ -181,9 +183,9 @@ test "$PROBE_EXIT" -eq 0
 
 只有实际运行的 stdout JSONL、exit code、candidate commit、production URL、account、开始/结束时间都保存到 repository 外部，且最后一行为 `{"success":true,...}` 时，才可记录该时刻的 live downloads chain PASS。命令文本、local mock、dry-run 或缺少 output 都不是 live success。Probe 使用 `credentials: omit`、`redirect: manual`，只允许 GET/HEAD；不要把发现的 ID 或下载 target 改回固定 `codex-installer`。
 
-以上 checks 可证明该时刻的实际 caller/binding/downstream 路径可达，但不会把 download status 改称 `healthy=true` 或 `live=true`，也不能证明所有 binary/R2 objects 或 admin mutation flow。不要用 HEAD 验证 downstream：审查的 target source 没有显式 HEAD handler；`HEAD /downloads` 的 404 只能作为 method-preservation evidence。
+以上 checks 可证明该时刻的实际 caller/R2 binding/route 路径可达，但不会把 download status 改称 `healthy=true` 或 `live=true`，也不能证明所有 binary/R2 objects 或 admin mutation flow。不要用 HEAD 验证下载成功：源 Worker没有显式 HEAD handler；`HEAD /downloads` 的 404 只能作为 method-preservation evidence。
 
-严禁把 verification 扩展为匿名或自动化 admin POST。Gateway 会原样转发 cookie、body 与 method；任何 `/admin/login`、upload、publish、rollback 等 POST 都可能实际修改 downstream production/R2 state，必须由有权 operator 依据 downstream runbook 单独控制。
+严禁把 verification 扩展为匿名或自动化 admin POST。任何 `/admin/login`、upload、publish、rollback 等 POST 都可能实际修改 production R2 state，必须由有权 operator 单独控制。
 
 ## 6. Rollback
 
@@ -246,7 +248,7 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/pricing" \
 
 Cloudflare 的 [Workers rollback 文档](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/) 说明 rollback 不修改 connected resources，但旧 version 依赖的 binding/resource 必须仍存在。
 
-Caller rollback 不会恢复任何此前经 `/admin/*` POST 写入的 downstream/R2 state；这类恢复只能按 `cloudflare-download-site` 自己的生产 runbook 处理，不能由本 repo 代替。
+Caller rollback 不会恢复任何此前经 `/admin/*` POST 写入的 R2 state；这类恢复只能按 Downloads owner 的生产 runbook 处理，不能由本 repo 代替。
 
 最后撤销短时 token 并清理当前 shell：
 

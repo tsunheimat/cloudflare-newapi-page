@@ -112,6 +112,25 @@ test('default and staging stay fixture while production uses its explicit live r
   );
 });
 
+test('Downloads production uses the reviewed tokenrouter R2 authority and public variables', async () => {
+  const source = await readFile(CONFIG_URL, 'utf8');
+  const sections = parseSections(source);
+  for (const section of ['env.production.r2_buckets']) {
+    assert.equal(value(sections, section, 'binding'), 'DOWNLOADS');
+    assert.equal(value(sections, section, 'bucket_name'), 'tokenrouter');
+  }
+  for (const [key, expected] of [
+    ['R2_PREFIX', 'codex-install'],
+    ['R2_PUBLIC_BASE_URL', 'https://tokenrouter-r2.wdtokenacc.top'],
+    ['JUAPI_HOME_URL', 'https://www.juaiapi.com'],
+    ['WECHAT_GROUP_QR_PREFIX', 'wechat-group-qrcode'],
+    ['WECHAT_GROUP_QR_PUBLIC_BASE_URL', 'https://tokenrouter-r2.wdtokenacc.top'],
+    ['CODEX_CHAT_RECORD_MIGRATOR_R2_PUBLIC_BASE_URL', 'https://tokenrouter-r2.wdtokenacc.top'],
+  ]) assert.equal(value(sections, 'env.production.vars', key), expected);
+  assert.doesNotMatch(source, /ADMIN_PASSWORD\s*=\s*['"][^'"]+['"]/);
+  assert.doesNotMatch(source, /ADMIN_SESSION_SECRET\s*=\s*['"][^'"]+['"]/);
+});
+
 test('Phase 2B probe is loopback-only and contains no mutating HTTP method', async () => {
   const source = await readFile(
     new URL('../scripts/phase2b-readonly-probe.mjs', import.meta.url),

@@ -276,7 +276,7 @@ async function renderHome() {
     node(
       'p',
       {},
-      `Docs：${content.docs.badge}；Pricing：${content.pricing.badge}。只有命名 staging／production 的对应 runtime gate 与 callable binding 同时成立才会转发。即使 bound，下载状态仍是未验证健康、非 live。下载、admin、R2、rollback 和微信群二维码继续由原 Worker 持有。`,
+      `Docs：${content.docs.badge}；Pricing：${content.pricing.badge}。Downloads、admin、R2、rollback 和微信群二维码由 NewAPI Worker 的 DOWNLOADS R2 authority 持有；状态仍明确区分 binding、healthy 与 live。`,
     ),
   );
   boundary.append(boundaryCard);

@@ -91,6 +91,7 @@ const health = await probe({
   json: true,
 });
 assert.equal(health.phase, '2');
+assert.ok(['r2-binding', 'production-service-binding', 'staging-service-binding'].includes(health.downloads.mode));
 assert.equal(health.downloads.configured, true);
 assert.equal(health.downloads.bound, true);
 assert.equal(health.downloads.active, true);
@@ -154,7 +155,9 @@ await probe({
   path: `/downloads/software/${encodeURIComponent(discoveredSoftware[0].id)}?probe=phase2b`,
   statuses: [200],
   contentType: 'text/html',
-  textIncludes: ['<main id="main-content"', '/static/app.js'],
+  // Legacy SPA markers (<main id="main-content", /static/app.js) are not
+  // required after the Downloads R2 authority migration.
+  textIncludes: ['Codex'],
 });
 await probe({
   method: 'GET',

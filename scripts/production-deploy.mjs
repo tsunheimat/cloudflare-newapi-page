@@ -23,6 +23,8 @@ export const PRODUCTION_CONTRACT = Object.freeze({
   stagingDownloadsMode: 'staging-service-binding',
   productionDownloadsMode: 'production-service-binding',
   downloadsBinding: 'DOWNLOADS_SERVICE',
+  downloadsR2Binding: 'DOWNLOADS',
+  downloadsR2Bucket: 'tokenrouter',
   downloadsService: 'cloudflare-download-site',
   newApiVpcBinding: 'NEWAPI_VPC_SERVICE',
   newApiVpcServiceId: '01a027bb-280d-7630-b837-7afd6a0ca196',
@@ -155,7 +157,21 @@ export function assertProductionConfig(source) {
     PRODUCTION_CONTRACT.productionDownloadsMode,
   );
   assertServiceBinding(sections, 'env.production.services');
+  assertR2BucketBinding(sections, 'env.production.r2_buckets');
   assertVpcServiceBinding(sections, 'env.production.vpc_services');
+}
+
+function assertR2BucketBinding(sections, sectionName) {
+  const occurrences = sections.get(sectionName);
+  assert.equal(occurrences?.length, 1, `expected one [[${sectionName}]]`);
+  assert.equal(occurrences[0].array, true, `${sectionName} must be an array table`);
+  assert.deepEqual(
+    [...occurrences[0].values.keys()].sort(),
+    ['binding', 'bucket_name'],
+    `${sectionName} may only select the reviewed Downloads bucket`,
+  );
+  assert.equal(occurrences[0].values.get('binding'), PRODUCTION_CONTRACT.downloadsR2Binding);
+  assert.equal(occurrences[0].values.get('bucket_name'), PRODUCTION_CONTRACT.downloadsR2Bucket);
 }
 
 export async function assertProductionRuntimeContract() {
@@ -394,7 +410,7 @@ export async function main(args = process.argv.slice(2), env = process.env) {
   if (mode === 'deploy') assertCredentialPrerequisites(env);
   const commit = await assertCleanCommit();
   process.stdout.write(
-    `[production preflight] PASS: clean commit ${commit}; production uses the authorized NewAPI live Docs/Pricing adapter with validated health contract; download forwarding uses the production service-binding gate.\n`,
+    `[production preflight] PASS: clean commit ${commit}; production uses the authorized NewAPI live Docs/Pricing adapter with validated health contract; Downloads use the tokenrouter R2 authority (legacy service binding retained for rollback).\n`,
   );
 
   await validateProductionCommit(commit, env);

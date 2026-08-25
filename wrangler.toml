@@ -16,16 +16,29 @@ not_found_handling = "single-page-application"
 # verified by the controller.
 CONTENT_ADAPTER = "fixture"
 DOWNLOADS_INTEGRATION = "disabled"
+R2_PREFIX = "codex-install"
+R2_PUBLIC_BASE_URL = "https://tokenrouter-r2.wdtokenacc.top"
+JUAPI_HOME_URL = "https://www.juaiapi.com"
+WECHAT_GROUP_QR_PREFIX = "wechat-group-qrcode"
+WECHAT_GROUP_QR_PUBLIC_BASE_URL = "https://tokenrouter-r2.wdtokenacc.top"
+CODEX_CHAT_RECORD_MIGRATOR_R2_PUBLIC_BASE_URL = "https://tokenrouter-r2.wdtokenacc.top"
 
-# Service bindings and vars are non-inheritable Wrangler environment keys.
-# Staging and the named production environment opt into the same already
-# deployed download Worker with environment-specific runtime gates.
+# Service bindings, R2 buckets, and vars are non-inheritable Wrangler
+# environment keys. Staging keeps the old download Worker as a rollback
+# transport; production adds the reviewed tokenrouter R2 authority and keeps
+# the old binding intact for rollback.
 [env.staging]
 workers_dev = true
 
 [env.staging.vars]
 CONTENT_ADAPTER = "fixture"
 DOWNLOADS_INTEGRATION = "staging-service-binding"
+R2_PREFIX = "codex-install"
+R2_PUBLIC_BASE_URL = "https://tokenrouter-r2.wdtokenacc.top"
+JUAPI_HOME_URL = "https://www.juaiapi.com"
+WECHAT_GROUP_QR_PREFIX = "wechat-group-qrcode"
+WECHAT_GROUP_QR_PUBLIC_BASE_URL = "https://tokenrouter-r2.wdtokenacc.top"
+CODEX_CHAT_RECORD_MIGRATOR_R2_PUBLIC_BASE_URL = "https://tokenrouter-r2.wdtokenacc.top"
 
 [[env.staging.services]]
 binding = "DOWNLOADS_SERVICE"
@@ -41,6 +54,16 @@ workers_dev = true
 [env.production.vars]
 CONTENT_ADAPTER = "newapi"
 DOWNLOADS_INTEGRATION = "production-service-binding"
+R2_PREFIX = "codex-install"
+R2_PUBLIC_BASE_URL = "https://tokenrouter-r2.wdtokenacc.top"
+JUAPI_HOME_URL = "https://www.juaiapi.com"
+WECHAT_GROUP_QR_PREFIX = "wechat-group-qrcode"
+WECHAT_GROUP_QR_PUBLIC_BASE_URL = "https://tokenrouter-r2.wdtokenacc.top"
+CODEX_CHAT_RECORD_MIGRATOR_R2_PUBLIC_BASE_URL = "https://tokenrouter-r2.wdtokenacc.top"
+
+[[env.production.r2_buckets]]
+binding = "DOWNLOADS"
+bucket_name = "tokenrouter"
 
 [[env.production.services]]
 binding = "DOWNLOADS_SERVICE"

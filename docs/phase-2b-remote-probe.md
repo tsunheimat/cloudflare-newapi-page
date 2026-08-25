@@ -1,6 +1,10 @@
 # Phase 2B read-only remote Service Binding probe
 
-Phase 2B 的目标是在 Cloudflare temporary remote preview 中验证 staging candidate 可以通过 `DOWNLOADS_SERVICE` 调用已部署的 `cloudflare-download-site`。Probe 的 downstream HTTP methods 仅限 GET/HEAD，不执行 admin POST，不携带 admin cookie，不 follow redirects，也不 deploy production Worker。
+Phase 2B 的目标是在 Cloudflare temporary remote preview 中验证 staging
+candidate 的 NewAPI-owned Downloads R2 authority。旧的 `DOWNLOADS_SERVICE`
+仍可作为 rollback binding，但迁移后的请求不应调用它。Probe 的 HTTP
+methods 仅限 GET/HEAD，不执行 admin POST，不携带 admin cookie，不 follow
+redirects，也不 deploy production Worker。
 
 Cloudflare 官方说明：Wrangler environment 的 vars/bindings 不继承；remote development 会把 candidate 暂时上传到 Cloudflare preview，并让 bindings 连接 remote resources。Service Binding HTTP 调用会直接调用目标 Worker 的 `fetch()`。因此 remote preview 是实际 integration evidence，但仍不是 production deployment evidence。
 
@@ -51,12 +55,12 @@ Probe script 有以下硬边界：
 - 只允许 GET/HEAD，`credentials: omit`；
 - `redirect: manual`，不会跟随 R2/external redirect；
 - 只对 `/admin` 做匿名 GET，不请求 login、不发送 cookie、不调用任何 admin action/upload；
-- exact GET `/downloads` 必须返回 downstream root HTML，并包含 pinned root markers（`JuAPI 软件下载中心`、两个 configured software groups 与 `download-group-grid`）；`/downloads/software/:softwareId` 才返回 Worker detail SPA shell（`main#main-content` 与 `/static/app.js`）；
+- exact GET `/downloads` 必须返回 NewAPI R2-backed landing HTML，并包含 pinned root markers（`JuAPI 软件下载中心`、两个 configured software groups 与 `download-group-grid`）；`/downloads/software/:softwareId` 返回 R2-backed software HTML，旧版 detail-SPA markers 不再是必要条件；
 - 先 GET `/api/downloads/catalog`，校验每个发现的 software ID 与 SPA href，再逐一 GET `/downloads/api/:softwareId/public`；若某个 public metadata 明确返回 404，才对同一 ID GET `/downloads/api/:softwareId/latest`；
 - 从发现的 metadata 选择一个带 `site`、`platform`、`arch` 的代表 target，验证 `/downloads/download/:softwareId/:site/:platform/:arch` 与 direct `/download/...` 路由。若 download Worker 返回 direct binary stream，script 只检查 headers 后立即 cancel body，不下载大 artifact；这仍属于实际 R2 read，必须计入 read-operation/billing budget；
-- 检查 health/status 为 `active=true`，但仍是 `healthy=null`、`live=false`、`bound-unverified`，避免把 binding presence 冒充 health。
+- 检查 health/status 为 `active=true`，但仍是 `healthy=null`、`live=false`、`bound-unverified`，避免把 R2 binding presence 冒充 health。
 
-Current reviewed downstream source 没有 HEAD handler，因此 public/download HEAD 预期 404。该结果证明 method 被保留，不表示 GET route unhealthy；若实际结果不同，应记录 deployed-source drift 后重新审查，不要自行放宽 assertions。
+The migrated route has no explicit HEAD handler; public/download HEAD 预期 404。该结果证明 method 被保留，不表示 GET route unhealthy；若实际结果不同，应记录 deployed-source drift 后重新审查，不要自行放宽 assertions。
 
 ## 完成与证据
 

@@ -4,16 +4,11 @@
 
 ```text
 Browser
-  ├─ /docs/*, /console/docs/*, /console/pricing, /pricing, /downloads/software/* ──> Worker Assets (canonical SPA surfaces)
-  ├─ exact GET /downloads ────────────────────────────> downstream root HTML
+  ├─ /docs/*, /console/docs/*, /console/pricing, /pricing ──> Worker Assets (canonical SPA surfaces)
+  ├─ Downloads direct + /downloads/* ─────────────────> Worker Downloads R2 authority
   ├─ /api/content/* ─────> ContentAdapter
   │                          └─ FixtureAdapter (Phase 1 only)
-  └─ download routes ─────> explicit runtime gate
-                               ├─ default: disabled -> 503
-                               ├─ staging: staging-service-binding
-                               └─ production: production-service-binding
-                                    └─ DOWNLOADS_SERVICE
-                                         └─ cloudflare-download-site Worker
+  └─ download routes ─────> `DOWNLOADS` (tokenrouter R2 bucket)
 
 Future/live:
   ContentAdapter
@@ -37,15 +32,15 @@ Public canonical bootstrap:
          └─ NEWAPI_VPC_SERVICE -> `/api/internal/live-content/v1/status`
 
 Public Downloads:
-  exact GET `/downloads` -> downstream `cloudflare-download-site` root HTML
-  `/downloads/software/:softwareId` ->本站 detail SPA
-       └─ `/api/downloads/catalog` -> fixed GET of downstream landing HTML
-       └─ `/downloads/api/:softwareId/public` -> existing mounted metadata route
-       └─ `/downloads/download/:softwareId/:site/:platform/:arch` -> existing download route
+  exact GET `/downloads` -> NewAPI Downloads R2 authority landing HTML
+  `/downloads/software/:softwareId` -> NewAPI R2-backed software page
+       └─ `/api/downloads/catalog` -> fixed two-profile registry projection
+       └─ `/downloads/api/:softwareId/public` -> R2 metadata object
+       └─ `/downloads/download/:softwareId/:site/:platform/:arch` -> R2 redirect/stream
 
-The detail SPA preserves the downstream metadata object in an expandable public JSON
-view. It does not reproduce the downstream software registry, R2 keys, lock
-state, admin session, redirect resolution, or credentials.
+The route implementation preserves the existing metadata/state object model,
+public URL precedence, lock state, admin session, redirect resolution, and QR
+upload behavior. It never forwards browser credentials into a private service.
 ```
 
 The public `/api/docs/v2/*` routes are same-origin adapters for the canonical
@@ -123,26 +118,28 @@ detail-sheet, billing, conversion, and capability presentation. Those browser
 calculations consume the exact Pricing and status bootstrap values; the Worker
 does not duplicate them or impose a locked/default group.
 
-## Download service binding
+## Downloads R2 authority
 
-`DOWNLOADS_SERVICE` 只做 Worker-to-Worker transport。它不在本 repo 中：
+The NewAPI Worker owns the direct and mounted Downloads route families and
+reads/writes the existing `DOWNLOADS` R2 bucket. It preserves the source
+metadata/state layout, dynamic release selection, public URL precedence,
+rollback projections, admin session signing, QR validation/upload, binary
+streaming, and response redirects. Browser cookies, authorization headers, and
+end-user identity are not forwarded to a private service. Missing R2 binding
+fails closed for the migrated path.
 
-- 读取或写入 R2；
-- 实作 admin login/session；
-- 决定 release/public/previous；
-- 执行 rollback；
-- 上传或保存微信群二维码；
-- 保存任何相关 secret。
+The old `DOWNLOADS_SERVICE -> cloudflare-download-site` binding remains
+declared in the named environments solely as a rollback path. If the R2
+binding is present, migrated routes do not call it; the old transport tests and
+read-only probes remain useful evidence for rollback only.
 
-当前 gateway 会保留其余 forwarding route 的 method、原始 body bytes、query、cookie 和 content type；exact GET `/downloads` 则以固定 credential-free GET 转发到 downstream `/`，并把除 detail SPA 页面外的 `/downloads/...` 去掉 namespace 后传给 bound Worker；download Worker 原有的 `/software`、`/download`、`/admin`、assets、QR 和 metadata route 也有 direct boundary。Mounted request 会覆盖 `x-forwarded-prefix=/downloads`，direct request 会删除客户端伪造的该 header。Response 保留 body stream、status、content type、content length/disposition、cookies、redirect 和 downstream-owned headers。
+The Worker adds transport security headers to migrated responses while keeping
+the Downloads HTML contract intact. Status reports R2 binding presence,
+callability, and unverified live state separately. Local tests use an in-memory
+R2 double; Wrangler dry-runs do not prove the production bucket, objects, or
+Cloudflare route acceptance.
 
-Gateway route matcher 要求完整 path segment，`/administrator`、`/api/latest-news` 不属于 download Worker。本站 SPA/API 使用严格的 `style-src 'self'` CSP；downstream response 保留自己的 CSP（或保持无 CSP），只补上缺少且与内容无关的安全 headers，避免破坏既有 inline-style HTML/admin response。状态中的 `configured`、`bound`、`active`、`healthy`、`live` 分开报告；binding 存在不等于 gate 已启用、downstream 已健康或已完成 production 验证。
-
-Phase 2 在 `env.staging` 与 `env.production` 都明确绑定 `DOWNLOADS_SERVICE -> cloudflare-download-site`，并分别以 `staging-service-binding`、`production-service-binding` gate 启用。Default/top-level 仍明确为 `disabled` 且没有 service binding。Repository tests 会验证配置隔离以及完整 forwarding contract；三条普通 Wrangler lane 都只执行 dry-run。
-
-下游 landing HTML 会直接作为浏览器 `/downloads` response 返回，也会在 Worker-to-Worker 的 catalog discovery 请求中读取；它使用 root-relative links/assets/forms，因此会落入本站保留的 direct boundary。Gateway 不做 HTML string rewrite。Service binding 本身也不等于浏览器侧 admin authorization；admin session 仍完全由 downstream Worker 持有。
-
-Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only probe，检查 downstream root groups、detail Worker SPA shell、动态 catalog IDs、每个 discovered public/latest metadata、representative mounted/direct download routing、redirect 与 content type。Production 则只能经 fail-closed entrypoint 部署并按 runbook 执行同一条真实 catalog chain GET probe。Browser Playwright Downloads cases 明确是 `[mocked/source evidence]`；两者都不得把 mock、dry-run 或缺少实际 stdout 当成 remote/live evidence；详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md) 与 [production-deployment.md](production-deployment.md)。
+Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only probe，检查 R2-backed landing/software pages、动态 catalog IDs、每个 discovered public/latest metadata、representative mounted/direct download routing、redirect 与 content type。Production 则只能经 fail-closed entrypoint 部署并按 runbook 执行同一条真实 catalog chain GET probe。Browser Playwright Downloads cases 明确是 `[mocked/source evidence]`；两者都不得把 mock、dry-run 或缺少实际 stdout 当成 remote/live evidence；详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md) 与 [production-deployment.md](production-deployment.md)。
 
 ## NewAPI live adapter cutover gates
 

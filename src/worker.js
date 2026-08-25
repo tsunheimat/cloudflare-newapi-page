@@ -5,6 +5,12 @@ import {
   PUBLIC_DOCS_NAVIGATION_ROUTE,
 } from './adapters/content-adapter.js';
 import {
+  downloadsAuthorityStatus,
+  hasDownloadsBinding,
+  isDownloadsAuthorityRoute,
+  routeDownloads,
+} from './adapters/downloads.js';
+import {
   discoverDownloadSoftware,
   downloadServiceStatus,
   forwardToDownloadService,
@@ -49,21 +55,26 @@ export async function route(request, env = {}) {
       content_adapter_configured: content.configured,
       live_newapi: content.healthy,
       live_newapi_healthy: content.healthy,
-      downloads: downloadServiceStatus(env),
+      downloads: downloadsStatus(env),
     });
   }
 
   if (request.method === 'GET' && pathname === '/api/integrations/downloads') {
-    return json({ success: true, data: downloadServiceStatus(env) });
+    return json({ success: true, data: downloadsStatus(env) });
   }
 
-  // Discovery stays bound to the downstream landing page. The browser then
-  // reads each public aggregate through the existing mounted `/downloads/api`
-  // routes; this endpoint never carries a service token or browser headers.
+  // Discovery is a small public registry projection. Release/state authority
+  // remains in R2 and is fetched by the detail/API routes below.
   if (request.method === 'GET' && pathname === '/api/downloads/catalog') {
+    if (!hasDownloadsBinding(env)) {
+      return json({
+        success: true,
+        data: { software: await discoverDownloadSoftware(request, env) },
+      }, 200, { 'cache-control': 'no-store' });
+    }
     return json({
       success: true,
-      data: { software: await discoverDownloadSoftware(request, env) },
+      data: { software: downloadCatalog() },
     }, 200, { 'cache-control': 'no-store' });
   }
 
@@ -149,20 +160,21 @@ export async function route(request, env = {}) {
     throw new HttpError(404, 'Content API route not found.');
   }
 
-  if (
-    request.method === 'GET' &&
-    isDownloadsSpaRoute(pathname)
-  ) {
-    if (!env.ASSETS?.fetch) {
-      throw new HttpError(503, 'Static asset binding is not configured.');
-    }
+  if (request.method === 'GET' && isDownloadsSpaRoute(pathname) && !hasDownloadsBinding(env)) {
+    if (!env.ASSETS?.fetch) throw new HttpError(503, 'Static asset binding is not configured.');
     return withSecurityHeaders(await env.ASSETS.fetch(request));
   }
 
-  if (isDownloadServiceRoute(pathname)) {
+  if (isDownloadsAuthorityRoute(pathname) && hasDownloadsBinding(env)) {
     return withDownstreamSecurityHeaders(
-      await forwardToDownloadService(request, env),
+      await routeDownloads(request, env, pathname),
     );
+  }
+
+  // The old service binding remains an explicit rollback path. It is never
+  // consulted when the migrated R2 binding is present.
+  if (isDownloadServiceRoute(pathname)) {
+    return withDownstreamSecurityHeaders(await forwardToDownloadService(request, env));
   }
 
   if (pathname === '/api' || pathname.startsWith('/api/')) {
@@ -192,6 +204,10 @@ async function liveContentHealth(env) {
   } catch {
     return { mode, configured: false, healthy: false };
   }
+}
+
+function downloadsStatus(env) {
+  return hasDownloadsBinding(env) ? downloadsAuthorityStatus(env) : downloadServiceStatus(env);
 }
 
 function publicContentResponse(result, envelope) {
@@ -312,9 +328,14 @@ function normalizePath(pathname) {
   return pathname;
 }
 
+function downloadCatalog() {
+  return [
+    { id: 'codex-chat-record-migrator', label: 'Codex 聊天记录迁移器', href: '/downloads/software/codex-chat-record-migrator' },
+    { id: 'codex-installer', label: 'Codex 安装器', href: '/downloads/software/codex-installer' },
+  ];
+}
+
 function isDownloadsSpaRoute(pathname) {
-  // The mounted root is downstream-owned HTML; only software detail pages
-  // remain on this Worker's client-side presentation.
   return /^\/downloads\/software\/[a-z0-9][a-z0-9-]{0,62}$/.test(pathname);
 }
 
