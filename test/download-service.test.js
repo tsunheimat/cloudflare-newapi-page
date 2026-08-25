@@ -6,6 +6,7 @@ import {
   DOWNLOAD_ROUTE_MODES,
   downloadServiceRouteMetadata,
   downloadServiceStatus,
+  extractDownloadSoftwareIds,
   isDownloadServiceRoute,
 } from '../src/adapters/download-service.js';
 
@@ -124,6 +125,21 @@ test('status publishes stable mounted/direct metadata without claiming health or
     forwarded_prefix: '/downloads',
   });
   assert.equal(status.routes.direct.forwarded_prefix, null);
+});
+
+test('catalog discovery derives every software link from the downstream landing page', () => {
+  assert.deepEqual(
+    extractDownloadSoftwareIds(`
+      <h3>Codex 安装器</h3><a href="/software/codex-installer">one</a>
+      <h3>迁移器</h3><a href='/software/codex-chat-record-migrator'>two</a>
+      <a href="/software/codex-installer">duplicate</a>
+      <a href="/software/invalid_id">ignore</a>
+    `),
+    [
+      { id: 'codex-chat-record-migrator', label: '迁移器', href: '/downloads/software/codex-chat-record-migrator' },
+      { id: 'codex-installer', label: 'Codex 安装器', href: '/downloads/software/codex-installer' },
+    ],
+  );
 });
 
 test('staging and production gates activate only a callable binding', () => {

@@ -581,8 +581,14 @@ test('SPA routes pass through the asset binding with security headers', async ()
   }
 });
 
-test('download routes fail closed while service binding is absent', async () => {
-  const response = await fetchWorker('/downloads', fixtureEnv);
+test('Downloads SPA routes mount the shared Worker shell while legacy service routes fail closed', async () => {
+  for (const path of ['/downloads', '/downloads/software/codex-installer']) {
+    const response = await fetchWorker(path, fixtureEnv);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), `asset:${path}`);
+  }
+
+  const response = await fetchWorker('/downloads/admin', fixtureEnv);
   const body = await response.json();
   assert.equal(response.status, 503);
   assert.equal(body.error.details.transport, 'cloudflare-service-binding');
@@ -595,7 +601,7 @@ test('download routes fail closed while service binding is absent', async () => 
     'wechat_qr',
   ]);
 
-  const stagingUnbound = await fetchWorker('/downloads', {
+  const stagingUnbound = await fetchWorker('/downloads/admin', {
     ...fixtureEnv,
     DOWNLOADS_INTEGRATION: 'staging-service-binding',
   });
@@ -606,6 +612,46 @@ test('download routes fail closed while service binding is absent', async () => 
   assert.equal(stagingBody.error.details.bound, false);
   assert.equal(stagingBody.error.details.active, false);
   assert.equal(stagingBody.error.details.phase, 'unbound');
+});
+
+test('download catalog discovery uses a fixed credential-free downstream landing request', async () => {
+  const seen = [];
+  const response = await fetchWorker('/api/downloads/catalog', {
+    ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'staging-service-binding',
+    DOWNLOADS_SERVICE: {
+      fetch: async (request) => {
+        seen.push({
+          method: request.method,
+          pathname: new URL(request.url).pathname,
+          search: new URL(request.url).search,
+          headers: Object.fromEntries(request.headers),
+        });
+        return new Response(`
+          <h3>Codex 安装器</h3><a href="/software/codex-installer">Codex</a>
+          <h3>迁移器</h3><a href="/software/codex-chat-record-migrator">Migrator</a>
+        `, { headers: { 'content-type': 'text/html' } });
+      },
+    },
+  }, {
+    headers: {
+      cookie: 'hostile=session',
+      authorization: 'Bearer hostile',
+      'x-api-key': 'hostile',
+    },
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).data.software, [
+    { id: 'codex-chat-record-migrator', label: '迁移器', href: '/downloads/software/codex-chat-record-migrator' },
+    { id: 'codex-installer', label: 'Codex 安装器', href: '/downloads/software/codex-installer' },
+  ]);
+  assert.deepEqual(seen, [{
+    method: 'GET',
+    pathname: '/',
+    search: '',
+    headers: { accept: 'text/html' },
+  }]);
 });
 
 test('software-specific download APIs stay behind the service binding boundary', async () => {
@@ -665,7 +711,7 @@ test('binding presence is not reported as healthy or live', async () => {
   assert.equal(disabledStatus.active, false);
   assert.equal(disabledStatus.phase, 'disabled');
 
-  const blocked = await fetchWorker('/downloads', {
+  const blocked = await fetchWorker('/downloads/admin', {
     ...fixtureEnv,
     DOWNLOADS_SERVICE: { fetch: async () => new Response('must not run') },
   });

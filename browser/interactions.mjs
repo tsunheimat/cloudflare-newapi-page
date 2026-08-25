@@ -508,6 +508,80 @@ test('Pricing language switching changes the mounted runtime and persists anonym
   await context.close();
 });
 
+test('Downloads SPA discovers software, renders public metadata, and links through the mounted service routes', { timeout: 30_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addCookies([
+    { name: 'hostile-session', value: 'must-not-forward', domain: '127.0.0.1', path: '/' },
+  ]);
+  const page = await newPage(context);
+  const observed = [];
+  const metadata = {
+    release_id: 'codex-v2.4.0',
+    generated_at: '2026-08-25T00:00:00Z',
+    details: { notes: 'public release notes' },
+    files: [{
+      site: 'tokenrouter',
+      platform: 'windows',
+      arch: 'x64',
+      filename: 'JuAPI-CodexSetup.exe',
+      size: 123456,
+      sha256: 'a'.repeat(64),
+      url: 'https://downloads.example.invalid/public.exe',
+      details: { channel: 'stable' },
+    }],
+  };
+  await page.route('**/api/downloads/catalog', async (route) => {
+    observed.push({ path: new URL(route.request().url()).pathname, headers: route.request().headers() });
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { software: [
+        { id: 'codex-installer' },
+        { id: 'codex-chat-record-migrator' },
+      ] } }),
+    });
+  });
+  await page.route('**/downloads/api/codex-installer/public', async (route) => {
+    observed.push({ path: new URL(route.request().url()).pathname, headers: route.request().headers() });
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(metadata) });
+  });
+  await page.route('**/downloads/api/codex-chat-record-migrator/public', async (route) => {
+    observed.push({ path: new URL(route.request().url()).pathname, headers: route.request().headers() });
+    await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ success: false, error: { message: 'public metadata unavailable' } }) });
+  });
+  await page.goto(`${baseUrl}/downloads`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: '软件下载中心', exact: true }).waitFor();
+  assert.equal(await page.locator('.downloads-software-card').count(), 2);
+  assert.equal(await page.locator('.downloads-card-status--error').count(), 1);
+  assert.equal(await page.locator('.downloads-card-targets').first().textContent(), 'windows · x64');
+  assert.ok(observed.every(({ headers }) => !headers.cookie && !headers.authorization));
+
+  await page.locator('.downloads-software-card').first().click();
+  await page.getByRole('heading', { name: 'Codex Installer', exact: true }).waitFor();
+  await page.getByText('JuAPI-CodexSetup.exe', { exact: true }).waitFor();
+  assert.equal(await page.getByText('JuAPI-CodexSetup.exe', { exact: true }).count(), 1);
+  assert.equal(await page.locator('.downloads-file-kv dd').nth(2).textContent(), '120.6 KB');
+  assert.equal(await page.getByText('SHA-256', { exact: true }).count(), 1);
+  assert.equal(await page.locator('a[href="/downloads/download/codex-installer/tokenrouter/windows/x64"]').count(), 1);
+  assert.equal(await page.getByText('public release notes', { exact: false }).count(), 1);
+  await context.close();
+});
+
+test('Downloads SPA renders empty and downstream error states', { timeout: 25_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await newPage(context);
+  await page.route('**/api/downloads/catalog', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: { software: [{ id: 'empty-software' }] } }) });
+  });
+  await page.route('**/downloads/api/empty-software/public', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ release_id: 'empty', files: [] }) });
+  });
+  await page.goto(`${baseUrl}/downloads/software/empty-software`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: 'empty', exact: true }).waitFor();
+  assert.equal(await page.getByRole('heading', { name: '暂无可用下载', exact: true }).count(), 1);
+  await context.close();
+});
+
 async function newPage(context) {
   const page = await context.newPage();
   page.setDefaultTimeout(UI_TIMEOUT_MS);

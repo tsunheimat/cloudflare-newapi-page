@@ -5,6 +5,7 @@ import {
   PUBLIC_DOCS_NAVIGATION_ROUTE,
 } from './adapters/content-adapter.js';
 import {
+  discoverDownloadSoftware,
   downloadServiceStatus,
   forwardToDownloadService,
   isDownloadServiceRoute,
@@ -54,6 +55,16 @@ export async function route(request, env = {}) {
 
   if (request.method === 'GET' && pathname === '/api/integrations/downloads') {
     return json({ success: true, data: downloadServiceStatus(env) });
+  }
+
+  // Discovery stays bound to the downstream landing page. The browser then
+  // reads each public aggregate through the existing mounted `/downloads/api`
+  // routes; this endpoint never carries a service token or browser headers.
+  if (request.method === 'GET' && pathname === '/api/downloads/catalog') {
+    return json({
+      success: true,
+      data: { software: await discoverDownloadSoftware(request, env) },
+    }, 200, { 'cache-control': 'no-store' });
   }
 
   // Canonical NewAPI status is a public read-only bootstrap. The adapter
@@ -136,6 +147,16 @@ export async function route(request, env = {}) {
 
   if (pathname.startsWith('/api/content/')) {
     throw new HttpError(404, 'Content API route not found.');
+  }
+
+  if (
+    request.method === 'GET' &&
+    isDownloadsSpaRoute(pathname)
+  ) {
+    if (!env.ASSETS?.fetch) {
+      throw new HttpError(503, 'Static asset binding is not configured.');
+    }
+    return withSecurityHeaders(await env.ASSETS.fetch(request));
   }
 
   if (isDownloadServiceRoute(pathname)) {
@@ -289,6 +310,11 @@ function normalizePath(pathname) {
     return pathname.slice(0, -1);
   }
   return pathname;
+}
+
+function isDownloadsSpaRoute(pathname) {
+  return pathname === '/downloads'
+    || /^\/downloads\/software\/[a-z0-9][a-z0-9-]{0,62}$/.test(pathname);
 }
 
 function decodeDocSlug(rawSlug) {

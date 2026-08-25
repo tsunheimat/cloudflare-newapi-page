@@ -13,6 +13,7 @@
 - `/api/status`：通过 Worker token 请求 `/api/internal/live-content/v1/status`，提供 canonical Pricing 的 display/conversion bootstrap。
 - `CONTENT_ADAPTER="newapi"`：通过 `NEWAPI_VPC_SERVICE` 读取私有 NewAPI live Docs/Pricing；仅 production named environment 选择该模式，top-level/staging 保持 fixture safety mode。
 - `/api/integrations/downloads`：既有下载 Worker Service Binding 的状态、route mode 与能力边界。
+- `/downloads` 与 `/downloads/software/:softwareId`：JuAPI Worker SPA 下载中心；软件目录由下游公开 landing response 发现，版本 metadata 继续从同源 mounted `/downloads/api/:softwareId/public` 读取，下载按钮继续走 `/downloads/download/...`。
 - Worker security headers、API fail-closed 行为与 SPA asset fallback。
 
 Fixture 内容在 API 和 UI 都明确标记为演示数据；live badge 只会在经过 v1 response/schema 验证的 live payload 上出现，不代表尚未执行的生产部署或 provider 能力。
@@ -106,9 +107,10 @@ service_id = "01a027bb-280d-7630-b837-7afd6a0ca196"
 
 Default/top-level 不声明 `DOWNLOADS_SERVICE` 且 gate 为 `disabled`，继续供 local/dev fail closed。命名 staging 与 production 都显式绑定同一个已部署的 `cloudflare-download-site`，但使用不同 runtime gate；只有当前 gate 与 callable binding 同时存在才会转发。未知 mode、缺失或无效 binding 全部返回 503。
 
-既有 `/mnt/vibe-coding-share/tokenrouter/cloudflare-download-site` 仍然单独持有下载、admin session、R2、rollback 和微信群二维码功能。本 repo 只负责 HTTP forwarding boundary。保留的入口包括：
+既有 `/mnt/vibe-coding-share/tokenrouter/cloudflare-download-site` 仍然单独持有下载、admin session、R2、rollback 和微信群二维码功能。本 repo 只负责 HTTP forwarding boundary；新的两个 SPA 页面是例外入口，不覆盖其余 mounted forwarding。保留的入口包括：
 
-- mounted `/downloads` 与 `/downloads/*`，转发时移除 `/downloads` 并设置可信的 `x-forwarded-prefix: /downloads`；
+- mounted `/downloads/*`（除 SPA 的精确 GET `/downloads` 与 `/downloads/software/:softwareId` 页面）转发时移除 `/downloads` 并设置可信的 `x-forwarded-prefix: /downloads`；
+- `/api/downloads/catalog` 仅通过 Service Binding GET 下游 landing HTML，提取软件详情链接的 ID；它不读取 R2，不处理 release state，也不转发浏览器 headers；
 - direct `/software/*`、`/download/*`、`/admin/*`、`/assets/*`、`/wechat-group-qrcode*`；
 - default、software-specific 与微信群二维码 public metadata API。
 

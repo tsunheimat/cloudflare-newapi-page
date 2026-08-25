@@ -33,6 +33,7 @@ const CANONICAL_PRICING_LANGUAGES = [
 const state = {
   docsCatalog: null,
   integration: null,
+  downloadCatalog: null,
   docsQuery: '',
   pricingQuery: '',
   vendor: '',
@@ -168,6 +169,8 @@ async function renderRoute() {
       await renderHome();
     } else if (isPricingPath(path)) {
       await renderPricing();
+    } else if (isDownloadsPath(path)) {
+      await renderDownloads(path);
     } else {
       await ensureDocsCatalog();
       renderNotFound();
@@ -341,6 +344,250 @@ async function renderPricing() {
   // no handcrafted compatibility renderer for `/pricing`.
   await renderCanonicalPricing();
   return;
+}
+
+async function renderDownloads(path) {
+  document.title = path === '/downloads' ? '软件下载中心 · JuAPI' : '软件详情 · JuAPI';
+  const softwareId = downloadSoftwareId(path);
+  if (softwareId) {
+    await renderDownloadSoftware(state.downloadCatalog || { software: [] }, softwareId);
+    return;
+  }
+  const catalog = await ensureDownloadCatalog();
+
+  const cards = await Promise.all(catalog.software.map(async (software) => {
+    let metadata = null;
+    let error = null;
+    let fallback = false;
+    try {
+      const loaded = await loadPublicDownloadMetadata(software.id);
+      metadata = loaded.metadata;
+      fallback = loaded.fallback;
+    } catch (caught) {
+      error = caught;
+    }
+    return downloadSoftwareCard(software, metadata, error, fallback);
+  }));
+
+  const content = node('div', { class: 'downloads-page' });
+  content.append(
+    node('section', { class: 'downloads-hero' },
+      node('div', { class: 'eyebrow' }, 'JUAPI PUBLIC DOWNLOADS'),
+      node('h1', {}, '软件下载中心'),
+      node('p', { class: 'downloads-lead' }, '从现有下载服务读取公开版本、平台目标、校验信息与下载入口。'),
+    ),
+    node('section', { class: 'downloads-section', 'aria-labelledby': 'downloads-software-heading' },
+      node('div', { class: 'downloads-section-heading' },
+        node('div', { class: 'eyebrow' }, 'AVAILABLE SOFTWARE'),
+        node('h2', { id: 'downloads-software-heading' }, '软件'),
+      ),
+      cards.length
+        ? node('div', { class: 'downloads-card-grid' }, cards)
+        : downloadsEmpty('当前没有配置可展示的软件。'),
+    ),
+  );
+  replaceMain(content);
+}
+
+async function renderDownloadSoftware(catalog, softwareId) {
+  const software = catalog.software.find((item) => item.id === softwareId) || {
+    id: softwareId,
+    label: humanizeSoftwareId(softwareId),
+  };
+  const content = node('div', { class: 'downloads-page downloads-detail-page' });
+  const hero = node('section', { class: 'downloads-hero downloads-detail-hero' });
+  hero.append(
+    node('a', { class: 'downloads-back-link', href: '/downloads', 'data-link': '' }, '← 全部软件'),
+    node('div', { class: 'eyebrow' }, 'PUBLIC RELEASE'),
+    node('h1', {}, software.label || humanizeSoftwareId(software.id)),
+    node('p', { class: 'downloads-lead' }, `软件 ID：${software.id}`),
+  );
+  content.append(hero);
+  replaceMain(content);
+
+  let resolved;
+  try {
+    resolved = await loadPublicDownloadMetadata(software.id);
+  } catch (error) {
+    content.append(downloadError(error));
+    return;
+  }
+  const metadata = resolved.metadata;
+  const files = Array.isArray(metadata?.files) ? metadata.files : [];
+  const releaseDate = metadata?.release_date || metadata?.generated_at || metadata?.updated_at;
+  const summary = node('section', { class: 'downloads-release-summary', 'aria-labelledby': 'downloads-release-heading' });
+  summary.append(
+    node('div', { class: 'downloads-section-heading' },
+      node('div', { class: 'eyebrow' }, 'PUBLIC RELEASE'),
+      node('h2', { id: 'downloads-release-heading' }, metadata?.release_id || '公开版本'),
+    ),
+    node('dl', { class: 'downloads-kv' },
+      downloadDefinition('发布日期', formatDownloadDate(releaseDate)),
+      downloadDefinition('文件数量', String(files.length)),
+      metadata?.channel ? downloadDefinition('频道', metadata.channel) : null,
+    ),
+  );
+  content.append(summary);
+  if (resolved.fallback) {
+    content.append(node('p', { class: 'downloads-fallback-notice', role: 'status' }, '公开版本暂不可用，当前显示下游最新公开元数据。'));
+  }
+  if (!files.length) {
+    content.append(downloadsEmpty('这个软件当前没有可下载文件。'));
+  } else {
+    const fileSection = node('section', { class: 'downloads-section', 'aria-labelledby': 'downloads-files-heading' });
+    fileSection.append(
+      node('div', { class: 'downloads-section-heading' },
+        node('div', { class: 'eyebrow' }, 'DOWNLOAD TARGETS'),
+        node('h2', { id: 'downloads-files-heading' }, '可用下载'),
+      ),
+      node('div', { class: 'downloads-file-grid' }, files.map((file) => downloadFileCard(software.id, file))),
+    );
+    content.append(fileSection);
+  }
+  const details = node('details', { class: 'downloads-metadata-details' });
+  details.append(node('summary', {}, '查看完整公开元数据'));
+  details.append(node('pre', {}, JSON.stringify(metadata, null, 2)));
+  content.append(details);
+}
+
+async function ensureDownloadCatalog() {
+  if (state.downloadCatalog) return state.downloadCatalog;
+  const response = await api('/api/downloads/catalog');
+  const software = Array.isArray(response?.data?.software)
+    ? response.data.software.filter((item) => item && /^[a-z0-9][a-z0-9-]{0,62}$/.test(item.id))
+    : [];
+  state.downloadCatalog = { software };
+  return state.downloadCatalog;
+}
+
+async function loadPublicDownloadMetadata(softwareId) {
+  const encoded = encodeURIComponent(softwareId);
+  try {
+    return {
+      metadata: normalizeDownloadMetadata(await api(`/downloads/api/${encoded}/public`)),
+      fallback: false,
+    };
+  } catch (error) {
+    if (error?.status !== 404) throw error;
+    return {
+      metadata: normalizeDownloadMetadata(await api(`/downloads/api/${encoded}/latest`)),
+      fallback: true,
+    };
+  }
+}
+
+function downloadSoftwareId(path) {
+  const match = path.match(/^\/downloads\/software\/([a-z0-9][a-z0-9-]{0,62})$/);
+  return match ? match[1] : '';
+}
+
+function downloadSoftwareCard(software, metadata, error, fallback = false) {
+  const card = node('a', {
+    class: 'downloads-software-card',
+    href: `/downloads/software/${encodeURIComponent(software.id)}`,
+    'data-link': '',
+  });
+  const files = Array.isArray(metadata?.files) ? metadata.files : [];
+  const targets = [...new Set(files.map((file) => [file?.platform, file?.arch].filter(Boolean).join(' · ')))];
+  card.append(
+    node('span', { class: 'downloads-card-kicker' }, 'SOFTWARE'),
+    node('h2', {}, software.label || metadata?.name || metadata?.title || humanizeSoftwareId(software.id)),
+    node('code', {}, software.id),
+    error
+      ? node('span', { class: 'downloads-card-status downloads-card-status--error' }, error.message || '公开元数据暂时不可用')
+      : node('span', { class: `downloads-card-status${fallback ? ' downloads-card-status--fallback' : ''}` }, `${fallback ? '当前为最新版本 · ' : ''}${formatDownloadDate(metadata?.release_date || metadata?.generated_at || metadata?.updated_at)} · ${files.length} 个目标`),
+    targets.length ? node('span', { class: 'downloads-card-targets' }, targets.join('、')) : null,
+    node('span', { class: 'downloads-card-action' }, '查看公开版本 →'),
+  );
+  return card;
+}
+
+function normalizeDownloadMetadata(payload) {
+  if (payload?.data && typeof payload.data === 'object' && !Array.isArray(payload.data)) return payload.data;
+  return payload && typeof payload === 'object' ? payload : {};
+}
+
+function downloadFileCard(softwareId, file) {
+  const target = [file?.site, file?.platform, file?.arch].every(Boolean)
+    ? `/downloads/download/${encodeURIComponent(softwareId)}/${encodeURIComponent(file.site)}/${encodeURIComponent(file.platform)}/${encodeURIComponent(file.arch)}`
+    : safeDownloadHref(file?.url);
+  const card = node('article', { class: 'downloads-file-card' });
+  card.append(
+    node('div', { class: 'downloads-file-target' }, `${humanizeDownloadValue(file?.platform)} · ${humanizeDownloadValue(file?.arch)}`),
+    node('h3', {}, file?.filename || '未命名文件'),
+    node('dl', { class: 'downloads-kv downloads-file-kv' },
+      downloadDefinition('平台', file?.platform || '未提供'),
+      downloadDefinition('架构', file?.arch || '未提供'),
+      downloadDefinition('大小', formatDownloadBytes(file?.size)),
+      downloadDefinition('SHA-256', file?.sha256 || '未提供'),
+      file?.content_type ? downloadDefinition('类型', file.content_type) : null,
+    ),
+    target
+      ? node('a', { class: 'button primary downloads-download-button', href: target }, '下载')
+      : node('span', { class: 'downloads-unavailable' }, '下载目标待补充'),
+  );
+  if (file && typeof file === 'object') {
+    const details = node('details', { class: 'downloads-file-details' });
+    details.append(node('summary', {}, '详情'));
+    details.append(node('pre', {}, JSON.stringify(file, null, 2)));
+    card.append(details);
+  }
+  return card;
+}
+
+function safeDownloadHref(value) {
+  if (!value || typeof value !== 'string') return '';
+  try {
+    const resolved = new URL(value, window.location.href);
+    return ['http:', 'https:'].includes(resolved.protocol) ? resolved.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function downloadDefinition(label, value) {
+  return [node('dt', {}, label), node('dd', {}, value)];
+}
+
+function downloadsEmpty(message) {
+  return node('div', { class: 'downloads-empty', role: 'status' },
+    node('h3', {}, '暂无可用下载'),
+    node('p', {}, message),
+  );
+}
+
+function downloadError(error) {
+  return node('div', { class: 'downloads-empty downloads-error', role: 'alert' },
+    node('h2', {}, '公开元数据暂时无法载入'),
+    node('p', {}, error?.message || '下载服务暂时不可用，请稍后重试。'),
+  );
+}
+
+function humanizeSoftwareId(id) {
+  return String(id || '').split('-').filter(Boolean).map((part) => part[0].toUpperCase() + part.slice(1)).join(' ') || '软件';
+}
+
+function humanizeDownloadValue(value) {
+  return value ? humanizeSoftwareId(String(value).replace(/_/g, '-')) : '未提供';
+}
+
+function formatDownloadBytes(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return '未提供';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let current = number;
+  let unit = 0;
+  while (current >= 1024 && unit < units.length - 1) {
+    current /= 1024;
+    unit += 1;
+  }
+  return `${current.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatDownloadDate(value) {
+  if (!value) return '未提供';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(date);
 }
 
 async function renderCanonicalPricing() {
@@ -877,15 +1124,16 @@ function renderError(error) {
 
 async function api(path, options = {}) {
   const publicDocsNavigation = options.publicDocsNavigation === true;
+  const publicDownloads = path === '/api/downloads/catalog' || path.startsWith('/downloads/api/');
   const cached = publicDocsNavigation ? null : contentApiCache.get(path);
   const headers = new Headers({ accept: 'application/json' });
   if (!publicDocsNavigation && cached?.etag) headers.set('if-none-match', cached.etag);
   const response = await fetch(path, {
     headers,
-    credentials: path.startsWith('/api/content/docs') || publicDocsNavigation ? 'omit' : undefined,
+    credentials: path.startsWith('/api/content/docs') || publicDocsNavigation || publicDownloads ? 'omit' : undefined,
     ...(path.startsWith('/api/content/') || publicDocsNavigation
       ? { cache: publicDocsNavigation ? 'no-store' : 'no-cache' }
-      : {}),
+      : publicDownloads ? { cache: 'no-store' } : {}),
   });
   if (response.status === 304) {
     if (publicDocsNavigation || !cached || response.headers.get('etag') !== cached.etag) {
@@ -922,7 +1170,9 @@ function updateActiveNavigation(path) {
         ? path === '/'
         : link.dataset.nav === 'pricing'
           ? isPricingPath(path)
-          : path.startsWith(`/${link.dataset.nav}`);
+          : link.dataset.nav === 'downloads'
+            ? isDownloadsPath(path)
+            : path.startsWith(`/${link.dataset.nav}`);
     link.classList.toggle('active', active);
     if (active) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -935,6 +1185,10 @@ function normalizePath(path) {
 
 function isPricingPath(path) {
   return path === '/console/pricing' || path === '/pricing';
+}
+
+function isDownloadsPath(path) {
+  return path === '/downloads' || downloadSoftwareId(path) !== '';
 }
 
 function isDocsPath(path) {

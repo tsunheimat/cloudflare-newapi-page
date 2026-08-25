@@ -369,7 +369,7 @@ export async function assertProductionRuntimeContract() {
   assert.equal(pricing.group_ratio.default, 10);
 
   const downstream = await worker.fetch(
-    new Request('https://production.invalid/downloads'),
+    new Request('https://production.invalid/downloads/api/latest'),
     env,
   );
   assert.equal(downstream.status, 200);

@@ -4,7 +4,7 @@
 
 ```text
 Browser
-  ├─ /docs/*, /console/docs/*, /console/pricing, /pricing ──> Worker Assets (canonical SPA surfaces)
+  ├─ /docs/*, /console/docs/*, /console/pricing, /pricing, /downloads* ──> Worker Assets (canonical SPA surfaces)
   ├─ /api/content/* ─────> ContentAdapter
   │                          └─ FixtureAdapter (Phase 1 only)
   └─ download routes ─────> explicit runtime gate
@@ -34,6 +34,16 @@ Public canonical DocsHub:
 Public canonical bootstrap:
   `/api/status` (read-only, fixed token-only GET)
          └─ NEWAPI_VPC_SERVICE -> `/api/internal/live-content/v1/status`
+
+Public Downloads SPA:
+  `/downloads` and `/downloads/software/:softwareId`
+       └─ `/api/downloads/catalog` -> fixed GET of downstream landing HTML
+       └─ `/downloads/api/:softwareId/public` -> existing mounted metadata route
+       └─ `/downloads/download/:softwareId/:site/:platform/:arch` -> existing download route
+
+The SPA preserves the downstream metadata object in an expandable public JSON
+view. It does not reproduce the downstream software registry, R2 keys, lock
+state, admin session, redirect resolution, or credentials.
 ```
 
 The public `/api/docs/v2/*` routes are same-origin adapters for the canonical
@@ -122,13 +132,13 @@ does not duplicate them or impose a locked/default group.
 - 上传或保存微信群二维码；
 - 保存任何相关 secret。
 
-当前 gateway 会保留 method、原始 body bytes、query、cookie 和 content type，并把 `/downloads/...` 去掉 namespace 后传给 bound Worker；download Worker 原有的 `/software`、`/download`、`/admin`、assets、QR 和 metadata route 也有 direct boundary。Mounted request 会覆盖 `x-forwarded-prefix=/downloads`，direct request 会删除客户端伪造的该 header。Response 保留 body stream、status、content type、content length/disposition、cookies、redirect 和 downstream-owned headers。
+当前 gateway 会保留 method、原始 body bytes、query、cookie 和 content type，并把除 SPA 精确 GET 页面外的 `/downloads/...` 去掉 namespace 后传给 bound Worker；download Worker 原有的 `/software`、`/download`、`/admin`、assets、QR 和 metadata route 也有 direct boundary。Mounted request 会覆盖 `x-forwarded-prefix=/downloads`，direct request 会删除客户端伪造的该 header。Response 保留 body stream、status、content type、content length/disposition、cookies、redirect 和 downstream-owned headers。
 
 Gateway route matcher 要求完整 path segment，`/administrator`、`/api/latest-news` 不属于 download Worker。本站 SPA/API 使用严格的 `style-src 'self'` CSP；downstream response 保留自己的 CSP（或保持无 CSP），只补上缺少且与内容无关的安全 headers，避免破坏既有 inline-style HTML/admin response。状态中的 `configured`、`bound`、`active`、`healthy`、`live` 分开报告；binding 存在不等于 gate 已启用、downstream 已健康或已完成 production 验证。
 
 Phase 2 在 `env.staging` 与 `env.production` 都明确绑定 `DOWNLOADS_SERVICE -> cloudflare-download-site`，并分别以 `staging-service-binding`、`production-service-binding` gate 启用。Default/top-level 仍明确为 `disabled` 且没有 service binding。Repository tests 会验证配置隔离以及完整 forwarding contract；三条普通 Wrangler lane 都只执行 dry-run。
 
-`/downloads` 下游 HTML 使用 root-relative links/assets/forms，因此它们会落入本站保留的 direct boundary。Gateway 不做 HTML string rewrite。Service binding 本身也不等于浏览器侧 admin authorization；admin session 仍完全由 downstream Worker 持有。
+下游 landing HTML 只在 Worker-to-Worker 的 catalog discovery 请求中读取；浏览器访问 `/downloads` 时加载本站 SPA。其余下游 HTML 使用 root-relative links/assets/forms，因此它们会落入本站保留的 direct boundary。Gateway 不做 HTML string rewrite。Service binding 本身也不等于浏览器侧 admin authorization；admin session 仍完全由 downstream Worker 持有。
 
 Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only probe，检查真实 Service Binding、public metadata、redirect 与 content type。Production 则只能经 fail-closed entrypoint 部署并按 runbook 做 GET verification。两者都不得把 mock/dry-run 当成 remote evidence；详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md) 与 [production-deployment.md](production-deployment.md)。
 

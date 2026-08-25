@@ -71,6 +71,20 @@ test('Pricing presentation mounts one canonical runtime at both public URLs', as
   assert.match(app, /canonical-pricing\.js/);
   assert.doesNotMatch(app, /legacyPricing|pricing-page-intro|renderPricingProviders/);
 });
+
+test('Downloads presentation has discoverable catalog and detail routes without a fixed software projection', async () => {
+  const [app, styles, index] = await sources;
+  assert.match(index, /href="\/downloads" data-link data-nav="downloads"/);
+  assert.match(app, /function isDownloadsPath\(path\)/);
+  assert.match(app, /\/api\/downloads\/catalog/);
+  assert.match(app, /\/downloads\/api\/\$\{encoded\}\/public/);
+  assert.match(app, /\/downloads\/download\/\$\{encodeURIComponent\(softwareId\)\}/);
+  assert.match(app, /JSON\.stringify\(metadata, null, 2\)/);
+  assert.match(app, /暂无可用下载/);
+  assert.match(app, /公开元数据暂时无法载入/);
+  assert.match(styles, /\.downloads-file-grid/);
+  assert.match(styles, /\.downloads-metadata-details/);
+});
 test('public Pricing route ships the canonical component bundle without browser auth', async () => {
   const [app, bundle, stylesheet] = await Promise.all([
     readFile(APP_URL, 'utf8'),
