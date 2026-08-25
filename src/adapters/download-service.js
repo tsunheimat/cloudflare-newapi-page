@@ -12,7 +12,8 @@ const ENABLED_DOWNLOADS_INTEGRATION_MODES = new Set([
 ]);
 
 const MOUNTED_ROUTE_PREFIX = '/downloads';
-const CATALOG_MAX_BODY_BYTES = 512 * 1024;
+export const DOWNLOADS_CATALOG_TIMEOUT_MS = 5_000;
+export const DOWNLOADS_CATALOG_MAX_BODY_BYTES = 512 * 1024;
 
 const DIRECT_ROUTE_PREFIXES = Object.freeze([
   '/admin',
@@ -151,7 +152,14 @@ export async function forwardToDownloadService(request, env = {}) {
 // The downstream landing page is the only public catalog authority. Keep the
 // discovery request fixed and credential-free, then expose only software IDs
 // for the SPA to use with the existing mounted metadata routes.
-export async function discoverDownloadSoftware(request, env = {}) {
+export async function discoverDownloadSoftware(
+  request,
+  env = {},
+  {
+    timeoutMs = DOWNLOADS_CATALOG_TIMEOUT_MS,
+    maxBodyBytes = DOWNLOADS_CATALOG_MAX_BODY_BYTES,
+  } = {},
+) {
   const status = downloadServiceStatus(env);
   if (!status.active) {
     throw new HttpError(
@@ -165,29 +173,141 @@ export async function discoverDownloadSoftware(request, env = {}) {
   const downstreamUrl = new URL(incomingUrl);
   downstreamUrl.pathname = '/';
   downstreamUrl.search = '';
+  const controller = new AbortController();
   const catalogRequest = new Request(downstreamUrl, {
     method: 'GET',
     headers: { accept: 'text/html' },
+    signal: controller.signal,
   });
-  let response;
-  try {
-    response = await env.DOWNLOADS_SERVICE.fetch(catalogRequest);
-  } catch {
-    throw new HttpError(503, 'Download catalog is temporarily unavailable.');
-  }
-  if (!response || response.status !== 200) {
-    throw new HttpError(503, 'Download catalog is temporarily unavailable.');
-  }
-  let body;
-  try {
-    body = new Uint8Array(await response.arrayBuffer());
-  } catch {
-    throw new HttpError(503, 'Download catalog is temporarily unavailable.');
-  }
-  if (body.byteLength > CATALOG_MAX_BODY_BYTES) {
+  const deadline = Date.now() + boundedPositiveInteger(timeoutMs, DOWNLOADS_CATALOG_TIMEOUT_MS);
+  let upstreamResponse;
+  let rejectTimeout;
+  const timeout = new Promise((_, reject) => {
+    rejectTimeout = reject;
+  });
+  const timer = setTimeout(() => {
+    controller.abort();
+    void cancelCatalogStream(upstreamResponse?.body, 'deadline exceeded');
+    rejectTimeout(new HttpError(503, 'Download catalog is temporarily unavailable.'));
+  }, Math.max(1, deadline - Date.now()));
+  const operation = (async () => {
+    assertCatalogBeforeDeadline(deadline, controller);
+    try {
+      upstreamResponse = await env.DOWNLOADS_SERVICE.fetch(catalogRequest);
+    } catch {
+      throw new HttpError(503, 'Download catalog is temporarily unavailable.');
+    }
+    if (Date.now() >= deadline) {
+      void cancelCatalogStream(upstreamResponse?.body, 'deadline exceeded');
+    }
+    assertCatalogBeforeDeadline(deadline, controller);
+    if (!upstreamResponse || upstreamResponse.status !== 200) {
+      throw new HttpError(503, 'Download catalog is temporarily unavailable.');
+    }
+    const contentType = upstreamResponse.headers?.get?.('content-type') || '';
+    if (!/^text\/html(?:\s*;|$)/i.test(contentType)) {
+      throw new HttpError(503, 'Download catalog is temporarily unavailable.');
+    }
+    let body;
+    try {
+      body = await readCatalogBody(
+        upstreamResponse,
+        boundedPositiveInteger(maxBodyBytes, DOWNLOADS_CATALOG_MAX_BODY_BYTES),
+        controller.signal,
+        deadline,
+        timeout,
+      );
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      if (controller.signal.aborted || Date.now() >= deadline) {
+        throw new HttpError(503, 'Download catalog is temporarily unavailable.');
+      }
+      throw new HttpError(503, 'Download catalog is temporarily unavailable.');
+    }
+    assertCatalogBeforeDeadline(deadline, controller);
+    return extractDownloadSoftwareIds(body);
+  })();
+
+  return Promise.race([operation, timeout])
+    .catch((error) => {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(
+        503,
+        'Download catalog is temporarily unavailable.',
+      );
+    })
+    .finally(() => clearTimeout(timer));
+}
+
+async function readCatalogBody(response, maxBodyBytes, signal, deadline, timeout) {
+  const contentLength = Number(response.headers?.get?.('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > maxBodyBytes) {
+    void cancelCatalogStream(response.body, 'catalog body too large');
     throw new HttpError(503, 'Download catalog is too large to inspect.');
   }
-  return extractDownloadSoftwareIds(new TextDecoder().decode(body));
+  if (!response.body) return '';
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  let completed = false;
+  let cancelled = false;
+  const cancelReader = (reason) => {
+    cancelled = true;
+    void cancelCatalogStream(reader, reason);
+  };
+  const abortReader = () => {
+    cancelReader('deadline exceeded');
+  };
+  signal.addEventListener('abort', abortReader, { once: true });
+  try {
+    for (;;) {
+      assertCatalogBeforeDeadline(deadline);
+      const { done, value } = await Promise.race([reader.read(), timeout]);
+      assertCatalogBeforeDeadline(deadline);
+      if (done) {
+        completed = true;
+        break;
+      }
+      total += value.byteLength;
+      if (total > maxBodyBytes) {
+        cancelReader('catalog body too large');
+        throw new HttpError(503, 'Download catalog is too large to inspect.');
+      }
+      chunks.push(value);
+    }
+  } finally {
+    signal.removeEventListener('abort', abortReader);
+    if (!completed && !cancelled) cancelReader('catalog body read ended');
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  assertCatalogBeforeDeadline(deadline);
+  return new TextDecoder().decode(bytes);
+}
+
+function assertCatalogBeforeDeadline(deadline, controller = undefined) {
+  if (Date.now() < deadline) return;
+  controller?.abort();
+  throw new HttpError(503, 'Download catalog is temporarily unavailable.');
+}
+
+function cancelCatalogStream(stream, reason) {
+  try {
+    return Promise.resolve(stream?.cancel?.(reason)).catch(() => {});
+  } catch {
+    return Promise.resolve();
+  }
+}
+
+function boundedPositiveInteger(value, fallback) {
+  return Number.isInteger(value) && value > 0 ? Math.min(value, fallback) : fallback;
 }
 
 export function extractDownloadSoftwareIds(html) {

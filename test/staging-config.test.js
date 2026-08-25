@@ -125,3 +125,28 @@ test('Phase 2B probe is loopback-only and contains no mutating HTTP method', asy
   assert.match(source, /location_kind: classifyLocation/);
   assert.doesNotMatch(source, /method:\s*['"](?:POST|PUT|PATCH|DELETE)['"]/);
 });
+
+test('remote and production download probes verify the Worker SPA and real catalog chain', async () => {
+  const remote = await readFile(
+    new URL('../scripts/phase2b-readonly-probe.mjs', import.meta.url),
+    'utf8',
+  );
+  const production = await readFile(
+    new URL('../scripts/production-download-readonly-probe.mjs', import.meta.url),
+    'utf8',
+  );
+  for (const source of [remote, production]) {
+    assert.match(source, /<main id=\\?"main-content/);
+    assert.match(source, /\/static\/app\.js/);
+    assert.match(source, /\/api\/downloads\/catalog/);
+    assert.match(source, /\/downloads\/api\/\$\{encodeURIComponent\(software\.id\)\}\/public/);
+    assert.match(source, /\/downloads\/download\/\$\{encodeURIComponent\(/);
+    assert.match(source, /response\.body\.cancel/);
+    assert.match(source, /credentials: 'omit'/);
+    assert.match(source, /redirect: 'manual'/);
+    assert.doesNotMatch(source, /method:\s*['"](?:POST|PUT|PATCH|DELETE)['"]/);
+  }
+  assert.match(production, /PRODUCTION_BASE_URL/);
+  assert.match(production, /production-service-binding/);
+  assert.match(production, /health\.live_newapi_healthy/);
+});

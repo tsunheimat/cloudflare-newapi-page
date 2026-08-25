@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
-const baseUrl = new URL(process.env.PHASE2B_PREVIEW_URL || 'http://127.0.0.1:8787');
-
-if (!LOOPBACK_HOSTS.has(baseUrl.hostname)) {
-  throw new Error(
-    'PHASE2B_PREVIEW_URL must be a loopback URL exposed by wrangler dev --remote.',
-  );
+if (!process.env.PRODUCTION_BASE_URL) {
+  throw new Error('PRODUCTION_BASE_URL is required.');
+}
+const baseUrl = new URL(process.env.PRODUCTION_BASE_URL);
+if (baseUrl.protocol !== 'https:') {
+  throw new Error('PRODUCTION_BASE_URL must be the HTTPS URL returned by the production deployment.');
 }
 
 const summaries = [];
@@ -28,7 +27,7 @@ async function probe({
     credentials: 'omit',
     headers: {
       accept: contentType || '*/*',
-      'user-agent': 'cloudflare-newapi-page-phase2b-readonly-probe',
+      'user-agent': 'cloudflare-newapi-page-production-download-readonly-probe',
     },
     signal: AbortSignal.timeout(15_000),
   });
@@ -44,7 +43,6 @@ async function probe({
       `${method} ${path}: unexpected content-type`,
     );
   }
-
   const summary = {
     method,
     path: url.pathname,
@@ -57,14 +55,14 @@ async function probe({
   process.stdout.write(`${JSON.stringify(summary)}\n`);
 
   let payload = null;
-  if (json) {
-    payload = await response.json();
-  } else if (textIncludes.length > 0) {
+  if (json) payload = await response.json();
+  else if (textIncludes.length > 0) {
     const body = await response.text();
     for (const marker of textIncludes) {
       assert.ok(body.includes(marker), `${method} ${path}: Worker SPA marker missing: ${marker}`);
     }
   } else if (response.body) {
+    // Header-only evidence: never buffer a representative installer artifact.
     await response.body.cancel();
   }
   return returnSummary ? { ...summary, payload } : payload;
@@ -91,6 +89,10 @@ const health = await probe({
   json: true,
 });
 assert.equal(health.phase, '2');
+assert.equal(health.content_adapter, 'newapi');
+assert.equal(health.live_newapi, true);
+assert.equal(health.live_newapi_healthy, true);
+assert.equal(health.downloads.mode, 'production-service-binding');
 assert.equal(health.downloads.configured, true);
 assert.equal(health.downloads.bound, true);
 assert.equal(health.downloads.active, true);
@@ -100,136 +102,82 @@ assert.equal(health.downloads.phase, 'bound-unverified');
 
 await probe({
   method: 'GET',
-  path: '/downloads?probe=phase2b',
+  path: '/downloads?probe=production-downloads',
   statuses: [200],
   contentType: 'text/html',
   textIncludes: ['<main id="main-content"', '/static/app.js'],
 });
-await probe({
-  method: 'HEAD',
-  path: '/downloads?probe=phase2b',
-  statuses: [404],
-  contentType: 'text/html',
-});
+
 const catalog = await probe({
   method: 'GET',
-  path: '/api/downloads/catalog?probe=phase2b',
+  path: '/api/downloads/catalog?probe=production-downloads',
   statuses: [200],
   contentType: 'application/json',
   json: true,
 });
-assert.equal(catalog?.success, true, 'download catalog did not return success=true');
+assert.equal(catalog?.success, true);
 const discoveredSoftware = catalog?.data?.software;
-assert.ok(
-  Array.isArray(discoveredSoftware) && discoveredSoftware.length > 0,
-  'download catalog discovered no software IDs',
-);
-const discoveredIds = new Set();
+assert.ok(Array.isArray(discoveredSoftware) && discoveredSoftware.length > 0);
+const ids = new Set();
 for (const software of discoveredSoftware) {
-  assert.ok(
-    software && typeof software.id === 'string' && /^[a-z0-9][a-z0-9-]{0,62}$/.test(software.id),
-    'download catalog returned an invalid software ID',
-  );
-  assert.equal(
-    discoveredIds.has(software.id),
-    false,
-    `download catalog returned duplicate software ID: ${software.id}`,
-  );
-  discoveredIds.add(software.id);
-  assert.equal(
-    software.href,
-    `/downloads/software/${encodeURIComponent(software.id)}`,
-    `download catalog returned an invalid SPA href for ${software.id}`,
-  );
+  assert.ok(software && typeof software.id === 'string');
+  assert.match(software.id, /^[a-z0-9][a-z0-9-]{0,62}$/);
+  assert.equal(ids.has(software.id), false, `duplicate catalog ID: ${software.id}`);
+  ids.add(software.id);
+  assert.equal(software.href, `/downloads/software/${encodeURIComponent(software.id)}`);
 }
 
 await probe({
   method: 'GET',
-  path: `/software/${encodeURIComponent(discoveredSoftware[0].id)}?probe=phase2b`,
+  path: `/software/${encodeURIComponent(discoveredSoftware[0].id)}?probe=production-downloads`,
   statuses: [200],
   contentType: 'text/html',
 });
 await probe({
   method: 'GET',
-  path: `/downloads/software/${encodeURIComponent(discoveredSoftware[0].id)}?probe=phase2b`,
+  path: `/downloads/software/${encodeURIComponent(discoveredSoftware[0].id)}?probe=production-downloads`,
   statuses: [200],
   contentType: 'text/html',
   textIncludes: ['<main id="main-content"', '/static/app.js'],
 });
-await probe({
-  method: 'GET',
-  path: '/assets/favicon.png?probe=phase2b',
-  statuses: [200],
-  contentType: 'image/png',
-});
-await probe({
-  method: 'GET',
-  path: '/admin?probe=phase2b',
-  statuses: [200],
-  contentType: 'text/html',
-});
-await probe({
-  method: 'GET',
-  path: '/api/wechat-group-qrcode/latest?probe=phase2b',
-  statuses: [200],
-  contentType: 'application/json',
-});
-await probe({
-  method: 'GET',
-  path: '/wechat-group-qrcode?probe=phase2b',
-  statuses: [200, 302],
-});
 
 const metadataBySoftware = [];
 for (const software of discoveredSoftware) {
-  const metadataProbe = await probe({
+  const publicMetadata = await probe({
     method: 'GET',
-    path: `/downloads/api/${encodeURIComponent(software.id)}/public?probe=phase2b`,
+    path: `/downloads/api/${encodeURIComponent(software.id)}/public?probe=production-downloads`,
     statuses: [200, 404],
     contentType: 'application/json',
     json: true,
     returnSummary: true,
   });
-  let metadata = metadataProbe.payload;
-  if (metadataProbe.status === 404) {
-    const latest = await probe({
+  let metadata = publicMetadata.payload;
+  if (publicMetadata.status === 404) {
+    const latestMetadata = await probe({
       method: 'GET',
-      path: `/downloads/api/${encodeURIComponent(software.id)}/latest?probe=phase2b`,
+      path: `/downloads/api/${encodeURIComponent(software.id)}/latest?probe=production-downloads`,
       statuses: [200],
       contentType: 'application/json',
       json: true,
       returnSummary: true,
     });
-    metadata = latest.payload;
+    metadata = latestMetadata.payload;
   }
-  assert.ok(metadata && typeof metadata === 'object', `metadata missing for ${software.id}`);
+  assert.ok(metadata && typeof metadata === 'object');
   assert.ok(Array.isArray(metadata.files), `metadata files missing for ${software.id}`);
   metadataBySoftware.push({ software, metadata });
 }
 
 const publicMetadata = await probe({
   method: 'GET',
-  path: '/api/public?probe=phase2b',
+  path: '/api/public?probe=production-downloads',
   statuses: [200],
   contentType: 'application/json',
   json: true,
 });
-await probe({
-  method: 'HEAD',
-  path: '/api/public?probe=phase2b',
-  statuses: [404],
-  contentType: 'application/json',
-});
-
 const representative = metadataBySoftware
   .flatMap(({ software, metadata }) => (metadata.files || []).map((file) => ({ software, file })))
-  .find(({ file }) => file?.site && file?.platform && file?.arch)
-  || (() => {
-    const file = publicMetadata?.files?.find(
-      (item) => item?.site && item?.platform && item?.arch,
-    );
-    return file ? { software: { id: 'default' }, file } : null;
-  })();
+  .find(({ file }) => file?.site && file?.platform && file?.arch);
 assert.ok(representative, 'catalog metadata contains no probeable download target');
 const target = [representative.file.site, representative.file.platform, representative.file.arch]
   .map((part) => encodeURIComponent(String(part)))
@@ -242,12 +190,8 @@ const defaultTarget = [defaultFile.site, defaultFile.platform, defaultFile.arch]
 await probe({ method: 'GET', path: `/download/${defaultTarget}`, statuses: [200, 302] });
 await probe({
   method: 'GET',
-  path: representative.software.id === 'default'
-    ? `/downloads/download/${target}`
-    : `/downloads/download/${encodeURIComponent(representative.software.id)}/${target}`,
+  path: `/downloads/download/${encodeURIComponent(representative.software.id)}/${target}`,
   statuses: [200, 302],
 });
 
-process.stdout.write(
-  `${JSON.stringify({ success: true, probes: summaries.length })}\n`,
-);
+process.stdout.write(`${JSON.stringify({ success: true, probes: summaries.length })}\n`);

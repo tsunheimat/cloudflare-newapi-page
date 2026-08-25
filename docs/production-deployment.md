@@ -162,16 +162,26 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/pricing" \
     '
 ```
 
-再以安全 GET 验证 actual downstream forwarding：
+再运行 repository-owned 的 production read-only downloads probe。它只接受 HTTPS production URL，输出每个请求的无 body summary；先检查 `/downloads` 与 `/downloads/software/:softwareId` 是 Worker SPA shell（`main#main-content` 与 `/static/app.js`），然后从 `/api/downloads/catalog` 发现并校验每个 software ID，逐一读取 `/downloads/api/:softwareId/public`，对明确 404 的 ID 再读取对应 `latest` metadata，最后验证一个代表性的 mounted `/downloads/download/...` 与 direct `/download/...` 路由。代表性 download response 只读 headers 后立即取消 body，不下载大 artifact，也不 follow redirect：
 
 ```bash
-curl --fail-with-body --silent --show-error --output /dev/null \
-  "$PRODUCTION_BASE_URL/downloads"
-curl --fail-with-body --silent --show-error --output /dev/null \
-  "$PRODUCTION_BASE_URL/api/public"
+PROBE_EVIDENCE_DIR="$(mktemp -d)"
+set -o pipefail
+if PRODUCTION_BASE_URL="$PRODUCTION_BASE_URL" npm run probe:production:downloads \
+  | tee "$PROBE_EVIDENCE_DIR/production-download-probe.jsonl"; then
+  PROBE_EXIT=0
+else
+  PROBE_EXIT=$?
+fi
+set +o pipefail
+printf 'probe_exit_code=%s evidence=%s\n' "$PROBE_EXIT" \
+  "$PROBE_EVIDENCE_DIR/production-download-probe.jsonl"
+test "$PROBE_EXIT" -eq 0
 ```
 
-以上 GET 可证明该时刻的实际 caller/binding/downstream 路径可达，但不会把 download status 改称 `healthy=true` 或 `live=true`，也不能证明所有 binary/R2 objects 或 admin mutation flow。不要用 HEAD 验证 downstream：审查的 target source 没有显式 HEAD handler。
+只有实际运行的 stdout JSONL、exit code、candidate commit、production URL、account、开始/结束时间都保存到 repository 外部，且最后一行为 `{"success":true,...}` 时，才可记录该时刻的 live downloads chain PASS。命令文本、local mock、dry-run 或缺少 output 都不是 live success。Probe 使用 `credentials: omit`、`redirect: manual`，只允许 GET/HEAD；不要把发现的 ID 或下载 target 改回固定 `codex-installer`。
+
+以上 checks 可证明该时刻的实际 caller/binding/downstream 路径可达，但不会把 download status 改称 `healthy=true` 或 `live=true`，也不能证明所有 binary/R2 objects 或 admin mutation flow。不要用 HEAD 验证 downstream：审查的 target source 没有显式 HEAD handler；`HEAD /downloads` 的 404 只能作为 method-preservation evidence。
 
 严禁把 verification 扩展为匿名或自动化 admin POST。Gateway 会原样转发 cookie、body 与 method；任何 `/admin/login`、upload、publish、rollback 等 POST 都可能实际修改 downstream production/R2 state，必须由有权 operator 依据 downstream runbook 单独控制。
 

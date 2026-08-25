@@ -41,8 +41,11 @@ The gateway owns only the exact GET SPA pages `/downloads` and
 `/downloads/software/:softwareId`. All other mounted `/downloads/*` paths keep
 the forwarding contract below. `/api/downloads/catalog` makes a fixed,
 credential-free Worker-to-Worker GET of downstream `/` and extracts software
-IDs from its public `/software/:softwareId` links; it is bounded and does not
-read R2 or expose service-binding credentials. The SPA then reads each
+IDs from its public `/software/:softwareId` links. Discovery has one 5-second
+deadline spanning binding fetch and streamed body reads, requires `text/html`,
+and cancels immediately once the incrementally counted body exceeds 512 KiB;
+it never buffers an oversized landing page first. It does not read R2 or expose
+service-binding credentials. The SPA then reads each
 software's untouched public aggregate through `/downloads/api/:softwareId/public`
 and constructs download links through `/downloads/download/...`.
 
@@ -75,4 +78,4 @@ Runtime gate 只接受 `DOWNLOADS_INTEGRATION=staging-service-binding` 或 `prod
 }
 ```
 
-Repository evidence 位于 `test/download-service.test.js`、`test/worker.test.js`、`test/staging-config.test.js` 和 `test/production-deployment.test.js`。它验证 routing/transport/config/deploy guard contract，但不验证 actual Cloudflare binding、deployed sibling bytes、R2 objects、production route 或真实浏览器行为。Production 操作见 [production-deployment.md](production-deployment.md)。
+Repository evidence 位于 `test/download-service.test.js`、`test/worker.test.js`、`test/staging-config.test.js` 和 `test/production-deployment.test.js`。它验证 routing/transport/config/deploy guard contract；local Playwright Downloads cases 也明确是 mocked/source evidence。它们不验证 actual Cloudflare binding、deployed sibling bytes、R2 objects、production route 或真实 catalog chain。Remote 与 production read-only checks 分别见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md) 和 [production-deployment.md](production-deployment.md)，没有 actual stdout 时不得记录 live PASS。

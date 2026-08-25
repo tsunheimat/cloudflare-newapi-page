@@ -140,7 +140,7 @@ Phase 2 在 `env.staging` 与 `env.production` 都明确绑定 `DOWNLOADS_SERVIC
 
 下游 landing HTML 只在 Worker-to-Worker 的 catalog discovery 请求中读取；浏览器访问 `/downloads` 时加载本站 SPA。其余下游 HTML 使用 root-relative links/assets/forms，因此它们会落入本站保留的 direct boundary。Gateway 不做 HTML string rewrite。Service binding 本身也不等于浏览器侧 admin authorization；admin session 仍完全由 downstream Worker 持有。
 
-Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only probe，检查真实 Service Binding、public metadata、redirect 与 content type。Production 则只能经 fail-closed entrypoint 部署并按 runbook 做 GET verification。两者都不得把 mock/dry-run 当成 remote evidence；详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md) 与 [production-deployment.md](production-deployment.md)。
+Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only probe，检查 Worker SPA shell、动态 catalog IDs、每个 discovered public/latest metadata、representative mounted/direct download routing、redirect 与 content type。Production 则只能经 fail-closed entrypoint 部署并按 runbook 执行同一条真实 catalog chain GET probe。Browser Playwright Downloads cases 明确是 `[mocked/source evidence]`；两者都不得把 mock、dry-run 或缺少实际 stdout 当成 remote/live evidence；详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md) 与 [production-deployment.md](production-deployment.md)。
 
 ## NewAPI live adapter cutover gates
 

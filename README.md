@@ -118,7 +118,7 @@ Gateway 保留 method、body bytes、query、cookie、content type、binary resp
 
 状态 API 会分别报告 `configured`、`bound`、`active`、`healthy` 与 `live`。`configured`/`bound` 保留 Phase 1 的 binding present/callable 语义；只有命名环境对应 gate 与 callable binding 同时成立才有 `active=true`。Active binding 仍固定为 `healthy=null`、`live=false`、`phase=bound-unverified`，不得冒充 live verification。
 
-完整 source snapshot、route/response contract 和本地测试范围见 [download-service-contract.md](docs/download-service-contract.md)。Staging temporary preview 可沿用 [Phase 2B read-only remote probe](docs/phase-2b-remote-probe.md)。Local tests、mock 与 dry-run 都不是实际 Cloudflare binding 或 deployment 证据。
+完整 source snapshot、route/response contract 和本地测试范围见 [download-service-contract.md](docs/download-service-contract.md)。Staging temporary preview 可沿用 [Phase 2B read-only remote probe](docs/phase-2b-remote-probe.md)；production deployment 后使用 `PRODUCTION_BASE_URL=... npm run probe:production:downloads` 验证真实 SPA/catalog/metadata/download chain。Local browser tests 明确标记为 `[mocked/source evidence]`，mock、dry-run 与命令文本都不是实际 Cloudflare binding 或 deployment 证据。
 
 ## Production deployment
 

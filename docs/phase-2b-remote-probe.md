@@ -27,6 +27,8 @@ Credential 只通过当前 shell 的 `CLOUDFLARE_API_TOKEN` 与 `CLOUDFLARE_ACCO
 
 本 Phase 2A 主机没有 credential，以上 remote 步骤均未执行。
 
+`npm run test:browser` 中的 Downloads cases 使用 Playwright route mocks，只是 `[mocked/source evidence]`，用于验证 SPA rendering、credential isolation 与 link construction；它们不替代下面的 remote Service Binding probe，也不证明真实 catalog、metadata、redirect 或 R2 target。
+
 ## 启动 temporary preview
 
 在第一个 shell：
@@ -49,7 +51,9 @@ Probe script 有以下硬边界：
 - 只允许 GET/HEAD，`credentials: omit`；
 - `redirect: manual`，不会跟随 R2/external redirect；
 - 只对 `/admin` 做匿名 GET，不请求 login、不发送 cookie、不调用任何 admin action/upload；
-- 读取 public metadata 选择一个 download target。若 download Worker 返回 direct binary stream，script 只检查 headers 后立即 cancel body；这仍属于实际 R2 read，必须计入 read-operation/billing budget；
+- `/downloads` 与 `/downloads/software/:softwareId` 必须返回 Worker SPA shell（probe 检查 `main#main-content` 与 `/static/app.js`），不会把 downstream `/` landing HTML 当成成功；
+- 先 GET `/api/downloads/catalog`，校验每个发现的 software ID 与 SPA href，再逐一 GET `/downloads/api/:softwareId/public`；若某个 public metadata 明确返回 404，才对同一 ID GET `/downloads/api/:softwareId/latest`；
+- 从发现的 metadata 选择一个带 `site`、`platform`、`arch` 的代表 target，验证 `/downloads/download/:softwareId/:site/:platform/:arch` 与 direct `/download/...` 路由。若 download Worker 返回 direct binary stream，script 只检查 headers 后立即 cancel body，不下载大 artifact；这仍属于实际 R2 read，必须计入 read-operation/billing budget；
 - 检查 health/status 为 `active=true`，但仍是 `healthy=null`、`live=false`、`bound-unverified`，避免把 binding presence 冒充 health。
 
 Current reviewed downstream source 没有 HEAD handler，因此 public/download HEAD 预期 404。该结果证明 method 被保留，不表示 GET route unhealthy；若实际结果不同，应记录 deployed-source drift 后重新审查，不要自行放宽 assertions。
@@ -61,4 +65,4 @@ Current reviewed downstream source 没有 HEAD handler，因此 public/download 
 3. 立即撤销 temporary token，并从 shell unset credential。
 4. 再次确认 repository clean；不得 commit probe output。
 
-Phase 2B PASS 可以证明“该 exact candidate 的 staging temporary remote preview 在该时刻通过 actual Service Binding 完成限定 GET/HEAD probe”。它不能证明 production config 已实际部署、default 已启用（default 本就应保持 disabled）、deployed download Worker 与本地 sibling commit 相同、所有 R2 artifacts 完整，或 admin mutation flow 可用。
+Phase 2B PASS 可以证明“该 exact candidate 的 staging temporary remote preview 在该时刻通过 actual Service Binding 完成限定 GET/HEAD 与 catalog-to-metadata-to-download probe”。它不能证明 production config 已实际部署、default 已启用（default 本就应保持 disabled）、deployed download Worker 与本地 sibling commit 相同、所有 R2 artifacts 完整，或 admin mutation flow 可用。没有实际运行 stdout、exit code 与时间戳时，不得声称 remote success。

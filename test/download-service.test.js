@@ -4,11 +4,15 @@ import test from 'node:test';
 import worker from '../src/worker.js';
 import {
   DOWNLOAD_ROUTE_MODES,
+  discoverDownloadSoftware,
+  DOWNLOADS_CATALOG_MAX_BODY_BYTES,
+  DOWNLOADS_CATALOG_TIMEOUT_MS,
   downloadServiceRouteMetadata,
   downloadServiceStatus,
   extractDownloadSoftwareIds,
   isDownloadServiceRoute,
 } from '../src/adapters/download-service.js';
+import { HttpError } from '../src/http.js';
 
 const ACTIVE_MODE = 'staging-service-binding';
 
@@ -140,6 +144,150 @@ test('catalog discovery derives every software link from the downstream landing 
       { id: 'codex-installer', label: 'Codex 安装器', href: '/downloads/software/codex-installer' },
     ],
   );
+});
+
+test('catalog discovery has a hard deadline across a stalled binding fetch', async () => {
+  let aborted = false;
+  await assert.rejects(
+    () => discoverDownloadSoftware(
+      new Request('https://public.example/api/downloads/catalog'),
+      {
+        DOWNLOADS_INTEGRATION: ACTIVE_MODE,
+        DOWNLOADS_SERVICE: {
+          fetch: async (request) => {
+            request.signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+            return new Promise(() => {});
+          },
+        },
+      },
+      { timeoutMs: 10 },
+    ),
+    (error) => error instanceof HttpError
+      && error.status === 503
+      && error.message === 'Download catalog is temporarily unavailable.',
+  );
+  assert.equal(aborted, true);
+});
+
+test('catalog discovery cancels a stalled response body at the same deadline', async () => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('<a href="/software/one">one</a>'));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  await assert.rejects(
+    () => discoverDownloadSoftware(
+      new Request('https://public.example/api/downloads/catalog'),
+      {
+        DOWNLOADS_INTEGRATION: ACTIVE_MODE,
+        DOWNLOADS_SERVICE: {
+          fetch: async () => new Response(body, {
+            headers: { 'content-type': 'text/html' },
+          }),
+        },
+      },
+      { timeoutMs: 10 },
+    ),
+    (error) => error instanceof HttpError
+      && error.status === 503
+      && error.message === 'Download catalog is temporarily unavailable.',
+  );
+  assert.equal(cancelled, true);
+});
+
+test('catalog discovery cancels an oversized streaming response before buffering it', async () => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('<a href="/software/one">one</a>'));
+      controller.enqueue(new Uint8Array(DOWNLOADS_CATALOG_MAX_BODY_BYTES));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  await assert.rejects(
+    () => discoverDownloadSoftware(
+      new Request('https://public.example/api/downloads/catalog'),
+      {
+        DOWNLOADS_INTEGRATION: ACTIVE_MODE,
+        DOWNLOADS_SERVICE: {
+          fetch: async () => new Response(body, {
+            headers: { 'content-type': 'text/html' },
+          }),
+        },
+      },
+      { timeoutMs: 1_000 },
+    ),
+    (error) => error instanceof HttpError
+      && error.status === 503
+      && error.message === 'Download catalog is too large to inspect.',
+  );
+  assert.equal(cancelled, true);
+});
+
+test('catalog discovery rejects non-HTML before reading the downstream body', async () => {
+  let read = false;
+  const privateBody = 'Bearer catalog-upstream-secret-that-must-not-leak';
+  const body = {
+    privateBody,
+    getReader() {
+      read = true;
+      throw new Error('body must not be read');
+    },
+  };
+  await assert.rejects(
+    () => discoverDownloadSoftware(
+      new Request('https://public.example/api/downloads/catalog'),
+      {
+        DOWNLOADS_INTEGRATION: ACTIVE_MODE,
+        DOWNLOADS_SERVICE: {
+          fetch: async () => ({
+            status: 200,
+            headers: new Headers({ 'content-type': 'application/json' }),
+            body,
+          }),
+        },
+      },
+    ),
+    (error) => error instanceof HttpError
+      && error.status === 503
+      && error.message === 'Download catalog is temporarily unavailable.'
+      && !JSON.stringify(error).includes(privateBody),
+  );
+  assert.equal(read, false);
+});
+
+test('catalog discovery reads a normal streamed HTML landing page within the bound', async () => {
+  const chunks = [
+    '<h3>Codex 安装器</h3><a href="/software/codex-',
+    'installer">Codex</a>',
+  ];
+  const result = await discoverDownloadSoftware(
+    new Request('https://public.example/api/downloads/catalog?ignored=1'),
+    {
+      DOWNLOADS_INTEGRATION: ACTIVE_MODE,
+      DOWNLOADS_SERVICE: {
+        fetch: async (request) => new Response(new ReadableStream({
+          pull(controller) {
+            const chunk = chunks.shift();
+            if (chunk === undefined) controller.close();
+            else controller.enqueue(new TextEncoder().encode(chunk));
+          },
+        }), { headers: { 'content-type': 'text/html; charset=utf-8' } }),
+      },
+    },
+  );
+  assert.deepEqual(result, [{
+    id: 'codex-installer',
+    label: 'Codex 安装器',
+    href: '/downloads/software/codex-installer',
+  }]);
+  assert.equal(DOWNLOADS_CATALOG_TIMEOUT_MS, 5_000);
 });
 
 test('staging and production gates activate only a callable binding', () => {

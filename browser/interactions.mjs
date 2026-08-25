@@ -508,7 +508,7 @@ test('Pricing language switching changes the mounted runtime and persists anonym
   await context.close();
 });
 
-test('Downloads SPA discovers software, renders public metadata, and links through the mounted service routes', { timeout: 30_000 }, async () => {
+test('[mocked/source evidence] Downloads SPA discovers software, renders public metadata, and links through mounted service routes', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   await context.addCookies([
     { name: 'hostile-session', value: 'must-not-forward', domain: '127.0.0.1', path: '/' },
@@ -567,7 +567,7 @@ test('Downloads SPA discovers software, renders public metadata, and links throu
   await context.close();
 });
 
-test('Downloads SPA renders empty and downstream error states', { timeout: 25_000 }, async () => {
+test('[mocked/source evidence] Downloads SPA renders empty and downstream error states', { timeout: 25_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await newPage(context);
   await page.route('**/api/downloads/catalog', async (route) => {
