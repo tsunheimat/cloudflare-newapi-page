@@ -85,7 +85,7 @@ wrangler deploy --config <repo>/wrangler.toml --env production --strict
 
 `--strict` 会拒绝冲突的 remote changes；`--env production` 与 config path 由 script 内部固定，调用者不能省略或改成 default/staging。成功输出是 actual deployment evidence，应记录 commit、Wrangler 输出的 version/deployment ID、URL 与时间，但不得记录 token。
 
-该 deploy 只上传本 repo 的 caller Worker code/assets/config：它不会修改 sibling checkout bytes，不会部署 `cloudflare-download-site`，也不会在 preflight 中直接读取、写入或删除 production R2 objects。Production config must include the reviewed `DOWNLOADS -> tokenrouter` R2 binding.
+该 deploy 只上传本 repo 的 caller Worker code/assets/config：它不会修改 sibling checkout bytes，不会部署 `cloudflare-download-site`，也不会在 preflight 中直接读取、写入或删除 production R2 objects。Production config must include the reviewed callable `DOWNLOADS -> tokenrouter` R2 binding. The retained `DOWNLOADS_SERVICE -> cloudflare-download-site` binding is rollback-only; production verification must report `.downloads.mode == "r2-binding"` and migrated GET routes must complete without consulting that service.
 
 ## 5. Current production cutover verification (live target only)
 
@@ -97,7 +97,7 @@ PRODUCTION_BASE_URL="${PRODUCTION_BASE_URL%/}"
 export PRODUCTION_BASE_URL
 ```
 
-先验证 NewAPI live contract 与 binding state：
+先验证 NewAPI live contract 与 migrated R2 binding state（旧 service binding 只保留给 rollback）：
 
 ```bash
 curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/health" \
@@ -106,7 +106,7 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/health" \
       .content_adapter == "newapi" and
       .live_newapi == true and
       .live_newapi_healthy == true and
-      .downloads.mode == "production-service-binding" and
+      .downloads.mode == "r2-binding" and
       .downloads.configured == true and
       .downloads.bound == true and
       .downloads.active == true and
@@ -216,7 +216,7 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/health" \
       .phase == "2" and
       .content_adapter == "fixture" and
       .live_newapi == false and
-      .downloads.mode == "production-service-binding" and
+      .downloads.mode == "r2-binding" and
       .downloads.configured == true and
       .downloads.bound == true and
       .downloads.active == true and

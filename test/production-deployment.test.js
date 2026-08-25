@@ -114,7 +114,7 @@ test('production preflight rejects disabled, unbound, or non-live production con
     assertProductionConfig(
       before +
         production.replace(
-          'DOWNLOADS_INTEGRATION = "production-service-binding"',
+          'DOWNLOADS_INTEGRATION = "production-r2-binding"',
           'DOWNLOADS_INTEGRATION = "disabled"',
         ),
     ),

@@ -33,7 +33,7 @@ export default {
     try {
       return await route(request, env);
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(error, request);
     }
   },
 };

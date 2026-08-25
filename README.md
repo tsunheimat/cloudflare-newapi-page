@@ -94,7 +94,7 @@ service_id = "01a027bb-280d-7630-b837-7afd6a0ca196"
 
 [env.production.vars]
 CONTENT_ADAPTER = "newapi"
-DOWNLOADS_INTEGRATION = "production-service-binding"
+DOWNLOADS_INTEGRATION = "production-r2-binding"
 
 [[env.production.services]]
 binding = "DOWNLOADS_SERVICE"
@@ -131,7 +131,7 @@ npm run deploy:production
 脚本不接受 environment/config override，固定执行 `wrangler deploy --env production --strict`。执行前会要求 Node 22+、clean full Git commit、当前 shell 中的 `CLOUDFLARE_ACCOUNT_ID` 与 `CLOUDFLARE_API_TOKEN`，拒绝 pinned Wrangler 会读取的 ignored production dotenv、control-plane/proxy/log/output overrides 与 legacy credential aliases，并验证：
 
 - default 仍是 `disabled`；staging contract 未被破坏；
-- production 必须是已授权的 `CONTENT_ADAPTER=newapi`、`DOWNLOADS_INTEGRATION=production-service-binding`；default/top-level 与 staging 必须继续是 fixture；
+- production 必须是已授权的 `CONTENT_ADAPTER=newapi`、`DOWNLOADS_INTEGRATION=production-r2-binding`，并以 callable `DOWNLOADS` R2 binding 为 authority；保留 `DOWNLOADS_SERVICE` 仅作 rollback fallback；default/top-level 与 staging 必须继续是 fixture；
 - production 必须且只能有 `DOWNLOADS_SERVICE -> cloudflare-download-site`；
 - Docs/Pricing runtime 必须通过 NewAPI v1 health/schema contract，metadata 为 `source=newapi`、`fixture=false`、`live=true`，Pricing body must remain byte-for-byte canonical and retain arbitrary groups, ratios, ordering, and future fields；
 - 完整 tests 与 default/staging/production dry-run 全部通过，且 validation 后仍是同一 HEAD 与 clean tracked/untracked worktree；

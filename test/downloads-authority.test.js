@@ -41,6 +41,7 @@ class MockR2 {
     this.puts.push({ key, value, options });
     this.objects.set(key, typeof value === 'string' ? value : { bytes: value, httpMetadata: options?.httpMetadata });
   }
+  async delete(key) { this.objects.delete(key); }
   async list({ prefix, delimiter }) {
     const result = new Set();
     for (const key of this.objects.keys()) {
@@ -132,11 +133,24 @@ test('admin authentication fails closed without ADMIN_PASSWORD and does not expo
   assert.doesNotMatch(body, /known-secret|guess|ADMIN_PASSWORD/);
 });
 
+test('admin login rejects a missing or mismatched CSRF token', async () => {
+  const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+  const missing = await get('/admin/login', runtime, { method: 'POST', body: new URLSearchParams({ password: 'correct' }) });
+  assert.equal(missing.status, 403);
+  const page = await get('/admin', runtime);
+  const token = loginPageTextToken(await page.text());
+  const mismatched = await get('/admin/login', runtime, { method: 'POST', body: new URLSearchParams({ password: 'correct', csrf_token: `${token}x` }) });
+  assert.equal(mismatched.status, 403);
+});
+
 test('authenticated QR upload validates bytes and writes object plus latest/previous metadata', async () => {
   const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
-  const login = await get('/admin/login', runtime, { method: 'POST', body: new URLSearchParams({ password: 'correct' }) });
+  const loginPage = await get('/admin', runtime);
+  const csrf = loginPageTextToken(await loginPage.text());
+  const login = await get('/admin/login', runtime, { method: 'POST', body: new URLSearchParams({ password: 'correct', csrf_token: csrf }) });
   assert.equal(login.status, 303);
   const form = new FormData();
+  form.append('csrf_token', sessionCsrfToken(login.headers.get('set-cookie')));
   form.append('image', new File([png], 'new-qr.png', { type: 'image/png' }));
   const upload = await get('/admin/wechat-group-qrcode/upload', runtime, { method: 'POST', headers: { cookie: login.headers.get('set-cookie') }, body: form });
   assert.equal(upload.status, 303);
@@ -147,11 +161,135 @@ test('authenticated QR upload validates bytes and writes object plus latest/prev
 
 test('release lock action selects R2 state and writes public projections', async () => {
   const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
-  const login = await get('/admin/login', runtime, { method: 'POST', body: new URLSearchParams({ password: 'correct' }) });
-  const response = await get('/admin/public/lock-previous', runtime, { method: 'POST', headers: { cookie: login.headers.get('set-cookie') } });
+  const loginPage = await get('/admin', runtime);
+  const csrf = loginPageTextToken(await loginPage.text());
+  const login = await get('/admin/login', runtime, { method: 'POST', body: new URLSearchParams({ password: 'correct', csrf_token: csrf }) });
+  const response = await get('/admin/public/lock-previous', runtime, { method: 'POST', headers: { cookie: login.headers.get('set-cookie'), 'x-csrf-token': sessionCsrfToken(login.headers.get('set-cookie')) } });
   assert.equal(response.status, 303);
   const statePut = runtime.DOWNLOADS.puts.find(({ key }) => key === 'codex-install/state/public.json');
   assert.ok(statePut);
   assert.match(String(statePut.value), /"release_id": "v1"/);
   assert.ok(runtime.DOWNLOADS.puts.some(({ key }) => key === 'codex-install/public/tokenrouter/windows/x64.json'));
 });
+
+test('download validation rejects unsafe keys before URL resolution and ignores unsafe metadata URLs', async () => {
+  const runtime = env();
+  runtime.DOWNLOADS.objects.set('codex-install/public/tokenrouter/windows/x64.json', {
+    ...publicFile,
+    url: 'https://attacker.invalid/steal',
+  });
+  const safe = await get('/download/tokenrouter/windows/x64', runtime);
+  assert.equal(safe.status, 302);
+  assert.equal(safe.headers.get('location'), 'https://tokenrouter-r2.wdtokenacc.top/codex-install/releases/v1/setup.exe');
+
+  runtime.DOWNLOADS.objects.set('codex-install/public/tokenrouter/windows/x64.json', {
+    ...publicFile,
+    r2_key: 'codex-install/releases/../secrets.txt',
+    url: 'https://attacker.invalid/steal',
+  });
+  const unsafe = await get('/download/tokenrouter/windows/x64', runtime);
+  assert.equal(unsafe.status, 503);
+  assert.doesNotMatch(await unsafe.text(), /attacker\.invalid|secrets/);
+});
+
+test('admin publication validates every path component before any projection write', async () => {
+  const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+  const loginPage = await get('/admin', runtime);
+  const login = await get('/admin/login', runtime, {
+    method: 'POST',
+    body: new URLSearchParams({ password: 'correct', csrf_token: loginPageTextToken(await loginPage.text()) }),
+  });
+  const csrf = sessionCsrfToken(login.headers.get('set-cookie'));
+  runtime.DOWNLOADS.objects.set('codex-install/releases/v1/metadata/latest.json', {
+    release_id: 'v1',
+    files: [{ ...publicFile, site: '../escape' }],
+  });
+  const before = runtime.DOWNLOADS.puts.length;
+  const response = await get('/admin/public/lock-previous', runtime, {
+    method: 'POST',
+    headers: { cookie: login.headers.get('set-cookie'), 'x-csrf-token': csrf },
+  });
+  assert.equal(response.status, 503);
+  assert.equal(runtime.DOWNLOADS.puts.length, before);
+});
+
+test('QR upload requires declared MIME agreement and rolls back a failed publication generically', async () => {
+  const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+  const loginPage = await get('/admin', runtime);
+  const login = await get('/admin/login', runtime, {
+    method: 'POST',
+    body: new URLSearchParams({ password: 'correct', csrf_token: loginPageTextToken(await loginPage.text()) }),
+  });
+  const cookie = login.headers.get('set-cookie');
+  const csrf = sessionCsrfToken(cookie);
+  const badForm = new FormData();
+  badForm.append('csrf_token', csrf);
+  badForm.append('image', new File([png], 'bad.png', { type: 'text/plain' }));
+  const bad = await get('/admin/wechat-group-qrcode/upload', runtime, { method: 'POST', headers: { cookie }, body: badForm });
+  assert.equal(bad.status, 400);
+  assert.equal(runtime.DOWNLOADS.puts.length, 0);
+
+  const originalLatest = { ...runtime.DOWNLOADS.objects.get('wechat-group-qrcode/metadata/latest.json'), url: 'https://tokenrouter-r2.wdtokenacc.top/wechat-group-qrcode/images/current.png' };
+  const originalState = runtime.DOWNLOADS.objects.get('wechat-group-qrcode/state/latest.json') ?? null;
+  const originalPut = runtime.DOWNLOADS.put.bind(runtime.DOWNLOADS);
+  let failed = false;
+  runtime.DOWNLOADS.put = async (key, value, options) => {
+    if (!failed && key === 'wechat-group-qrcode/metadata/latest.json') {
+      failed = true;
+      throw new Error('provider-secret-detail');
+    }
+    return originalPut(key, value, options);
+  };
+  const goodForm = new FormData();
+  goodForm.append('csrf_token', csrf);
+  goodForm.append('image', new File([png], 'good.png', { type: 'image/png' }));
+  const failedUpload = await get('/admin/wechat-group-qrcode/upload', runtime, { method: 'POST', headers: { cookie }, body: goodForm });
+  assert.equal(failedUpload.status, 503);
+  assert.doesNotMatch(await failedUpload.text(), /provider-secret-detail/);
+  assert.deepEqual(JSON.parse(runtime.DOWNLOADS.objects.get('wechat-group-qrcode/metadata/latest.json')), originalLatest);
+  assert.equal(runtime.DOWNLOADS.objects.get('wechat-group-qrcode/state/latest.json') ?? null, originalState);
+});
+
+test('admin mutations reject missing CSRF and hostile origins before R2 writes', async () => {
+  const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+  const loginPage = await get('/admin', runtime);
+  const login = await get('/admin/login', runtime, {
+    method: 'POST',
+    body: new URLSearchParams({ password: 'correct', csrf_token: loginPageTextToken(await loginPage.text()) }),
+  });
+  const cookie = login.headers.get('set-cookie');
+  const form = new FormData();
+  form.append('image', new File([png], 'missing.png', { type: 'image/png' }));
+  const missing = await get('/admin/wechat-group-qrcode/upload', runtime, { method: 'POST', headers: { cookie }, body: form });
+  assert.equal(missing.status, 403);
+  const csrf = sessionCsrfToken(cookie);
+  const hostile = new FormData();
+  hostile.append('csrf_token', csrf);
+  hostile.append('image', new File([png], 'hostile.png', { type: 'image/png' }));
+  const rejected = await get('/admin/wechat-group-qrcode/upload', runtime, { method: 'POST', headers: { cookie, origin: 'https://evil.invalid' }, body: hostile });
+  assert.equal(rejected.status, 403);
+  assert.equal(runtime.DOWNLOADS.puts.length, 0);
+});
+
+test('public landing distinguishes missing metadata from R2 outage', async () => {
+  const missingRuntime = env();
+  missingRuntime.DOWNLOADS.objects.clear();
+  const missing = await get('/downloads', missingRuntime);
+  assert.equal(missing.status, 404);
+  const outageRuntime = env();
+  outageRuntime.DOWNLOADS.get = async () => { throw new Error('r2 transport detail'); };
+  const outage = await get('/downloads', outageRuntime);
+  assert.equal(outage.status, 503);
+  assert.doesNotMatch(await outage.text(), /r2 transport detail/);
+});
+
+function loginPageTextToken(body) {
+  const match = body.match(/name="csrf_token" value="([^"]+)"/);
+  assert.ok(match);
+  return match[1];
+}
+function sessionCsrfToken(cookie) {
+  const value = cookie.split(';', 1)[0].split('=', 2)[1];
+  const payload = JSON.parse(Buffer.from(value.split('.')[0], 'base64url').toString('utf8'));
+  return payload.csrf;
+}

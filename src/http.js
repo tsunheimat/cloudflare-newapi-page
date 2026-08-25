@@ -63,8 +63,11 @@ function setHeader(headers, name, value, preserveExisting) {
   if (!preserveExisting || !headers.has(name)) headers.set(name, value);
 }
 
-export function errorResponse(error) {
+export function errorResponse(error, request = undefined) {
   if (error instanceof HttpError) {
+    if (request && new URL(request.url).pathname.startsWith('/admin') && request.method === 'POST') {
+      return adminErrorHtml(error.status, error.message);
+    }
     return json(
       {
         success: false,
@@ -99,6 +102,8 @@ function statusCodeName(status) {
       return 'bad_request';
     case 401:
       return 'unauthorized';
+    case 403:
+      return 'forbidden';
     case 404:
       return 'not_found';
     case 405:
@@ -108,4 +113,14 @@ function statusCodeName(status) {
     default:
       return 'request_failed';
   }
+}
+
+function adminErrorHtml(status, message) {
+  const safe = String(message || 'Request failed.')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+  return new Response(
+    `<!doctype html><html lang="zh-Hans"><head><meta charset="utf-8"><title>管理员操作失败</title></head><body><main><h1>管理员操作失败</h1><p class="error">${safe}</p><p><a href="/admin">返回管理后台</a></p></main></body></html>`,
+    { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } },
+  );
 }

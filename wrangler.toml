@@ -53,7 +53,7 @@ workers_dev = true
 
 [env.production.vars]
 CONTENT_ADAPTER = "newapi"
-DOWNLOADS_INTEGRATION = "production-service-binding"
+DOWNLOADS_INTEGRATION = "production-r2-binding"
 R2_PREFIX = "codex-install"
 R2_PUBLIC_BASE_URL = "https://tokenrouter-r2.wdtokenacc.top"
 JUAPI_HOME_URL = "https://www.juaiapi.com"

@@ -91,7 +91,7 @@ const health = await probe({
   json: true,
 });
 assert.equal(health.phase, '2');
-assert.ok(['r2-binding', 'production-service-binding', 'staging-service-binding'].includes(health.downloads.mode));
+assert.ok(['r2-binding', 'production-r2-binding', 'production-service-binding', 'staging-service-binding'].includes(health.downloads.mode));
 assert.equal(health.downloads.configured, true);
 assert.equal(health.downloads.bound, true);
 assert.equal(health.downloads.active, true);

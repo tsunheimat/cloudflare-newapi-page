@@ -9,9 +9,11 @@ authority. The two existing software profiles are retained:
 - `codex-chat-record-migrator` under its existing prefix and public-base var
 
 The Worker reads the existing `metadata`, `state`, `releases`, `public`, and
-QR objects without copying release data into source. Public URLs embedded in
-artifact metadata remain authoritative; otherwise the reviewed public base
-variables are used. QR image metadata is validated against the configured
+QR objects without copying release data into source. Artifact `r2_key` values
+are validated before any redirect; embedded URLs are accepted only when they
+are HTTPS URLs for the configured public base and the exact validated key.
+Unsafe URLs are ignored and safely derived from the reviewed public base
+variables. QR image metadata is validated against the configured
 `wechat-group-qrcode/images/` prefix before redirecting or streaming.
 
 The complete direct and mounted route families are handled locally: landing
@@ -22,6 +24,9 @@ upload. Admin sessions are HMAC-SHA256 cookies signed with
 `ADMIN_SESSION_SECRET`; login and all session use fail closed until both
 `ADMIN_PASSWORD` and `ADMIN_SESSION_SECRET` are provisioned. No password,
 access key, or other secret is stored in this repository.
+Every admin POST also requires a per-session constant-time CSRF token and
+same-origin validation. QR publication compensates metadata/state writes on
+failure and returns only a generic 503.
 
 When `DOWNLOADS` is present, migrated routes never call `DOWNLOADS_SERVICE`.
 The legacy service binding remains declared as a rollback path for the

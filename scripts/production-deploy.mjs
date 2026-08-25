@@ -21,10 +21,11 @@ export const PRODUCTION_CONTRACT = Object.freeze({
   productionContentAdapter: 'newapi',
   defaultDownloadsMode: 'disabled',
   stagingDownloadsMode: 'staging-service-binding',
-  productionDownloadsMode: 'production-service-binding',
+  productionDownloadsMode: 'production-r2-binding',
   downloadsBinding: 'DOWNLOADS_SERVICE',
   downloadsR2Binding: 'DOWNLOADS',
   downloadsR2Bucket: 'tokenrouter',
+  downloadsAuthority: 'r2-binding',
   downloadsService: 'cloudflare-download-site',
   newApiVpcBinding: 'NEWAPI_VPC_SERVICE',
   newApiVpcServiceId: '01a027bb-280d-7630-b837-7afd6a0ca196',
@@ -176,12 +177,29 @@ function assertR2BucketBinding(sections, sectionName) {
 
 export async function assertProductionRuntimeContract() {
   let forwarded = false;
+  let r2Gets = 0;
   const upstreamPaths = [];
   const liveToken = `production-contract-${'x'.repeat(32)}`;
   const env = {
     CONTENT_ADAPTER: PRODUCTION_CONTRACT.productionContentAdapter,
     LIVE_CONTENT_ADAPTER_TOKEN: liveToken,
     DOWNLOADS_INTEGRATION: PRODUCTION_CONTRACT.productionDownloadsMode,
+    R2_PREFIX: 'codex-install',
+    R2_PUBLIC_BASE_URL: 'https://tokenrouter-r2.wdtokenacc.top',
+    DOWNLOADS: {
+      async get(key) {
+        r2Gets += 1;
+        if (key === 'codex-install/metadata/latest.json') return new Response(JSON.stringify({
+          release_id: 'production-r2-contract',
+          files: [{ site: 'tokenrouter', platform: 'windows', arch: 'x64', r2_key: 'codex-install/releases/production-r2-contract/setup.exe', filename: 'setup.exe' }],
+        }));
+        if (key === 'codex-install/latest/tokenrouter/windows/x64.json') return new Response(JSON.stringify({
+          site: 'tokenrouter', platform: 'windows', arch: 'x64', r2_key: 'codex-install/releases/production-r2-contract/setup.exe', filename: 'setup.exe',
+        }));
+        return null;
+      },
+      async put() { throw new Error('production runtime contract must not write R2'); },
+    },
     NEWAPI_VPC_SERVICE: {
       async fetch(request) {
         const url = new URL(request.url);
@@ -336,6 +354,8 @@ export async function assertProductionRuntimeContract() {
       fetch: async () => new Response('asset'),
     },
   };
+  assert.equal(typeof env.DOWNLOADS?.get, 'function', 'production requires callable DOWNLOADS.get');
+  assert.equal(typeof env.DOWNLOADS?.put, 'function', 'production requires callable DOWNLOADS.put');
 
   const health = await fetchJson('/api/health', env);
   assert.equal(health.phase, '2');
@@ -343,7 +363,7 @@ export async function assertProductionRuntimeContract() {
   assert.equal(health.content_adapter, 'newapi');
   assert.equal(health.live_newapi, true);
   assert.equal(health.live_newapi_healthy, true);
-  assert.equal(health.downloads.mode, 'production-service-binding');
+  assert.equal(health.downloads.mode, PRODUCTION_CONTRACT.downloadsAuthority);
   assert.equal(health.downloads.configured, true);
   assert.equal(health.downloads.bound, true);
   assert.equal(health.downloads.active, true);
@@ -389,7 +409,13 @@ export async function assertProductionRuntimeContract() {
     env,
   );
   assert.equal(downstream.status, 200);
-  assert.equal(forwarded, true);
+  assert.equal(forwarded, false);
+  assert.ok(r2Gets > 0);
+  assert.equal((await downstream.json()).release_id, 'production-r2-contract');
+  const landing = await worker.fetch(new Request('https://production.invalid/downloads'), env);
+  assert.equal(landing.status, 200);
+  const target = await worker.fetch(new Request('https://production.invalid/download/latest/tokenrouter/windows/x64'), env);
+  assert.equal(target.status, 302);
   assert.deepEqual(upstreamPaths, [
     '/api/internal/live-content/v1/health',
     '/api/internal/live-content/v1/status',

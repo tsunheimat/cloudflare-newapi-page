@@ -92,15 +92,25 @@ assert.equal(health.phase, '2');
 assert.equal(health.content_adapter, 'newapi');
 assert.equal(health.live_newapi, true);
 assert.equal(health.live_newapi_healthy, true);
-// `production-service-binding` remains the rollback mode; migrated production
-// uses the R2 binding while preserving the same unverified status fields.
-assert.ok(['r2-binding', 'production-service-binding'].includes(health.downloads.mode));
+// Production is accepted only when the migrated callable R2 binding is the
+// reported authority. The retained service binding is rollback-only.
+assert.equal(health.downloads.mode, 'r2-binding');
 assert.equal(health.downloads.configured, true);
 assert.equal(health.downloads.bound, true);
 assert.equal(health.downloads.active, true);
 assert.equal(health.downloads.healthy, null);
 assert.equal(health.downloads.live, false);
 assert.equal(health.downloads.phase, 'bound-unverified');
+
+const integration = await probe({
+  method: 'GET',
+  path: '/api/integrations/downloads?probe=production-downloads',
+  statuses: [200],
+  contentType: 'application/json',
+  json: true,
+});
+assert.equal(integration?.data?.mode, 'r2-binding');
+assert.equal(integration?.data?.transport, 'cloudflare-r2-binding');
 
 await probe({
   method: 'GET',

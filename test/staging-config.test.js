@@ -100,7 +100,7 @@ test('default and staging stay fixture while production uses its explicit live r
   );
   assert.equal(
     value(sections, 'env.production.vars', 'DOWNLOADS_INTEGRATION'),
-    'production-service-binding',
+    'production-r2-binding',
   );
   assert.equal(
     value(sections, 'env.staging.vars', 'DOWNLOADS_INTEGRATION'),
@@ -170,6 +170,6 @@ test('remote and production download probes verify the downstream root, detail S
     assert.doesNotMatch(source, /method:\s*['"](?:POST|PUT|PATCH|DELETE)['"]/);
   }
   assert.match(production, /PRODUCTION_BASE_URL/);
-  assert.match(production, /production-service-binding/);
+  assert.match(production, /r2-binding/);
   assert.match(production, /health\.live_newapi_healthy/);
 });

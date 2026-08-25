@@ -11,7 +11,9 @@ const COOKIE_NAME = 'tr_admin';
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const SOFTWARE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const RELEASE_ID = /^[A-Za-z0-9._-]+$/;
-const TARGET_PART = /^[A-Za-z0-9._-]+$/;
+const TARGET_PART = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const KEY_PART = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const FILENAME_PART = /^[^/\\\u0000-\u001f\u007f]+$/;
 const RESERVED = new Set(['admin', 'api', 'download', 'latest', 'previous', 'public', 'software', 'wechat-group-qrcode']);
 const QR_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const QR_EXTENSIONS = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
@@ -97,7 +99,8 @@ export async function routeDownloads(request, env, pathname) {
   if (normalized === '/admin' && request.method === 'GET') return renderAdminV2(env, request);
   if (request.method === 'POST' && normalized === '/admin/login') return handleLogin(request, env);
   if (request.method === 'POST' && normalized === '/admin/logout') {
-    await requireAdmin(request, env);
+    const session = await requireAdmin(request, env);
+    await requireCsrf(request, env, session);
     return redirect('/admin', clearSessionCookie());
   }
   if (request.method === 'POST' && normalized === '/admin/wechat-group-qrcode/upload') return handleQrUpload(request, env);
@@ -114,7 +117,9 @@ function normalizePath(pathname) {
 
 async function routeApi(env, parts) {
   const software = defaultSoftware();
-  if (parts.length === 3 && parts[1] === 'wechat-group-qrcode' && parts[2] === 'latest') return json(await readJson(env, qrKey(env, 'metadata/latest.json')));
+  if (parts.length === 3 && parts[1] === 'wechat-group-qrcode' && parts[2] === 'latest') {
+    return json(await latestQr(env));
+  }
   if (parts.length === 2 && ['latest', 'public'].includes(parts[1])) return json(await aggregate(env, software, parts[1]));
   if (parts.length === 2 && parts[1] === 'previous') return json(await previous(env, software));
   if (parts.length === 5 && ['latest', 'public'].includes(parts[1])) return json(await target(env, software, parts[1], parseTarget(parts.slice(2))));
@@ -134,7 +139,7 @@ async function routeDownload(env, parts) {
 }
 
 function parseTarget(parts) {
-  if (parts.length !== 3 || !parts.every((part) => TARGET_PART.test(part))) throw new HttpError(400, 'Invalid target.');
+  if (parts.length !== 3 || !parts.every((part) => TARGET_PART.test(part) && part !== '.' && part !== '..' && !part.includes('..'))) throw new HttpError(400, 'Invalid target.');
   return { site: parts[0], platform: parts[1], arch: parts[2] };
 }
 
@@ -152,10 +157,26 @@ function requireSoftware(id) {
   return { ...SOFTWARE_PROFILES[value], id: value };
 }
 function profiles() { return Object.entries(SOFTWARE_PROFILES).map(([id, value]) => ({ ...value, id })); }
-function prefix(env, software) { return String(env[software.prefixEnvVar] || software.prefix || DEFAULT_PREFIX).replace(/^\/+|\/+$/g, '') || DEFAULT_PREFIX; }
-function objectKey(env, software, relative) { return `${prefix(env, software)}/${relative.replace(/^\/+/, '')}`; }
-function qrPrefix(env) { return String(env.WECHAT_GROUP_QR_PREFIX || DEFAULT_QR_PREFIX).replace(/^\/+|\/+$/g, '') || DEFAULT_QR_PREFIX; }
-function qrKey(env, relative) { return `${qrPrefix(env)}/${relative.replace(/^\/+/, '')}`; }
+function configuredPrefix(value, fallback) {
+  const normalized = String(value || fallback).replace(/^\/+|\/+$/g, '') || fallback;
+  if (!normalized.split('/').every((part) => KEY_PART.test(part))) {
+    throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
+  }
+  return normalized;
+}
+function prefix(env, software) { return configuredPrefix(env[software.prefixEnvVar], software.prefix || DEFAULT_PREFIX); }
+function objectKey(env, software, relative) {
+  const base = prefix(env, software);
+  const clean = String(relative || '').replace(/^\/+/, '');
+  if (!safeRelativePath(clean)) throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
+  return `${base}/${clean}`;
+}
+function qrPrefix(env) { return configuredPrefix(env.WECHAT_GROUP_QR_PREFIX, DEFAULT_QR_PREFIX); }
+function qrKey(env, relative) {
+  const clean = String(relative || '').replace(/^\/+/, '');
+  if (!safeRelativePath(clean)) throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
+  return `${qrPrefix(env)}/${clean}`;
+}
 
 async function readJson(env, key, { optional = false } = {}) {
   let object;
@@ -171,39 +192,110 @@ async function writeJson(env, key, payload, cacheControl = 'no-store') {
     await env.DOWNLOADS.put(key, `${JSON.stringify(payload, null, 2)}\n`, { httpMetadata: { contentType: 'application/json; charset=utf-8', cacheControl } });
   } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
 }
-async function aggregate(env, software, channel) { return readJson(env, objectKey(env, software, `metadata/${channel}.json`)); }
-async function target(env, software, channel, wanted) { return readJson(env, objectKey(env, software, `${channel}/${wanted.site}/${wanted.platform}/${wanted.arch}.json`)); }
+async function aggregate(env, software, channel) {
+  const metadata = await readJson(env, objectKey(env, software, `metadata/${channel}.json`));
+  validateAggregateMetadata(env, software, metadata);
+  return { ...metadata, files: metadata.files.map((item) => sanitizedArtifactMetadata(env, software, item)) };
+}
+async function target(env, software, channel, wanted) {
+  const metadata = await readJson(env, objectKey(env, software, `${channel}/${wanted.site}/${wanted.platform}/${wanted.arch}.json`));
+  return sanitizedArtifactMetadata(env, software, metadata);
+}
 async function state(env, software, name) { return readJson(env, objectKey(env, software, `state/${name}.json`), { optional: true }); }
 
 function releaseId(payload) {
   if (typeof payload === 'string') return payload.trim();
   return payload && typeof payload === 'object' ? String(payload.release_id || payload.latest_release_id || '').trim() : '';
 }
+function validateArtifactMetadata(env, software, metadata, { invalidKeyStatus = 404 } = {}) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
+  for (const field of ['site', 'platform', 'arch']) {
+    if (typeof metadata[field] !== 'string' || !TARGET_PART.test(metadata[field]) || metadata[field] === '.' || metadata[field] === '..' || metadata[field].includes('..')) {
+      throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
+    }
+  }
+  if (metadata.filename !== undefined && (typeof metadata.filename !== 'string' || !FILENAME_PART.test(metadata.filename) || metadata.filename.includes('..') || metadata.filename.trim() !== metadata.filename || metadata.filename.length > 255)) {
+    throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
+  }
+  const key = metadata.r2_key;
+  if (!safeObjectKey(key, `${prefix(env, software)}/`)) throw new HttpError(invalidKeyStatus, invalidKeyStatus === 404 ? 'Selected artifact has no valid r2_key.' : 'Downloads metadata is temporarily unavailable.');
+  return key;
+}
+function validateAggregateMetadata(env, software, metadata) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
+  if (!Array.isArray(metadata.files) || metadata.files.length === 0) throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
+  for (const item of metadata.files) validateArtifactMetadata(env, software, item, { invalidKeyStatus: 503 });
+  return metadata;
+}
+function sanitizedArtifactMetadata(env, software, item) {
+  const key = validateArtifactMetadata(env, software, item, { invalidKeyStatus: 503 });
+  const result = { ...item };
+  const url = resolveDownloadUrl(env, software, item, key);
+  if (url) result.url = url;
+  else delete result.url;
+  return result;
+}
 async function previous(env, software) {
   const current = await state(env, software, 'previous');
   const id = releaseId(current);
   if (id && !RELEASE_ID.test(id)) throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
-  return id ? { state: current, metadata: await readJson(env, objectKey(env, software, `releases/${id}/metadata/latest.json`), { optional: true }) } : { state: null, metadata: null };
+  if (!id) return { state: null, metadata: null };
+  const metadata = await readJson(env, objectKey(env, software, `releases/${id}/metadata/latest.json`), { optional: true });
+  if (metadata) {
+    validateAggregateMetadata(env, software, metadata);
+    return { state: current, metadata: { ...metadata, files: metadata.files.map((item) => sanitizedArtifactMetadata(env, software, item)) } };
+  }
+  return { state: current, metadata: null };
 }
 
 function safeObjectKey(value, expectedPrefix = '') {
-  return typeof value === 'string' && value.startsWith(expectedPrefix) && value.length > expectedPrefix.length
-    && !value.startsWith('/') && !value.includes('\\') && !value.includes('..') && !value.includes('//') && /^[A-Za-z0-9._/-]+$/.test(value);
+  if (typeof value !== 'string' || !value.startsWith(expectedPrefix) || value.length <= expectedPrefix.length) return false;
+  if (value.startsWith('/') || !safeRelativePath(value)) return false;
+  return value.slice(0, expectedPrefix.length) === expectedPrefix;
 }
-function resolveDownloadUrl(env, software, metadata) {
-  if (metadata?.url) return String(metadata.url);
-  if (metadata?.r2_key) {
-    const base = String(env[software.publicBaseUrlEnvVar] || env.R2_PUBLIC_BASE_URL || '').replace(/\/+$/, '');
-    if (base) return `${base}/${metadata.r2_key}`;
-  }
-  return '';
+function safeRelativePath(value) {
+  if (typeof value !== 'string' || !value || value.startsWith('/') || value.includes('\\') || value.includes('//')) return false;
+  const parts = value.split('/');
+  return parts.every((part) => part && part !== '.' && part !== '..' && !part.includes('..') && KEY_PART.test(part));
+}
+function publicBaseUrl(env, software) {
+  const raw = String(env[software.publicBaseUrlEnvVar] || env.R2_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    return parsed;
+  } catch { return null; }
+}
+function qrPublicBaseUrl(env) {
+  const raw = String(env.WECHAT_GROUP_QR_PUBLIC_BASE_URL || env.R2_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+    return parsed;
+  } catch { return null; }
+}
+function safePublicUrl(candidate, base, key) {
+  if (!candidate || !base) return '';
+  try {
+    const parsed = new URL(String(candidate));
+    if (parsed.protocol !== 'https:' || parsed.origin !== base.origin || parsed.username || parsed.password || parsed.search || parsed.hash) return '';
+    if (parsed.pathname !== `${base.pathname.replace(/\/+$/, '')}/${key}`) return '';
+    return parsed.href;
+  } catch { return ''; }
+}
+function resolveDownloadUrl(env, software, metadata, key) {
+  const base = publicBaseUrl(env, software);
+  const trusted = safePublicUrl(metadata?.url, base, key);
+  if (trusted) return trusted;
+  return base ? `${base.origin}${base.pathname.replace(/\/+$/, '')}/${key}` : '';
 }
 async function download(env, software, channel, wanted) {
   const metadata = await target(env, software, channel, wanted);
-  const url = resolveDownloadUrl(env, software, metadata);
+  const key = validateArtifactMetadata(env, software, metadata);
+  const url = resolveDownloadUrl(env, software, metadata, key);
   if (url) return redirectFound(url);
-  const key = metadata?.r2_key;
-  if (!safeObjectKey(key, `${prefix(env, software)}/`)) throw new HttpError(404, 'Selected artifact has no valid r2_key.');
   let object;
   try { object = await env.DOWNLOADS.get(key); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   if (!object) throw new HttpError(404, `Artifact not found: ${key}`);
@@ -213,6 +305,7 @@ async function download(env, software, channel, wanted) {
 }
 
 function validateQrMetadata(env, metadata) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
   const key = metadata?.r2_key;
   const images = `${qrPrefix(env)}/images/`;
   if (!safeObjectKey(key, images)) throw new HttpError(400, 'WeChat group QR code r2_key must be under the configured images prefix.');
@@ -220,12 +313,24 @@ function validateQrMetadata(env, metadata) {
   if (contentType && !QR_TYPES.has(contentType)) throw new HttpError(400, 'Invalid WeChat group QR code content_type.');
   return { r2Key: key, contentType };
 }
-async function latestQr(env, optional = false) { return readJson(env, qrKey(env, 'metadata/latest.json'), { optional }); }
+async function latestQr(env, optional = false) {
+  const metadata = await readJson(env, qrKey(env, 'metadata/latest.json'), { optional });
+  if (!metadata) return null;
+  return sanitizedQrMetadata(env, metadata);
+}
+function sanitizedQrMetadata(env, metadata) {
+  const validated = validateQrMetadata(env, metadata);
+  const base = qrPublicBaseUrl(env);
+  const result = { ...metadata };
+  if (base) result.url = `${base.origin}${base.pathname.replace(/\/+$/, '')}/${validated.r2Key}`;
+  else delete result.url;
+  return result;
+}
 async function serveQr(env) {
   const metadata = await latestQr(env);
   const validated = validateQrMetadata(env, metadata);
-  const base = String(env.WECHAT_GROUP_QR_PUBLIC_BASE_URL || env.R2_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
-  if (base) return new Response(null, { status: 302, headers: { location: `${base}/${validated.r2Key}`, 'cache-control': 'no-store' } });
+  const base = qrPublicBaseUrl(env);
+  if (base) return new Response(null, { status: 302, headers: { location: `${base.origin}${base.pathname.replace(/\/+$/, '')}/${validated.r2Key}`, 'cache-control': 'no-store' } });
   let object;
   try { object = await env.DOWNLOADS.get(validated.r2Key); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   if (!object) throw new HttpError(404, `WeChat group QR code not found: ${validated.r2Key}`);
@@ -235,32 +340,85 @@ async function serveQr(env) {
 }
 
 async function handleQrUpload(request, env) {
-  await requireAdmin(request, env);
+  const session = await requireAdmin(request, env);
+  await requireCsrf(request, env, session);
   const upload = (await request.formData()).get('image');
   if (!upload || typeof upload.arrayBuffer !== 'function') throw new HttpError(400, '請選擇一張微信群 QR 圖片。');
   const filename = String(upload.name || 'wechat-group-qrcode').trim() || 'wechat-group-qrcode';
+  if (!FILENAME_PART.test(filename) || filename.includes('..') || filename.length > 255) throw new HttpError(400, '圖片檔案名稱無效。');
   const extension = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
   const contentType = QR_EXTENSIONS[extension];
   if (!contentType) throw new HttpError(400, '只支持 PNG、JPG、GIF 或 WebP 圖片。');
-  const bytes = new Uint8Array(await upload.arrayBuffer());
+  if (String(upload.type || '').trim().toLowerCase() !== contentType) throw new HttpError(400, '圖片 MIME 類型與副檔名不一致。');
+  let bytes;
+  try { bytes = new Uint8Array(await upload.arrayBuffer()); } catch { throw new HttpError(400, '無法讀取圖片檔案。'); }
   if (!bytes.length) throw new HttpError(400, '圖片檔案不能為空。');
   if (bytes.length > QR_MAX_BYTES) throw new HttpError(400, '圖片檔案不能超過 5 MiB。');
   if (!matchesMagic(extension, bytes)) throw new HttpError(400, `圖片內容與 .${extension} 副檔名不一致。`);
   const digest = await sha256(bytes);
   const version = `${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')}-${digest.slice(0, 12)}`;
   const key = `${qrPrefix(env)}/images/${version}.${extension}`;
-  const base = String(env.WECHAT_GROUP_QR_PUBLIC_BASE_URL || env.R2_PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
-  const metadata = { asset_id: 'wechat-group-qrcode', version_id: version, uploaded_at: new Date().toISOString(), source: 'admin-panel', filename, r2_key: key, ...(base ? { url: `${base}/${key}` } : {}), sha256: digest, size: bytes.length, content_type: contentType };
-  const latest = await latestQr(env, true);
-  await env.DOWNLOADS.put(key, bytes, { httpMetadata: { contentType, cacheControl: 'public, max-age=31536000, immutable' } });
-  if (latest) await writeJson(env, qrKey(env, 'state/previous.json'), latest);
-  await writeJson(env, qrKey(env, 'metadata/latest.json'), metadata);
-  await writeJson(env, qrKey(env, 'state/latest.json'), metadata);
+  const base = qrPublicBaseUrl(env);
+  const metadata = { asset_id: 'wechat-group-qrcode', version_id: version, uploaded_at: new Date().toISOString(), source: 'admin-panel', filename, r2_key: key, ...(base ? { url: `${base.origin}${base.pathname.replace(/\/+$/, '')}/${key}` } : {}), sha256: digest, size: bytes.length, content_type: contentType };
+  const snapshots = await snapshotQrState(env);
+  const touched = [];
+  try {
+    touched.push(key);
+    await putBinary(env, key, bytes, { httpMetadata: { contentType, cacheControl: 'public, max-age=31536000, immutable' } });
+    if (snapshots.latestMetadata) {
+      touched.push(qrKey(env, 'state/previous.json'));
+      await writeJson(env, qrKey(env, 'state/previous.json'), snapshots.latestMetadata);
+    }
+    touched.push(qrKey(env, 'metadata/latest.json'));
+    await writeJson(env, qrKey(env, 'metadata/latest.json'), metadata);
+    touched.push(qrKey(env, 'state/latest.json'));
+    await writeJson(env, qrKey(env, 'state/latest.json'), metadata);
+  } catch {
+    await rollbackQrState(env, snapshots, touched, key);
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
   return redirect('/admin?updated=wechat-group-qrcode-uploaded');
 }
 
+async function putBinary(env, key, bytes, options) {
+  try {
+    await env.DOWNLOADS.put(key, bytes, options);
+  } catch {
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+}
+async function snapshotQrState(env) {
+  const [latestMetadata, latestState, previousState] = await Promise.all([
+    latestQr(env, true), readJson(env, qrKey(env, 'state/latest.json'), { optional: true }),
+    readJson(env, qrKey(env, 'state/previous.json'), { optional: true }),
+  ]);
+  return { latestMetadata, latestState, previousState };
+}
+async function rollbackQrState(env, snapshots, touched, uploadedKey) {
+  const originals = new Map([
+    [qrKey(env, 'metadata/latest.json'), snapshots.latestMetadata],
+    [qrKey(env, 'state/latest.json'), snapshots.latestState],
+    [qrKey(env, 'state/previous.json'), snapshots.previousState],
+  ]);
+  for (const key of [...touched].reverse()) {
+    if (!originals.has(key)) continue;
+    const original = originals.get(key);
+    try {
+      if (original === null && typeof env.DOWNLOADS.delete === 'function') await env.DOWNLOADS.delete(key);
+      else if (original !== null) await writeJson(env, key, original);
+    } catch {
+      // Best-effort compensation; the request remains a generic 503 and the
+      // prior metadata/state pair is never reported as successfully replaced.
+    }
+  }
+  if (typeof env.DOWNLOADS.delete === 'function') {
+    try { await env.DOWNLOADS.delete(uploadedKey); } catch { /* best effort */ }
+  }
+}
+
 async function handleAdminAction(request, env, softwareId, action) {
-  await requireAdmin(request, env);
+  const session = await requireAdmin(request, env);
+  await requireCsrf(request, env, session);
   const software = requireSoftware(softwareId);
   if (action === 'lock-previous') {
     const id = releaseId(await state(env, software, 'previous'));
@@ -286,27 +444,59 @@ async function publishPublic(env, software, id, locked, source) {
   if (!RELEASE_ID.test(id)) throw new HttpError(400, 'Invalid release_id.');
   const aggregateMetadata = await readJson(env, objectKey(env, software, `releases/${id}/metadata/latest.json`));
   if (!Array.isArray(aggregateMetadata.files) || !aggregateMetadata.files.length) throw new HttpError(400, 'Selected release has no files metadata.');
-  await writeJson(env, objectKey(env, software, 'state/public.json'), { release_id: id, locked, updated_at: new Date().toISOString(), source });
-  await writeJson(env, objectKey(env, software, 'metadata/public.json'), aggregateMetadata, 'public, max-age=60');
+  validateAggregateMetadata(env, software, aggregateMetadata);
+  const projectedAggregate = { ...aggregateMetadata, files: aggregateMetadata.files.map((item) => sanitizedArtifactMetadata(env, software, item)) };
+  const planned = [];
   const bySite = new Map();
-  for (const item of aggregateMetadata.files) {
-    if (!item?.site || !item.platform || !item.arch) continue;
-    const files = bySite.get(item.site) || []; files.push(item); bySite.set(item.site, files);
-    await writeJson(env, objectKey(env, software, `public/${item.site}/${item.platform}/${item.arch}.json`), item, 'public, max-age=60');
+  for (const item of projectedAggregate.files) {
+    const files = bySite.get(item.site) || [];
+    files.push(item);
+    bySite.set(item.site, files);
+    planned.push([objectKey(env, software, `public/${item.site}/${item.platform}/${item.arch}.json`), item]);
   }
-  const common = { ...aggregateMetadata }; delete common.files;
-  for (const [site, files] of bySite) await writeJson(env, objectKey(env, software, `${site}/metadata/public.json`), { ...common, site, files }, 'public, max-age=60');
+  const common = { ...projectedAggregate }; delete common.files;
+  for (const [site, files] of bySite) planned.push([objectKey(env, software, `${site}/metadata/public.json`), { ...common, site, files }]);
+  await writeJson(env, objectKey(env, software, 'state/public.json'), { release_id: id, locked, updated_at: new Date().toISOString(), source });
+  await writeJson(env, objectKey(env, software, 'metadata/public.json'), projectedAggregate, 'public, max-age=60');
+  for (const [key, payload] of planned) await writeJson(env, key, payload, 'public, max-age=60');
 }
 
 async function handleLogin(request, env) {
-  const password = String((await request.formData()).get('password') || '');
+  const form = await request.formData();
+  await assertMutationOrigin(request);
   // Missing credentials are an intentional fail-closed state.  Never include
   // which secret is missing, or any supplied value, in a response/log.
   if (!env.ADMIN_PASSWORD || !env.ADMIN_SESSION_SECRET) throw new HttpError(503, 'Admin authentication is not configured.');
-  if (!constantTimeEqual(password, env.ADMIN_PASSWORD)) return new Response(adminPage('密码错误。'), { status: 401, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+  const csrf = String(form.get('csrf_token') || request.headers.get('x-csrf-token') || '');
+  if (!constantTimeEqual(csrf, await loginCsrfToken(request, env))) throw new HttpError(403, 'CSRF validation failed.');
+  const password = String(form.get('password') || '');
+  if (!constantTimeEqual(password, env.ADMIN_PASSWORD)) return await renderLoginPage(env, request, '密码错误。', 401);
   return redirect('/admin', await createSessionCookie(env));
 }
-async function requireAdmin(request, env) { if (!await verifySession(request, env)) throw new HttpError(401, 'Admin login required.'); }
+async function requireAdmin(request, env) {
+  const session = await verifySession(request, env);
+  if (!session) throw new HttpError(401, 'Admin login required.');
+  return session;
+}
+async function requireCsrf(request, env, session) {
+  await assertMutationOrigin(request);
+  const form = await request.clone().formData().catch(() => null);
+  const token = String(form?.get('csrf_token') || request.headers.get('x-csrf-token') || '');
+  if (!session?.csrf || !constantTimeEqual(token, session.csrf)) throw new HttpError(403, 'CSRF validation failed.');
+}
+async function assertMutationOrigin(request) {
+  const expected = new URL(request.url).origin;
+  for (const name of ['origin', 'referer']) {
+    const value = request.headers.get(name);
+    if (!value) continue;
+    try {
+      if (new URL(value).origin !== expected) throw new Error('origin mismatch');
+    } catch {
+      throw new HttpError(403, 'CSRF validation failed.');
+    }
+  }
+}
+async function loginCsrfToken(request, env) { return sign(`login:${new URL(request.url).origin}`, env.ADMIN_SESSION_SECRET); }
 async function verifySession(request, env) {
   if (!env.ADMIN_PASSWORD || !env.ADMIN_SESSION_SECRET) return null;
   const cookie = parseCookies(request.headers.get('cookie') || '')[COOKIE_NAME];
@@ -315,10 +505,16 @@ async function verifySession(request, env) {
   if (!payload || !signature || !constantTimeEqual(signature, await sign(payload, env.ADMIN_SESSION_SECRET))) return null;
   try {
     const parsed = JSON.parse(new TextDecoder().decode(base64Decode(payload)));
-    return parsed.exp && Date.now() / 1000 <= parsed.exp ? parsed : null;
+    return parsed.exp && Date.now() / 1000 <= parsed.exp && typeof parsed.csrf === 'string' ? parsed : null;
   } catch { return null; }
 }
-async function createSessionCookie(env) { const now = Math.floor(Date.now() / 1000); const payload = base64Encode(new TextEncoder().encode(JSON.stringify({ iat: now, exp: now + SESSION_TTL_SECONDS }))); return `${COOKIE_NAME}=${payload}.${await sign(payload, env.ADMIN_SESSION_SECRET)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_TTL_SECONDS}`; }
+async function createSessionCookie(env) {
+  const now = Math.floor(Date.now() / 1000);
+  const csrfBytes = new Uint8Array(32);
+  crypto.getRandomValues(csrfBytes);
+  const payload = base64Encode(new TextEncoder().encode(JSON.stringify({ iat: now, exp: now + SESSION_TTL_SECONDS, csrf: base64Encode(csrfBytes) })));
+  return `${COOKIE_NAME}=${payload}.${await sign(payload, env.ADMIN_SESSION_SECRET)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_TTL_SECONDS}`;
+}
 function clearSessionCookie() { return `${COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`; }
 async function sign(value, secret) { const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); return base64Encode(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value)))); }
 function parseCookies(header) { return Object.fromEntries(header.split(';').map((part) => { const [name, ...rest] = part.trim().split('='); return [name, rest.join('=')]; }).filter(([name]) => name)); }
@@ -329,32 +525,70 @@ async function sha256(bytes) { return [...new Uint8Array(await crypto.subtle.dig
 function matchesMagic(extension, bytes) { if (extension === 'png') return bytes.length >= 8 && bytes.slice(0, 8).every((value, index) => value === [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a][index]); if (extension === 'jpg' || extension === 'jpeg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff; if (extension === 'gif') return new TextDecoder().decode(bytes.slice(0, 6)) === 'GIF87a' || new TextDecoder().decode(bytes.slice(0, 6)) === 'GIF89a'; return bytes.length >= 12 && new TextDecoder().decode(bytes.slice(0, 4)) === 'RIFF' && new TextDecoder().decode(bytes.slice(8, 12)) === 'WEBP'; }
 function safeFilename(value) { return String(value).replace(/["\\\r\n]/g, '_'); }
 
-async function readDisplayMetadata(env, software) { try { return { metadata: await aggregate(env, software, 'public'), error: '' }; } catch (publicError) { try { return { metadata: await aggregate(env, software, 'latest'), error: '公开版本元数据暂不可用，当前显示最新版本元数据。' }; } catch { return { metadata: null, error: '暂无可展示的版本元数据。' }; } } }
+async function readDisplayMetadata(env, software) {
+  try {
+    return { metadata: await aggregate(env, software, 'public'), error: '', missing: false };
+  } catch (publicError) {
+    if (!(publicError instanceof HttpError) || publicError.status !== 404) throw publicError;
+    try {
+      return { metadata: await aggregate(env, software, 'latest'), error: '公开版本元数据暂不可用，当前显示最新版本元数据。', missing: false };
+    } catch (latestError) {
+      if (!(latestError instanceof HttpError) || latestError.status !== 404) throw latestError;
+      return { metadata: null, error: '暂无可展示的版本元数据。', missing: true };
+    }
+  }
+}
 
 async function renderAdminV2(env, request) {
-  if (!await verifySession(request, env)) {
-    return htmlPage('管理员登录', '<section class="card narrow"><h1>管理员登录</h1><form method="post" action="/admin/login"><label>密码 <input type="password" name="password" autocomplete="current-password" required></label><button type="submit">登录</button></form></section>');
+  const session = await verifySession(request, env);
+  if (!session) {
+    return renderLoginPage(env, request);
   }
+  const csrf = escapeHtml(session.csrf);
   const cards = await Promise.all(profiles().map(async (software) => {
     const [latest, publicState, previousState, latestMeta, publicMeta, releases] = await Promise.all([
       state(env, software, 'latest'), state(env, software, 'public'), state(env, software, 'previous'),
-      aggregate(env, software, 'latest').catch(() => null), aggregate(env, software, 'public').catch(() => null),
+      optionalAggregate(env, software, 'latest'), optionalAggregate(env, software, 'public'),
       listReleases(env, software),
     ]);
     const previousId = releaseId(previousState);
     const actionBase = software.id === DEFAULT_SOFTWARE_ID ? '/admin/public' : `/admin/${encodeURIComponent(software.id)}/public`;
     const options = releases.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join('');
-    return `<article class="card"><h3>${escapeHtml(software.displayName)}</h3><dl><dt>最新版本</dt><dd>${escapeHtml(releaseId(latest) || latestMeta?.release_id || '缺失')}</dd><dt>公开版本</dt><dd>${escapeHtml(releaseId(publicState) || publicMeta?.release_id || '缺失')}</dd><dt>公开版本锁定</dt><dd>${publicState?.locked ? '是' : '否'}</dd><dt>上一版本</dt><dd>${escapeHtml(previousId || '缺失')}</dd></dl><form method="post" action="${actionBase}/lock-previous"><button type="submit" ${previousId ? '' : 'disabled'}>锁定到上一公开版本</button></form><form method="post" action="${actionBase}/unlock"><button type="submit">解除锁定并发布最新版本</button></form><form method="post" action="${actionBase}/set"><select name="release_id" required>${options}</select><button type="submit" ${releases.length ? '' : 'disabled'}>锁定所选版本</button></form></article>`;
+    return `<article class="card"><h3>${escapeHtml(software.displayName)}</h3><dl><dt>最新版本</dt><dd>${escapeHtml(releaseId(latest) || latestMeta?.release_id || '缺失')}</dd><dt>公开版本</dt><dd>${escapeHtml(releaseId(publicState) || publicMeta?.release_id || '缺失')}</dd><dt>公开版本锁定</dt><dd>${publicState?.locked ? '是' : '否'}</dd><dt>上一版本</dt><dd>${escapeHtml(previousId || '缺失')}</dd></dl><form method="post" action="${actionBase}/lock-previous"><input type="hidden" name="csrf_token" value="${csrf}"><button type="submit" ${previousId ? '' : 'disabled'}>锁定到上一公开版本</button></form><form method="post" action="${actionBase}/unlock"><input type="hidden" name="csrf_token" value="${csrf}"><button type="submit">解除锁定并发布最新版本</button></form><form method="post" action="${actionBase}/set"><input type="hidden" name="csrf_token" value="${csrf}"><select name="release_id" required>${options}</select><button type="submit" ${releases.length ? '' : 'disabled'}>锁定所选版本</button></form></article>`;
   }));
-  return htmlPage('R2 管理后台', `<section class="card"><h1>R2 管理后台</h1><form method="post" action="/admin/logout"><button type="submit">退出登录</button></form></section><section class="download-section"><h2>微信群二维码</h2><form method="post" action="/admin/wechat-group-qrcode/upload" enctype="multipart/form-data"><input type="file" name="image" accept="image/png,image/jpeg,image/gif,image/webp" required><button type="submit">上传并发布</button></form></section><section class="download-section"><h2>软件发布控制</h2><div class="admin-grid">${cards.join('')}</div></section>`);
+  const updated = new URL(request.url).searchParams.get('updated');
+  const notice = updated === 'wechat-group-qrcode-uploaded'
+    ? '<p class="notice" role="status">微信群 QR 圖片已上傳並發布。</p>'
+    : updated ? `<p class="notice" role="status">操作已完成：${escapeHtml(updated)}</p>` : '';
+  let qrCurrent = '<p class="muted">尚未发布微信群二维码。</p>';
+  try {
+    const qr = await latestQr(env, true);
+    if (qr) qrCurrent = `<img src="/wechat-group-qrcode" alt="当前微信群二维码" loading="lazy"><dl><dt>当前文件</dt><dd>${escapeHtml(qr.filename || '未命名')}</dd><dt>更新时间</dt><dd>${escapeHtml(qr.uploaded_at || '未知')}</dd><dt>大小</dt><dd>${escapeHtml(formatBytes(qr.size))}</dd><dt>稳定 URL</dt><dd><a href="/wechat-group-qrcode">/wechat-group-qrcode</a></dd></dl>`;
+  } catch (error) {
+    if (error instanceof HttpError && error.status !== 404) throw error;
+  }
+  return htmlPage('R2 管理后台', `${notice}<section class="card"><h1>R2 管理后台</h1><form method="post" action="/admin/logout"><input type="hidden" name="csrf_token" value="${csrf}"><button type="submit">退出登录</button></form></section><section class="download-section"><h2>微信群二维码</h2><article class="card">${qrCurrent}<form method="post" action="/admin/wechat-group-qrcode/upload" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="${csrf}"><input type="file" name="image" accept="image/png,image/jpeg,image/gif,image/webp" required><p class="muted">支持 PNG、JPG、GIF、WebP，文件大小不超过 5 MiB。</p><button type="submit">上传并发布</button></form></article></section><section class="download-section"><h2>软件发布控制</h2><div class="admin-grid">${cards.join('')}</div></section>`);
+}
+async function optionalAggregate(env, software, channel) {
+  try { return await aggregate(env, software, channel); }
+  catch (error) {
+    if (error instanceof HttpError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+async function renderLoginPage(env, request, message = '', status = 200) {
+  const token = env.ADMIN_SESSION_SECRET ? await loginCsrfToken(request, env) : '';
+  return htmlPage('管理员登录', `<section class="card narrow"><h1>管理员登录</h1>${message ? `<p class="error">${escapeHtml(message)}</p>` : ''}<form method="post" action="/admin/login"><input type="hidden" name="csrf_token" value="${escapeHtml(token)}"><label>密码 <input type="password" name="password" autocomplete="current-password" required></label><button type="submit">登录</button></form></section>`, { status });
 }
 
 async function renderLandingPage(env) {
   const home = String(env.JUAPI_HOME_URL || SITE_PROFILES.tokenrouter.origin).trim();
   const groups = await Promise.all(profiles().map(async (software) => { const result = await readDisplayMetadata(env, software); const files = Array.isArray(result.metadata?.files) ? result.metadata.files : []; const links = files.filter((file) => file?.site && file.platform && file.arch).map((file) => `<div class="platform-download"><span>${escapeHtml(`${friendlyPlatform(file.platform)} ${friendlyArch(file.arch)}`)}</span><a href="/download/${encodeURIComponent(software.id)}/${encodeURIComponent(file.site)}/${encodeURIComponent(file.platform)}/${encodeURIComponent(file.arch)}">下载</a></div>`).join(''); return `<article class="download-group"><div><p class="eyebrow">Software</p><h3>${escapeHtml(software.displayName)}</h3><p class="muted">发布日期 ${escapeHtml(formatDate(result.metadata?.generated_at))}</p></div><a href="/software/${encodeURIComponent(software.id)}">详情</a><div class="platform-list">${links || '<p class="muted">暂无可展示的下载平台。</p>'}</div>${result.error ? `<p class="notice">${escapeHtml(result.error)}</p>` : ''}</article>`; }));
+  if (groups.every((group) => group.includes('暂无可展示的下载平台。'))) throw new HttpError(404, 'Downloads metadata not found.');
   return htmlPage('JuAPI 软件下载中心', `<section class="hero"><p class="eyebrow">JuAPI 分发服务</p><h1><span>JuAPI</span> 下载中心</h1><a class="button" href="${escapeHtml(home)}">前往 JuAPI</a></section><section class="download-section"><p class="eyebrow">Downloads</p><h2>可用下载</h2><div class="download-group-grid">${groups.join('')}</div></section>`);
 }
-async function renderSoftwarePage(env, software) { const result = await readDisplayMetadata(env, software); const files = Array.isArray(result.metadata?.files) ? result.metadata.files : []; const cards = files.map((file) => `<article class="file-card"><h3>${escapeHtml(`${siteLabel(file.site)} · ${friendlyPlatform(file.platform)} ${friendlyArch(file.arch)}`)}</h3><p>${escapeHtml(file.filename || '安装包')}</p><p class="muted">${escapeHtml(formatBytes(file.size))} · SHA-256 ${escapeHtml(String(file.sha256 || '').slice(0, 16))}</p><a href="/download/${encodeURIComponent(software.id)}/${encodeURIComponent(file.site)}/${encodeURIComponent(file.platform)}/${encodeURIComponent(file.arch)}">下载安装器</a></article>`).join(''); return htmlPage(software.title, `<section class="hero"><p class="eyebrow">${escapeHtml(software.displayName)} 官方下载</p><h1>${escapeHtml(software.displayName)} 下载</h1><p>${escapeHtml(software.subtitle)}</p><span class="release-pill">公开版本 <strong>${escapeHtml(result.metadata?.release_id || '未知')}</strong></span></section><section class="download-section"><h2>可用下载</h2><div class="grid">${cards || `<article class="empty-state"><h3>暂无安装包</h3><p>${escapeHtml(result.error || '这个公开版本暂时没有可下载文件。')}</p></article>`}</div></section><p class="footer-link"><a href="/downloads">软件下载中心</a> · <a href="/api/${encodeURIComponent(software.id)}/public">公开元数据</a> · <a href="/admin">管理后台</a></p>`); }
+async function renderSoftwarePage(env, software) { const result = await readDisplayMetadata(env, software); if (result.missing) throw new HttpError(404, 'Downloads metadata not found.'); const files = Array.isArray(result.metadata?.files) ? result.metadata.files : []; const cards = files.map((file) => `<article class="file-card"><h3>${escapeHtml(`${siteLabel(file.site)} · ${friendlyPlatform(file.platform)} ${friendlyArch(file.arch)}`)}</h3><p>${escapeHtml(file.filename || '安装包')}</p><p class="muted">${escapeHtml(formatBytes(file.size))} · SHA-256 ${escapeHtml(String(file.sha256 || '').slice(0, 16))}</p><a href="/download/${encodeURIComponent(software.id)}/${encodeURIComponent(file.site)}/${encodeURIComponent(file.platform)}/${encodeURIComponent(file.arch)}">下载安装器</a></article>`).join(''); return htmlPage(software.title, `<section class="hero"><p class="eyebrow">${escapeHtml(software.displayName)} 官方下载</p><h1>${escapeHtml(software.displayName)} 下载</h1><p>${escapeHtml(software.subtitle)}</p><span class="release-pill">公开版本 <strong>${escapeHtml(result.metadata?.release_id || '未知')}</strong></span></section><section class="download-section"><h2>可用下载</h2><div class="grid">${cards || `<article class="empty-state"><h3>暂无安装包</h3><p>${escapeHtml(result.error || '这个公开版本暂时没有可下载文件。')}</p></article>`}</div></section><p class="footer-link"><a href="/downloads">软件下载中心</a> · <a href="/api/${encodeURIComponent(software.id)}/public">公开元数据</a> · <a href="/admin">管理后台</a></p>`); }
 async function renderAdmin(env, request) { if (!await verifySession(request, env)) return htmlPage('管理员登录', `<section class="card narrow"><h1>管理员登录</h1><form method="post" action="/admin/login"><label>密码 <input type="password" name="password" autocomplete="current-password" required></label><button type="submit">登录</button></form></section>`); const cards = await Promise.all(profiles().map(async (software) => { const [latest, pub, prev, releases] = await Promise.all([state(env, software, 'latest'), state(env, software, 'public'), state(env, software, 'previous'), listReleases(env, software)]); const base = software.id === DEFAULT_SOFTWARE_ID ? '/admin/public' : `/admin/${encodeURIComponent(software.id)}/public`; return `<article class="card"><h3>${escapeHtml(software.displayName)}</h3><dl><dt>最新版本</dt><dd>${escapeHtml(releaseId(latest) || '缺失')}</dd><dt>公开版本</dt><dd>${escapeHtml(releaseId(pub) || '缺失')}</dd><dt>上一版本</dt><dd>${escapeHtml(releaseId(prev) || '缺失')}</dd></dl><form method="post" action="${base}/lock-previous"><button ${releaseId(prev) ? '' : 'disabled'}>锁定到上一公开版本</button></form><form method="post" action="${base}/unlock"><button>解除锁定并发布最新版本</button></form><form method="post" action="${base}/set"><select name="release_id" required>${releases.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join('')}</select><button ${releases.length ? '' : 'disabled'}>锁定所选版本</button></form></article>`; })); return htmlPage('R2 管理后台', `<section class="card"><h1>R2 管理后台</h1><form method="post" action="/admin/logout"><button>退出登录</button></form></section><section class="download-section"><h2>微信群二维码</h2><form method="post" action="/admin/wechat-group-qrcode/upload" enctype="multipart/form-data"><input type="file" name="image" accept="image/png,image/jpeg,image/gif,image/webp" required><button>上传并发布</button></form></section><section class="download-section"><h2>软件发布控制</h2><div class="admin-grid">${cards.join('')}</div></section>`); }
 async function listReleases(env, software) { if (typeof env.DOWNLOADS.list !== 'function') return []; let result; try { result = await env.DOWNLOADS.list({ prefix: objectKey(env, software, 'releases/'), delimiter: '/', limit: 1000 }); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); } const start = objectKey(env, software, 'releases/'); return (result.delimitedPrefixes || []).map((value) => String(value).slice(start.length).replace(/\/$/, '')).filter(Boolean).sort().reverse(); }
 function adminPage(message) { return htmlPage('管理员登录', `<section class="card narrow"><h1>管理员登录</h1><p class="error">${escapeHtml(message)}</p><form method="post" action="/admin/login"><label>密码 <input type="password" name="password" required></label><button>登录</button></form></section>`); }
@@ -362,7 +596,7 @@ function adminPage(message) { return htmlPage('管理员登录', `<section class
 function json(payload, status = 200) { return new Response(JSON.stringify(payload, null, 2) + '\n', { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } }); }
 function redirect(location, cookie = '') { const headers = new Headers({ location, 'cache-control': 'no-store' }); if (cookie) headers.set('set-cookie', cookie); return new Response(null, { status: 303, headers }); }
 function redirectFound(location) { return new Response(null, { status: 302, headers: { location, 'cache-control': 'no-store' } }); }
-function htmlPage(title, body) { return new Response(`<!doctype html><html lang="zh-Hans"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><link rel="icon" type="image/png" href="${BRAND_ASSETS.favicon}"><style>body{font-family:system-ui,sans-serif;margin:0;background:#f7f9ff;color:#101828}main{max-width:1120px;margin:auto;padding:2rem}.hero,.card,.file-card,.download-group{padding:1.25rem;border:1px solid #d9ddf5;border-radius:20px;background:#fff;box-shadow:0 10px 30px #66708522}.download-group-grid,.grid,.admin-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem}.platform-list{display:grid;gap:.5rem}.platform-download{display:flex;justify-content:space-between;gap:1rem;padding:.75rem;border:1px solid #e5e7eb;border-radius:12px}.button,button,a{color:#4f46e5;font-weight:700}.button,button{padding:.65rem 1rem;border-radius:999px;border:0;background:#4f46e5;color:white;cursor:pointer}.muted{color:#667085}.narrow{max-width:440px;margin:10vh auto}label,select,input{display:block;margin:.5rem 0;padding:.65rem;width:100%;box-sizing:border-box}.eyebrow{color:#4f46e5;font-weight:800}.error{color:#b42318}</style></head><body><main>${body}</main></body></html>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } }); }
+function htmlPage(title, body, { status = 200, headers: extraHeaders = undefined } = {}) { return new Response(`<!doctype html><html lang="zh-Hans"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><link rel="icon" type="image/png" href="${BRAND_ASSETS.favicon}"><style>body{font-family:system-ui,sans-serif;margin:0;background:#f7f9ff;color:#101828}main{max-width:1120px;margin:auto;padding:2rem}.hero,.card,.file-card,.download-group{padding:1.25rem;border:1px solid #d9ddf5;border-radius:20px;background:#fff;box-shadow:0 10px 30px #66708522}.download-group-grid,.grid,.admin-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem}.platform-list{display:grid;gap:.5rem}.platform-download{display:flex;justify-content:space-between;gap:1rem;padding:.75rem;border:1px solid #e5e7eb;border-radius:12px}.button,button,a{color:#4f46e5;font-weight:700}.button,button{padding:.65rem 1rem;border-radius:999px;border:0;background:#4f46e5;color:white;cursor:pointer}.muted{color:#667085}.narrow{max-width:440px;margin:10vh auto}label,select,input{display:block;margin:.5rem 0;padding:.65rem;width:100%;box-sizing:border-box}.eyebrow{color:#4f46e5;font-weight:800}.error{color:#b42318}.notice{color:#067647}</style></head><body><main>${body}</main></body></html>`, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...(extraHeaders || {}) } }); }
 function escapeHtml(value) { return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'); }
 function formatDate(value) { const date = new Date(String(value || '')); return Number.isNaN(date.getTime()) ? '未提供' : date.toISOString().slice(0, 10); }
 function formatBytes(value) { const number = Number(value); if (!Number.isFinite(number) || number < 0) return '大小未知'; const units = ['B', 'KB', 'MB', 'GB']; let current = number; let unit = 0; while (current >= 1024 && unit < units.length - 1) { current /= 1024; unit += 1; } return `${current.toFixed(unit ? 1 : 0)} ${units[unit]}`; }
