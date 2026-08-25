@@ -137,7 +137,17 @@ export async function forwardToDownloadService(request, env = {}) {
   const downstreamUrl = new URL(request.url);
   downstreamUrl.pathname = routeMetadata.downstream_path;
 
-  const downstreamRequest = new Request(downstreamUrl, request);
+  // The public mounted landing page is downstream-owned HTML, not the
+  // NewAPI SPA. Build this one request from a fixed allowlist so browser
+  // credentials and arbitrary client headers cannot cross the binding. Other
+  // mounted/direct routes retain their existing method/body/header contract
+  // because admin/session and upload flows are owned by the downstream Worker.
+  const downstreamRequest = isCredentialFreeLandingRequest(request, routeMetadata)
+    ? new Request(downstreamUrl, {
+      method: 'GET',
+      headers: { accept: 'text/html' },
+    })
+    : new Request(downstreamUrl, request);
   if (routeMetadata.mode === 'mounted') {
     downstreamRequest.headers.set(
       'x-forwarded-prefix',
@@ -147,6 +157,12 @@ export async function forwardToDownloadService(request, env = {}) {
     downstreamRequest.headers.delete('x-forwarded-prefix');
   }
   return env.DOWNLOADS_SERVICE.fetch(downstreamRequest);
+}
+
+function isCredentialFreeLandingRequest(request, routeMetadata) {
+  return request.method === 'GET'
+    && routeMetadata.mode === 'mounted'
+    && routeMetadata.downstream_path === '/';
 }
 
 // The downstream landing page is the only public catalog authority. Keep the

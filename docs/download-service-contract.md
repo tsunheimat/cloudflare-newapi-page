@@ -13,11 +13,11 @@ Phase 2A 只读核对了 sibling checkout `/mnt/vibe-coding-share/tokenrouter/cl
 
 ## Route surface
 
-除精确的浏览器 SPA GET 页面外，所有 route 都可通过 mounted `/downloads/...` 访问；下表的 direct route 也会由 gateway 直接保留，以支持 downstream HTML 的 root-relative link、asset 和 form action。
+除 `/downloads/software/:softwareId` detail SPA 外，所有 route 都可通过 mounted `/downloads/...` 访问；下表的 direct route 也会由 gateway 直接保留，以支持 downstream root HTML 的 root-relative link、asset 和 form action。
 
 | Family | Downstream route | Source methods | Gateway mode |
 | --- | --- | --- | --- |
-| Landing | `/` | GET | Worker-only catalog discovery from `/api/downloads/catalog`; browser `/downloads` is the SPA |
+| Landing | `/` | GET | Worker-only catalog discovery and exact browser GET `/downloads`; downstream root HTML is returned through the binding |
 | Software page | `/software/:software` | GET | direct + mounted |
 | Static assets | `/assets/*` | GET | direct + mounted |
 | Default metadata | `/api/latest`, `/api/public`, `/api/previous` | GET | direct + mounted |
@@ -37,9 +37,10 @@ Reviewed downstream source 没有显式 HEAD handler；gateway 不把 HEAD 改�
 
 Route matcher 使用完整 path segment。`/administrator`、`/assets-old/*`、`/downloads-old`、`/api/latest-news`、`/api/publicity` 和 `/api/content/*` 不会送到 download Worker。
 
-The gateway owns only the exact GET SPA pages `/downloads` and
-`/downloads/software/:softwareId`. All other mounted `/downloads/*` paths keep
-the forwarding contract below. `/api/downloads/catalog` makes a fixed,
+The gateway owns only the detail SPA page `/downloads/software/:softwareId`.
+Exact GET `/downloads` forwards the downstream root HTML through the existing
+service binding. All other mounted `/downloads/*` paths keep the forwarding
+contract below. `/api/downloads/catalog` makes a fixed,
 credential-free Worker-to-Worker GET of downstream `/` and extracts software
 IDs from its public `/software/:softwareId` links. Discovery has one 5-second
 deadline spanning binding fetch and streamed body reads, requires `text/html`,
@@ -51,9 +52,13 @@ and constructs download links through `/downloads/download/...`.
 
 ## Request contract
 
-- Mounted `/downloads` 映射到 downstream `/`；`/downloads/<path>` 映射到 `/<path>`，但精确 GET SPA 页面除外。
+- Exact GET mounted `/downloads` 映射到 downstream `/` through a fixed
+  `GET` request with only `Accept: text/html`; browser cookies, authorization,
+  API keys, Worker secrets, and arbitrary client headers are not forwarded.
+- `/downloads/<path>` 映射到 `/<path>`，但 `/downloads/software/:softwareId`
+  detail SPA 页面除外。
 - Mounted request 强制设置 `x-forwarded-prefix: /downloads`；direct request 删除客户端传入的同名 header。
-- Method、query string、body bytes、`Content-Type`、`Cookie` 与其他 request headers 由 `new Request(downstreamUrl, request)` 保留。
+- 除 root GET 外，method、query string、body bytes、`Content-Type`、`Cookie` 与其他 request headers 由 `new Request(downstreamUrl, request)` 保留。
 - Gateway 不解析 admin password/session、multipart upload 或 publish/rollback form，也不直接调用 R2。
 
 ## Response contract

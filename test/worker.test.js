@@ -581,19 +581,65 @@ test('SPA routes pass through the asset binding with security headers', async ()
   }
 });
 
-test('Downloads SPA routes mount the shared Worker shell while legacy service routes fail closed', async () => {
-  for (const path of ['/downloads', '/downloads/software/codex-installer']) {
-    const response = await fetchWorker(path, fixtureEnv);
-    assert.equal(response.status, 200);
-    assert.equal(await response.text(), `asset:${path}`);
-  }
+test('exact GET /downloads forwards the downstream root with both configured groups and no browser credentials', async () => {
+  let observed;
+  const downstreamRoot = `<!doctype html><html><head><title>JuAPI 软件下载中心</title><link rel="icon" href="/assets/favicon.png"></head><body>
+    <h1>JuAPI 下载中心</h1><div class="download-group-grid">
+      <article class="download-group"><h3>Codex 安装器</h3><a href="/software/codex-installer">详情</a><a href="/download/codex-installer/tokenrouter/windows/x64">下载</a></article>
+      <article class="download-group"><h3>Codex 聊天记录迁移器</h3><a href="/software/codex-chat-record-migrator">详情</a><a href="/download/codex-chat-record-migrator/tokenrouter/windows/x64">下载</a></article>
+    </div></body></html>`;
+  const response = await fetchWorker('/downloads?probe=root', {
+    ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'staging-service-binding',
+    DOWNLOADS_SERVICE: {
+      fetch: async (request) => {
+        observed = {
+          method: request.method,
+          pathname: new URL(request.url).pathname,
+          search: new URL(request.url).search,
+          headers: Object.fromEntries(request.headers),
+        };
+        return new Response(downstreamRoot, {
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        });
+      },
+    },
+  }, {
+    headers: {
+      cookie: 'hostile=session',
+      authorization: 'Bearer hostile',
+      'x-api-key': 'hostile',
+      'x-worker-secret': 'must-not-forward',
+      'x-forwarded-prefix': '/spoofed',
+    },
+  });
 
-  const response = await fetchWorker('/downloads/admin', fixtureEnv);
-  const body = await response.json();
-  assert.equal(response.status, 503);
-  assert.equal(body.error.details.transport, 'cloudflare-service-binding');
-  assert.equal(body.error.details.phase, 'disabled');
-  assert.deepEqual(body.error.details.capabilities, [
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.match(body, /Codex 安装器/);
+  assert.match(body, /Codex 聊天记录迁移器/);
+  assert.match(body, /href="\/assets\/favicon\.png"/);
+  assert.match(body, /href="\/software\/codex-installer"/);
+  assert.match(body, /href="\/download\/codex-chat-record-migrator\/tokenrouter\/windows\/x64"/);
+  assert.deepEqual(observed, {
+    method: 'GET',
+    pathname: '/',
+    search: '?probe=root',
+    headers: { accept: 'text/html', 'x-forwarded-prefix': '/downloads' },
+  });
+});
+
+test('Downloads software detail keeps the shared Worker shell while legacy service routes fail closed', async () => {
+  const response = await fetchWorker('/downloads/software/codex-installer', fixtureEnv);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'asset:/downloads/software/codex-installer');
+
+  const legacyResponse = await fetchWorker('/downloads/admin', fixtureEnv);
+  const legacyBody = await legacyResponse.json();
+  assert.equal(legacyResponse.status, 503);
+  assert.equal(legacyBody.error.details.transport, 'cloudflare-service-binding');
+  assert.equal(legacyBody.error.details.phase, 'disabled');
+  assert.deepEqual(legacyBody.error.details.capabilities, [
     'downloads',
     'admin',
     'r2',

@@ -126,7 +126,7 @@ test('Phase 2B probe is loopback-only and contains no mutating HTTP method', asy
   assert.doesNotMatch(source, /method:\s*['"](?:POST|PUT|PATCH|DELETE)['"]/);
 });
 
-test('remote and production download probes verify the Worker SPA and real catalog chain', async () => {
+test('remote and production download probes verify the downstream root, detail SPA, and real catalog chain', async () => {
   const remote = await readFile(
     new URL('../scripts/phase2b-readonly-probe.mjs', import.meta.url),
     'utf8',
@@ -136,6 +136,10 @@ test('remote and production download probes verify the Worker SPA and real catal
     'utf8',
   );
   for (const source of [remote, production]) {
+    assert.match(source, /<title>JuAPI 软件下载中心<\/title>/);
+    assert.match(source, /Codex 安装器/);
+    assert.match(source, /Codex 聊天记录迁移器/);
+    assert.match(source, /download-group-grid/);
     assert.match(source, /<main id=\\?"main-content/);
     assert.match(source, /\/static\/app\.js/);
     assert.match(source, /\/api\/downloads\/catalog/);

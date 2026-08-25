@@ -397,7 +397,10 @@ async function renderDownloadSoftware(catalog, softwareId) {
   const content = node('div', { class: 'downloads-page downloads-detail-page' });
   const hero = node('section', { class: 'downloads-hero downloads-detail-hero' });
   hero.append(
-    node('a', { class: 'downloads-back-link', href: '/downloads', 'data-link': '' }, '← 全部软件'),
+    // The mounted downloads root is downstream-owned HTML. A normal browser
+    // navigation is required here so the detail SPA does not recreate a
+    // client-only root shell at `/downloads`.
+    node('a', { class: 'downloads-back-link', href: '/downloads' }, '← 全部软件'),
     node('div', { class: 'eyebrow' }, 'PUBLIC RELEASE'),
     node('h1', {}, software.label || humanizeSoftwareId(software.id)),
     node('p', { class: 'downloads-lead' }, `软件 ID：${software.id}`),

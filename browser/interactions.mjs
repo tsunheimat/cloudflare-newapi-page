@@ -508,7 +508,36 @@ test('Pricing language switching changes the mounted runtime and persists anonym
   await context.close();
 });
 
-test('[mocked/source evidence] Downloads SPA discovers software, renders public metadata, and links through mounted service routes', { timeout: 30_000 }, async () => {
+test('[mocked/source evidence] mounted Downloads root renders both downstream software groups and usable root-relative links', { timeout: 25_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await newPage(context);
+  await page.route(`${baseUrl}/downloads`, async (route) => {
+    assert.equal(route.request().headers().cookie, 'hostile-session=must-not-forward');
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      body: `<!doctype html><html><head><title>JuAPI 软件下载中心</title><link rel="icon" href="/assets/favicon.png"></head><body>
+        <h1>JuAPI 软件下载中心</h1><div class="download-group-grid">
+          <article class="download-group"><h3>Codex 安装器</h3><a href="/software/codex-installer">详情</a><a href="/download/codex-installer/tokenrouter/windows/x64">下载</a></article>
+          <article class="download-group"><h3>Codex 聊天记录迁移器</h3><a href="/software/codex-chat-record-migrator">详情</a><a href="/download/codex-chat-record-migrator/tokenrouter/windows/x64">下载</a></article>
+        </div></body></html>`,
+    });
+  });
+  await context.addCookies([
+    { name: 'hostile-session', value: 'must-not-forward', domain: '127.0.0.1', path: '/' },
+  ]);
+  await page.goto(`${baseUrl}/downloads`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: 'JuAPI 软件下载中心', exact: true }).waitFor();
+  assert.equal(await page.locator('.download-group').count(), 2);
+  assert.equal(await page.getByRole('heading', { name: 'Codex 安装器', exact: true }).count(), 1);
+  assert.equal(await page.getByRole('heading', { name: 'Codex 聊天记录迁移器', exact: true }).count(), 1);
+  assert.equal(await page.locator('link[href="/assets/favicon.png"]').count(), 1);
+  assert.equal(await page.locator('a[href="/software/codex-installer"]').count(), 1);
+  assert.equal(await page.locator('a[href="/download/codex-chat-record-migrator/tokenrouter/windows/x64"]').count(), 1);
+  await context.close();
+});
+
+test('[mocked/source evidence] Downloads detail SPA renders public metadata and links through mounted service routes', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   await context.addCookies([
     { name: 'hostile-session', value: 'must-not-forward', domain: '127.0.0.1', path: '/' },
@@ -530,17 +559,6 @@ test('[mocked/source evidence] Downloads SPA discovers software, renders public 
       details: { channel: 'stable' },
     }],
   };
-  await page.route('**/api/downloads/catalog', async (route) => {
-    observed.push({ path: new URL(route.request().url()).pathname, headers: route.request().headers() });
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ success: true, data: { software: [
-        { id: 'codex-installer' },
-        { id: 'codex-chat-record-migrator' },
-      ] } }),
-    });
-  });
   await page.route('**/downloads/api/codex-installer/public', async (route) => {
     observed.push({ path: new URL(route.request().url()).pathname, headers: route.request().headers() });
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(metadata) });
@@ -549,14 +567,7 @@ test('[mocked/source evidence] Downloads SPA discovers software, renders public 
     observed.push({ path: new URL(route.request().url()).pathname, headers: route.request().headers() });
     await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ success: false, error: { message: 'public metadata unavailable' } }) });
   });
-  await page.goto(`${baseUrl}/downloads`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('heading', { name: '软件下载中心', exact: true }).waitFor();
-  assert.equal(await page.locator('.downloads-software-card').count(), 2);
-  assert.equal(await page.locator('.downloads-card-status--error').count(), 1);
-  assert.equal(await page.locator('.downloads-card-targets').first().textContent(), 'windows · x64');
-  assert.ok(observed.every(({ headers }) => !headers.cookie && !headers.authorization));
-
-  await page.locator('.downloads-software-card').first().click();
+  await page.goto(`${baseUrl}/downloads/software/codex-installer`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('heading', { name: 'Codex Installer', exact: true }).waitFor();
   await page.getByText('JuAPI-CodexSetup.exe', { exact: true }).waitFor();
   assert.equal(await page.getByText('JuAPI-CodexSetup.exe', { exact: true }).count(), 1);
@@ -564,6 +575,7 @@ test('[mocked/source evidence] Downloads SPA discovers software, renders public 
   assert.equal(await page.getByText('SHA-256', { exact: true }).count(), 1);
   assert.equal(await page.locator('a[href="/downloads/download/codex-installer/tokenrouter/windows/x64"]').count(), 1);
   assert.equal(await page.getByText('public release notes', { exact: false }).count(), 1);
+  assert.ok(observed.every(({ headers }) => !headers.cookie && !headers.authorization));
   await context.close();
 });
 

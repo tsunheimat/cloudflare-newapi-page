@@ -72,10 +72,13 @@ test('Pricing presentation mounts one canonical runtime at both public URLs', as
   assert.doesNotMatch(app, /legacyPricing|pricing-page-intro|renderPricingProviders/);
 });
 
-test('Downloads presentation has discoverable catalog and detail routes without a fixed software projection', async () => {
+test('Downloads presentation keeps the downstream-owned root and a separate detail SPA', async () => {
   const [app, styles, index] = await sources;
-  assert.match(index, /href="\/downloads" data-link data-nav="downloads"/);
+  assert.match(index, /href="\/downloads" data-nav="downloads"/);
+  assert.doesNotMatch(index, /href="\/downloads" data-link/);
   assert.match(app, /function isDownloadsPath\(path\)/);
+  assert.match(app, /function downloadSoftwareId\(path\)/);
+  assert.match(app, /class: 'downloads-back-link', href: '\/downloads' \}/);
   assert.match(app, /\/api\/downloads\/catalog/);
   assert.match(app, /\/downloads\/api\/\$\{encoded\}\/public/);
   assert.match(app, /\/downloads\/download\/\$\{encodeURIComponent\(softwareId\)\}/);

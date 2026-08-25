@@ -105,7 +105,7 @@ await probe({
   path: '/downloads?probe=production-downloads',
   statuses: [200],
   contentType: 'text/html',
-  textIncludes: ['<main id="main-content"', '/static/app.js'],
+  textIncludes: ['<title>JuAPI 软件下载中心</title>', 'Codex 安装器', 'Codex 聊天记录迁移器', 'download-group-grid'],
 });
 
 const catalog = await probe({

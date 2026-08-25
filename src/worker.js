@@ -313,8 +313,9 @@ function normalizePath(pathname) {
 }
 
 function isDownloadsSpaRoute(pathname) {
-  return pathname === '/downloads'
-    || /^\/downloads\/software\/[a-z0-9][a-z0-9-]{0,62}$/.test(pathname);
+  // The mounted root is downstream-owned HTML; only software detail pages
+  // remain on this Worker's client-side presentation.
+  return /^\/downloads\/software\/[a-z0-9][a-z0-9-]{0,62}$/.test(pathname);
 }
 
 function decodeDocSlug(rawSlug) {
