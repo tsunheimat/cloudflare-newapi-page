@@ -79,6 +79,14 @@ const publicFile = {
   sha256: 'a'.repeat(64), r2_key: 'codex-install/releases/v1/setup.exe', content_type: 'application/octet-stream',
 };
 const latestFile = { ...publicFile, r2_key: 'codex-install/releases/v2/setup.exe', filename: 'setup-latest.exe' };
+const legacyMigratorFilename = 'Codex聊天记录迁移工具-linux-gui.tar.gz';
+const legacyMigratorFile = {
+  site: 'tokenrouter', platform: 'linux', arch: 'x64', filename: legacyMigratorFilename, size: 24,
+  sha256: 'b'.repeat(64),
+  r2_key: `codex-chat-record-migrator/releases/v0.1.1/tokenrouter/linux/x64/${legacyMigratorFilename}`,
+  content_type: 'application/gzip',
+  url: 'https://attacker.invalid/untrusted-metadata-url',
+};
 
 function env(overrides = {}) {
   const r2 = new MockR2({
@@ -102,6 +110,15 @@ function env(overrides = {}) {
     CODEX_CHAT_RECORD_MIGRATOR_R2_PUBLIC_BASE_URL: 'https://tokenrouter-r2.wdtokenacc.top',
     DOWNLOADS: r2, ...overrides,
   };
+}
+
+function installMigratorMetadata(runtime, file = legacyMigratorFile) {
+  const aggregate = { release_id: 'v0.1.1', generated_at: '2026-08-26T00:00:00Z', files: [file] };
+  runtime.DOWNLOADS.objects.set('codex-chat-record-migrator/metadata/public.json', aggregate);
+  runtime.DOWNLOADS.objects.set('codex-chat-record-migrator/metadata/latest.json', aggregate);
+  runtime.DOWNLOADS.objects.set('codex-chat-record-migrator/public/tokenrouter/linux/x64.json', file);
+  runtime.DOWNLOADS.objects.set('codex-chat-record-migrator/latest/tokenrouter/linux/x64.json', file);
+  return runtime;
 }
 
 async function get(path, runtime = env(), init) {
@@ -184,8 +201,53 @@ test('migrated public APIs read dynamic R2 metadata and direct/mounted targets a
   const redirect = await get('/download/latest/tokenrouter/windows/x64', runtime);
   assert.equal(redirect.status, 302);
   assert.equal(redirect.headers.get('location'), 'https://tokenrouter-r2.wdtokenacc.top/codex-install/releases/v2/setup.exe');
-}
-);
+});
+
+test('legacy migrator Unicode artifact filenames remain valid across public routes', async () => {
+  const runtime = installMigratorMetadata(env());
+  const expectedUrl = 'https://tokenrouter-r2.wdtokenacc.top/codex-chat-record-migrator/releases/v0.1.1/tokenrouter/linux/x64/Codex%E8%81%8A%E5%A4%A9%E8%AE%B0%E5%BD%95%E8%BF%81%E7%A7%BB%E5%B7%A5%E5%85%B7-linux-gui.tar.gz';
+
+  const publicResponse = await get('/api/codex-chat-record-migrator/public', runtime);
+  assert.equal(publicResponse.status, 200);
+  const metadata = await publicResponse.json();
+  assert.equal(metadata.files[0].filename, legacyMigratorFilename);
+  assert.equal(metadata.files[0].r2_key, legacyMigratorFile.r2_key);
+  assert.equal(metadata.files[0].url, expectedUrl);
+  assert.equal((await get('/downloads/api/codex-chat-record-migrator/public', runtime)).status, 200);
+
+  const softwarePage = await get('/software/codex-chat-record-migrator', runtime);
+  assert.equal(softwarePage.status, 200);
+  assert.match(await softwarePage.text(), new RegExp(legacyMigratorFilename));
+  assert.equal((await get('/downloads', runtime)).status, 200);
+
+  const redirect = await get('/download/codex-chat-record-migrator/tokenrouter/linux/x64', runtime);
+  assert.equal(redirect.status, 302);
+  assert.equal(redirect.headers.get('location'), expectedUrl);
+});
+
+test('artifact key validation rejects unsafe Unicode and path components', async () => {
+  const unsafeKeys = [
+    `/codex-chat-record-migrator/releases/v0.1.1/tokenrouter/linux/x64/${legacyMigratorFilename}`,
+    `codex-chat-record-migrator//releases/v0.1.1/tokenrouter/linux/x64/${legacyMigratorFilename}`,
+    `codex-chat-record-migrator/releases/../tokenrouter/linux/x64/${legacyMigratorFilename}`,
+    `codex-chat-record-migrator/releases/v0..1/tokenrouter/linux/x64/${legacyMigratorFilename}`,
+    `codex-chat-record-migrator/releases/v0.1.1/tokenrouter/版本/x64/${legacyMigratorFilename}`,
+    `codex-chat-record-migrator/releases/v0.1.1/tokenrouter/linux/x64\\${legacyMigratorFilename}`,
+    'codex-chat-record-migrator/releases/v0.1.1/tokenrouter/linux/x64/Codex聊天..tar.gz',
+    'codex-chat-record-migrator/releases/v0.1.1/tokenrouter/linux/x64/.',
+    'codex-chat-record-migrator/releases/v0.1.1/tokenrouter/linux/x64/..',
+    'codex-chat-record-migrator/releases/v0.1.1/tokenrouter/linux/x64/Codex聊\u0000天.tar.gz',
+    'codex-chat-record-migrator/releases/v0.1.1/tokenrouter/linux/x64/Codex聊\u0085天.tar.gz',
+    'codex-chat-record-migrator/releases/v0.1.1/tokenrouter/linux/x64/Codex聊\u2028天.tar.gz',
+  ];
+
+  for (const r2Key of unsafeKeys) {
+    const runtime = installMigratorMetadata(env(), { ...legacyMigratorFile, r2_key: r2Key });
+    const response = await get('/api/codex-chat-record-migrator/public', runtime);
+    assert.equal(response.status, 503, JSON.stringify(r2Key));
+    assert.doesNotMatch(await response.text(), /attacker\.invalid|escape/);
+  }
+});
 
 test('migrated routes prefer R2 and never call the rollback service binding', async () => {
   let called = false;

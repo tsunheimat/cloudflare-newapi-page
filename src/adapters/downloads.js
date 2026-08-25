@@ -13,6 +13,7 @@ const SOFTWARE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const RELEASE_ID = /^[A-Za-z0-9._-]+$/;
 const TARGET_PART = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const KEY_PART = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const ARTIFACT_FILENAME_PART = /^[^\p{C}\p{Zl}\p{Zp}/\\]+$/u;
 const FILENAME_PART = /^[^/\\\u0000-\u001f\u007f]+$/;
 const RESERVED = new Set(['admin', 'api', 'download', 'latest', 'previous', 'public', 'software', 'wechat-group-qrcode']);
 const QR_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -242,7 +243,7 @@ function validateArtifactMetadata(env, software, metadata, { invalidKeyStatus = 
     throw new HttpError(503, 'Downloads metadata is temporarily unavailable.');
   }
   const key = metadata.r2_key;
-  if (!safeObjectKey(key, `${prefix(env, software)}/`)) throw new HttpError(invalidKeyStatus, invalidKeyStatus === 404 ? 'Selected artifact has no valid r2_key.' : 'Downloads metadata is temporarily unavailable.');
+  if (!safeArtifactObjectKey(key, `${prefix(env, software)}/`)) throw new HttpError(invalidKeyStatus, invalidKeyStatus === 404 ? 'Selected artifact has no valid r2_key.' : 'Downloads metadata is temporarily unavailable.');
   return key;
 }
 function validateAggregateMetadata(env, software, metadata) {
@@ -277,6 +278,16 @@ function safeObjectKey(value, expectedPrefix = '') {
   if (value.startsWith('/') || !safeRelativePath(value)) return false;
   return value.slice(0, expectedPrefix.length) === expectedPrefix;
 }
+function safeArtifactObjectKey(value, expectedPrefix = '') {
+  if (typeof value !== 'string' || !value.startsWith(expectedPrefix) || value.length <= expectedPrefix.length) return false;
+  if (value.startsWith('/') || value.includes('\\') || value.includes('//')) return false;
+  const parts = value.split('/');
+  const filename = parts.pop();
+  return parts.every((part) => part && part !== '.' && part !== '..' && !part.includes('..') && KEY_PART.test(part))
+    && typeof filename === 'string' && filename.length <= 128
+    && filename.trim() === filename && filename !== '.' && filename !== '..'
+    && !filename.includes('..') && ARTIFACT_FILENAME_PART.test(filename);
+}
 function safeRelativePath(value) {
   if (typeof value !== 'string' || !value || value.startsWith('/') || value.includes('\\') || value.includes('//')) return false;
   const parts = value.split('/');
@@ -305,15 +316,22 @@ function safePublicUrl(candidate, base, key) {
   try {
     const parsed = new URL(String(candidate));
     if (parsed.protocol !== 'https:' || parsed.origin !== base.origin || parsed.username || parsed.password || parsed.search || parsed.hash) return '';
-    if (parsed.pathname !== `${base.pathname.replace(/\/+$/, '')}/${key}`) return '';
+    if (parsed.pathname !== new URL(derivedPublicUrl(base, key)).pathname) return '';
     return parsed.href;
   } catch { return ''; }
+}
+function derivedPublicUrl(base, key) {
+  const encodedKey = key.split('/').map(encodeR2PathPart).join('/');
+  return `${base.origin}${base.pathname.replace(/\/+$/, '')}/${encodedKey}`;
+}
+function encodeR2PathPart(part) {
+  return encodeURIComponent(part).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 function resolveDownloadUrl(env, software, metadata, key) {
   const base = publicBaseUrl(env, software);
   const trusted = safePublicUrl(metadata?.url, base, key);
   if (trusted) return trusted;
-  return base ? `${base.origin}${base.pathname.replace(/\/+$/, '')}/${key}` : '';
+  return base ? derivedPublicUrl(base, key) : '';
 }
 async function download(env, software, channel, wanted) {
   const metadata = await target(env, software, channel, wanted);
