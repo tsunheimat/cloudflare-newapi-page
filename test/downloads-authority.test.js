@@ -111,6 +111,33 @@ test('migrated routes prefer R2 and never call the rollback service binding', as
   assert.equal(called, false);
 });
 
+test('direct assets use NewAPI ASSETS with R2 authority and retain service fallback without R2', async () => {
+  let assetCalled = false;
+  let serviceCalled = false;
+  const runtime = env({
+    DOWNLOADS_INTEGRATION: 'staging-service-binding',
+    ASSETS: { fetch: async (request) => {
+      assetCalled = true;
+      return new Response(`local:${new URL(request.url).pathname}`, { headers: { 'content-type': 'text/plain' } });
+    } },
+    DOWNLOADS_SERVICE: { fetch: async () => {
+      serviceCalled = true;
+      return new Response('legacy');
+    } },
+  });
+  const local = await get('/assets/juapi-logo.png', runtime);
+  assert.equal(local.status, 200);
+  assert.equal(await local.text(), 'local:/assets/juapi-logo.png');
+  assert.equal(assetCalled, true);
+  assert.equal(serviceCalled, false);
+
+  delete runtime.DOWNLOADS;
+  const fallback = await get('/assets/juapi-logo.png', runtime);
+  assert.equal(fallback.status, 200);
+  assert.equal(await fallback.text(), 'legacy');
+  assert.equal(serviceCalled, true);
+});
+
 test('QR metadata is validated, redirects to the reviewed public base, and streams without a base', async () => {
   const redirect = await get('/wechat-group-qrcode/latest', env());
   assert.equal(redirect.status, 302);
@@ -157,6 +184,7 @@ test('authenticated QR upload validates bytes and writes object plus latest/prev
   assert.ok(runtime.DOWNLOADS.puts.some(({ key }) => key.startsWith('wechat-group-qrcode/images/')));
   assert.ok(runtime.DOWNLOADS.puts.some(({ key }) => key === 'wechat-group-qrcode/metadata/latest.json'));
   assert.ok(runtime.DOWNLOADS.puts.some(({ key }) => key === 'wechat-group-qrcode/state/previous.json'));
+  assert.equal(runtime.DOWNLOADS.objects.has('wechat-group-qrcode/state/pending.json'), false);
 });
 
 test('release lock action selects R2 state and writes public projections', async () => {
@@ -248,6 +276,74 @@ test('QR upload requires declared MIME agreement and rolls back a failed publica
   assert.doesNotMatch(await failedUpload.text(), /provider-secret-detail/);
   assert.deepEqual(JSON.parse(runtime.DOWNLOADS.objects.get('wechat-group-qrcode/metadata/latest.json')), originalLatest);
   assert.equal(runtime.DOWNLOADS.objects.get('wechat-group-qrcode/state/latest.json') ?? null, originalState);
+});
+
+test('QR partial commit plus rollback failure leaves a durable fence and no mixed read success', async () => {
+  const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+  const loginPage = await get('/admin', runtime);
+  const login = await get('/admin/login', runtime, {
+    method: 'POST',
+    body: new URLSearchParams({ password: 'correct', csrf_token: loginPageTextToken(await loginPage.text()) }),
+  });
+  const cookie = login.headers.get('set-cookie');
+  const csrf = sessionCsrfToken(cookie);
+  const originalPut = runtime.DOWNLOADS.put.bind(runtime.DOWNLOADS);
+  let stateWriteFailed = false;
+  runtime.DOWNLOADS.put = async (key, value, options) => {
+    if (key === 'wechat-group-qrcode/state/latest.json' && !stateWriteFailed) {
+      stateWriteFailed = true;
+      throw new Error('state-write-failure');
+    }
+    if (key === 'wechat-group-qrcode/metadata/latest.json' && stateWriteFailed) {
+      throw new Error('rollback-write-failure');
+    }
+    return originalPut(key, value, options);
+  };
+  const form = new FormData();
+  form.append('csrf_token', csrf);
+  form.append('image', new File([png], 'partial.png', { type: 'image/png' }));
+  const failed = await get('/admin/wechat-group-qrcode/upload', runtime, {
+    method: 'POST', headers: { cookie }, body: form,
+  });
+  assert.equal(failed.status, 503);
+  assert.doesNotMatch(await failed.text(), /state-write-failure|rollback-write-failure/);
+  const pending = runtime.DOWNLOADS.objects.get('wechat-group-qrcode/state/pending.json');
+  assert.ok(pending);
+  assert.equal(JSON.parse(pending).phase, 'pending');
+
+  const publicRead = await get('/wechat-group-qrcode/latest', runtime);
+  assert.equal(publicRead.status, 503);
+  assert.doesNotMatch(await publicRead.text(), /partial\.png|state-write-failure|rollback-write-failure/);
+  const apiRead = await get('/api/wechat-group-qrcode/latest', runtime);
+  assert.equal(apiRead.status, 503);
+  assert.doesNotMatch(await apiRead.text(), /partial\.png|state-write-failure|rollback-write-failure/);
+
+  const admin = await get('/admin', runtime, { headers: { cookie } });
+  assert.equal(admin.status, 200);
+  assert.match(admin.headers.get('content-type'), /^text\/html/);
+  const adminBody = await admin.text();
+  assert.match(adminBody, /R2 存储暂时不可用/);
+  assert.match(adminBody, /支持 PNG、JPG、GIF、WebP/);
+  assert.doesNotMatch(adminBody, /state-write-failure|rollback-write-failure|partial\.png/);
+});
+
+test('authenticated admin GET renders an HTML outage card instead of JSON when R2 reads fail', async () => {
+  const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+  const loginPage = await get('/admin', runtime);
+  const login = await get('/admin/login', runtime, {
+    method: 'POST',
+    body: new URLSearchParams({ password: 'correct', csrf_token: loginPageTextToken(await loginPage.text()) }),
+  });
+  const cookie = login.headers.get('set-cookie');
+  runtime.DOWNLOADS.get = async () => { throw new Error('provider-secret-detail'); };
+  const response = await get('/admin', runtime, { headers: { cookie } });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /^text\/html/);
+  const body = await response.text();
+  assert.match(body, /R2 管理后台/);
+  assert.match(body, /R2 存储暂时不可用/);
+  assert.match(body, /支持 PNG、JPG、GIF、WebP，文件大小不超过 5 MiB/);
+  assert.doesNotMatch(body, /provider-secret-detail|"success"\s*:|"error"\s*:/);
 });
 
 test('admin mutations reject missing CSRF and hostile origins before R2 writes', async () => {

@@ -18,6 +18,7 @@ const RESERVED = new Set(['admin', 'api', 'download', 'latest', 'previous', 'pub
 const QR_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const QR_EXTENSIONS = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
 const QR_MAX_BYTES = 5 * 1024 * 1024;
+const QR_MARKER_SCHEMA = 1;
 const BRAND_ASSETS = { wordmark: '/assets/juapi-logo.png', mark: '/assets/juapi-mark.png', favicon: '/assets/favicon.png' };
 const SITE_PROFILES = {
   tokenrouter: {
@@ -59,6 +60,7 @@ export function downloadsAuthorityStatus(env = {}) {
 export function isDownloadsAuthorityRoute(pathname) {
   if (pathname === '/downloads' || pathname.startsWith('/downloads/')) return true;
   if (pathname === '/admin' || pathname.startsWith('/admin/')) return true;
+  if (pathname === '/assets' || pathname.startsWith('/assets/')) return true;
   if (pathname === '/software' || pathname.startsWith('/software/')) return true;
   if (pathname === '/download' || pathname.startsWith('/download/')) return true;
   if (pathname === '/wechat-group-qrcode' || pathname.startsWith('/wechat-group-qrcode/')) return true;
@@ -74,17 +76,17 @@ export async function routeDownloads(request, env, pathname) {
   const normalized = normalizePath(localPath);
   const parts = normalized.split('/').filter(Boolean);
 
-  // The source Worker has no explicit HEAD handlers; retain its empty HTML
-  // 404 contract instead of turning a probe into a successful GET.
-  if (request.method === 'HEAD') return new Response(null, { status: 404, headers: { 'content-type': normalized.startsWith('/api/') ? 'application/json; charset=utf-8' : 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
-
   if (request.method === 'GET' && normalized === '/') return renderLandingPage(env);
-  if (request.method === 'GET' && (normalized === '/assets' || normalized.startsWith('/assets/'))) {
+  if (['GET', 'HEAD'].includes(request.method) && (normalized === '/assets' || normalized.startsWith('/assets/'))) {
     if (!env.ASSETS?.fetch) throw new HttpError(404, 'Asset not found.');
     const assetUrl = new URL(request.url);
     assetUrl.pathname = normalized;
     return env.ASSETS.fetch(new Request(assetUrl, request));
   }
+
+  // The source Worker has no explicit HEAD handlers; retain its empty HTML
+  // 404 contract instead of turning a probe into a successful GET.
+  if (request.method === 'HEAD') return new Response(null, { status: 404, headers: { 'content-type': normalized.startsWith('/api/') ? 'application/json; charset=utf-8' : 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
   if (request.method === 'GET' && normalized === '/wechat-group-qrcode') return serveQr(env);
   if (request.method === 'GET' && normalized === '/wechat-group-qrcode/latest') return serveQr(env);
   if (request.method === 'GET' && parts[0] === 'software' && parts.length === 2) return renderSoftwarePage(env, requireSoftware(parts[1]));
@@ -313,8 +315,117 @@ function validateQrMetadata(env, metadata) {
   if (contentType && !QR_TYPES.has(contentType)) throw new HttpError(400, 'Invalid WeChat group QR code content_type.');
   return { r2Key: key, contentType };
 }
+
+function qrIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.r2_key !== 'string') return null;
+  return {
+    asset_id: value.asset_id === undefined ? undefined : String(value.asset_id),
+    version_id: value.version_id === undefined ? undefined : String(value.version_id),
+    r2_key: value.r2_key,
+    sha256: value.sha256 === undefined ? undefined : String(value.sha256),
+    size: value.size === undefined ? undefined : Number(value.size),
+    content_type: value.content_type === undefined ? undefined : String(value.content_type),
+  };
+}
+
+function sameQrRecord(actual, expected) {
+  const left = qrIdentity(actual);
+  if (!left || !expected || typeof expected !== 'object' || left.r2_key !== expected.r2_key) return false;
+  for (const field of ['asset_id', 'version_id', 'sha256', 'size', 'content_type']) {
+    if (expected[field] !== undefined && String(left[field]) !== String(expected[field])) return false;
+  }
+  return true;
+}
+
+function sameLegacyQrRecord(left, right) {
+  const a = qrIdentity(left);
+  const b = qrIdentity(right);
+  if (!a || !b || a.r2_key !== b.r2_key) return false;
+  for (const field of ['asset_id', 'version_id', 'sha256', 'size', 'content_type']) {
+    if (a[field] !== undefined && b[field] !== undefined && String(a[field]) !== String(b[field])) return false;
+  }
+  return true;
+}
+
+function sameStoredValue(actual, expected) {
+  if (actual === null || expected === null) return actual === expected;
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+async function verifyQrImage(env, expected) {
+  if (!expected?.r2_key) throw new Error('QR image did not reconcile');
+  let object;
+  try { object = await env.DOWNLOADS.get(expected.r2_key); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
+  if (!object) throw new Error('QR image did not reconcile');
+  if (typeof object.arrayBuffer === 'function') {
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    if (expected.size !== undefined && bytes.length !== Number(expected.size)) throw new Error('QR image size did not reconcile');
+    if (expected.sha256 && await sha256(bytes) !== expected.sha256) throw new Error('QR image digest did not reconcile');
+  }
+}
+
+async function readQrConsistency(env) {
+  const pendingKey = qrKey(env, 'state/pending.json');
+  let marker = await readJson(env, pendingKey, { optional: true });
+  if (marker && (marker.schema_version !== QR_MARKER_SCHEMA || !['pending', 'committed'].includes(marker.phase))) {
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+  const [metadata, state] = await Promise.all([
+    readJson(env, qrKey(env, 'metadata/latest.json'), { optional: true }),
+    readJson(env, qrKey(env, 'state/latest.json'), { optional: true }),
+  ]);
+  if (marker?.phase === 'pending') {
+    let reconciled = false;
+    if (sameQrRecord(metadata, marker.expected) && sameQrRecord(state, marker.expected)) {
+      try {
+        await verifyQrImage(env, marker.expected);
+        await writeJson(env, pendingKey, { ...marker, phase: 'committed', reconciled_at: new Date().toISOString() });
+        marker = { ...marker, phase: 'committed' };
+        reconciled = true;
+      } catch {
+        // Keep the pending fence when the final object or marker cannot be
+        // verified. Callers must not serve a possibly mixed publication.
+      }
+    }
+    if (!reconciled) throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+  if (marker?.phase === 'committed' && (!sameQrRecord(metadata, marker.expected) || !sameQrRecord(state, marker.expected))) {
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+  if (marker?.phase === 'committed') {
+    try { await verifyQrImage(env, marker.expected); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
+  }
+  if (!marker && metadata && state && (metadata.r2_key || state.r2_key) && !sameLegacyQrRecord(metadata, state)) {
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+  return { metadata, state, marker };
+}
+
+async function verifyQrPublication(env, expected) {
+  const [metadata, state] = await Promise.all([
+    readJson(env, qrKey(env, 'metadata/latest.json')),
+    readJson(env, qrKey(env, 'state/latest.json')),
+  ]);
+  if (!sameQrRecord(metadata, qrIdentity(expected)) || !sameQrRecord(state, qrIdentity(expected))) {
+    throw new Error('QR publication did not reconcile');
+  }
+  await verifyQrImage(env, expected);
+}
+
+async function verifyQrRollback(env, snapshots) {
+  const [metadata, state, previous] = await Promise.all([
+    readJson(env, qrKey(env, 'metadata/latest.json'), { optional: true }),
+    readJson(env, qrKey(env, 'state/latest.json'), { optional: true }),
+    readJson(env, qrKey(env, 'state/previous.json'), { optional: true }),
+  ]);
+  return sameStoredValue(metadata, snapshots.latestMetadata)
+    && sameStoredValue(state, snapshots.latestState)
+    && sameStoredValue(previous, snapshots.previousState);
+}
+
 async function latestQr(env, optional = false) {
-  const metadata = await readJson(env, qrKey(env, 'metadata/latest.json'), { optional });
+  const consistent = await readQrConsistency(env);
+  const metadata = consistent.metadata ?? (optional ? null : await readJson(env, qrKey(env, 'metadata/latest.json')));
   if (!metadata) return null;
   return sanitizedQrMetadata(env, metadata);
 }
@@ -361,8 +472,21 @@ async function handleQrUpload(request, env) {
   const base = qrPublicBaseUrl(env);
   const metadata = { asset_id: 'wechat-group-qrcode', version_id: version, uploaded_at: new Date().toISOString(), source: 'admin-panel', filename, r2_key: key, ...(base ? { url: `${base.origin}${base.pathname.replace(/\/+$/, '')}/${key}` } : {}), sha256: digest, size: bytes.length, content_type: contentType };
   const snapshots = await snapshotQrState(env);
+  const pendingKey = qrKey(env, 'state/pending.json');
+  const marker = {
+    schema_version: QR_MARKER_SCHEMA,
+    phase: 'pending',
+    operation_id: version,
+    expected: qrIdentity(metadata),
+    rollback: {
+      metadata: qrIdentity(snapshots.latestMetadata),
+      state: qrIdentity(snapshots.latestState),
+      previous: qrIdentity(snapshots.previousState),
+    },
+  };
   const touched = [];
   try {
+    await writeJson(env, pendingKey, marker);
     touched.push(key);
     await putBinary(env, key, bytes, { httpMetadata: { contentType, cacheControl: 'public, max-age=31536000, immutable' } });
     if (snapshots.latestMetadata) {
@@ -373,8 +497,13 @@ async function handleQrUpload(request, env) {
     await writeJson(env, qrKey(env, 'metadata/latest.json'), metadata);
     touched.push(qrKey(env, 'state/latest.json'));
     await writeJson(env, qrKey(env, 'state/latest.json'), metadata);
+    await verifyQrPublication(env, metadata);
+    await writeJson(env, pendingKey, { ...marker, phase: 'committed' });
+    if (typeof env.DOWNLOADS.delete === 'function') {
+      try { await env.DOWNLOADS.delete(pendingKey); } catch { /* the verified marker is a safe reconciliation record */ }
+    }
   } catch {
-    await rollbackQrState(env, snapshots, touched, key);
+    await rollbackQrState(env, snapshots, touched, key, pendingKey);
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   }
   return redirect('/admin?updated=wechat-group-qrcode-uploaded');
@@ -388,13 +517,15 @@ async function putBinary(env, key, bytes, options) {
   }
 }
 async function snapshotQrState(env) {
-  const [latestMetadata, latestState, previousState] = await Promise.all([
-    latestQr(env, true), readJson(env, qrKey(env, 'state/latest.json'), { optional: true }),
-    readJson(env, qrKey(env, 'state/previous.json'), { optional: true }),
-  ]);
-  return { latestMetadata, latestState, previousState };
+  const consistent = await readQrConsistency(env);
+  const previousState = await readJson(env, qrKey(env, 'state/previous.json'), { optional: true });
+  return {
+    latestMetadata: consistent.metadata ? sanitizedQrMetadata(env, consistent.metadata) : null,
+    latestState: consistent.state,
+    previousState,
+  };
 }
-async function rollbackQrState(env, snapshots, touched, uploadedKey) {
+async function rollbackQrState(env, snapshots, touched, uploadedKey, pendingKey) {
   const originals = new Map([
     [qrKey(env, 'metadata/latest.json'), snapshots.latestMetadata],
     [qrKey(env, 'state/latest.json'), snapshots.latestState],
@@ -404,15 +535,26 @@ async function rollbackQrState(env, snapshots, touched, uploadedKey) {
     if (!originals.has(key)) continue;
     const original = originals.get(key);
     try {
-      if (original === null && typeof env.DOWNLOADS.delete === 'function') await env.DOWNLOADS.delete(key);
-      else if (original !== null) await writeJson(env, key, original);
+      if (original === null) {
+        if (typeof env.DOWNLOADS.delete !== 'function') throw new Error('delete unavailable');
+        await env.DOWNLOADS.delete(key);
+      } else await writeJson(env, key, original);
     } catch {
-      // Best-effort compensation; the request remains a generic 503 and the
-      // prior metadata/state pair is never reported as successfully replaced.
+      // Leave the durable pending marker in place when compensation is not
+      // verified. Reads and the admin UI then fail closed instead of exposing
+      // a metadata/state mix from this attempt.
     }
   }
   if (typeof env.DOWNLOADS.delete === 'function') {
     try { await env.DOWNLOADS.delete(uploadedKey); } catch { /* best effort */ }
+  }
+  try {
+    if (await verifyQrRollback(env, snapshots) && typeof env.DOWNLOADS.delete === 'function') {
+      await env.DOWNLOADS.delete(pendingKey);
+    }
+  } catch {
+    // A pending marker is intentionally retained unless the old pair is read
+    // back and the marker removal itself succeeds.
   }
 }
 
@@ -545,29 +687,48 @@ async function renderAdminV2(env, request) {
     return renderLoginPage(env, request);
   }
   const csrf = escapeHtml(session.csrf);
-  const cards = await Promise.all(profiles().map(async (software) => {
-    const [latest, publicState, previousState, latestMeta, publicMeta, releases] = await Promise.all([
-      state(env, software, 'latest'), state(env, software, 'public'), state(env, software, 'previous'),
-      optionalAggregate(env, software, 'latest'), optionalAggregate(env, software, 'public'),
-      listReleases(env, software),
-    ]);
-    const previousId = releaseId(previousState);
-    const actionBase = software.id === DEFAULT_SOFTWARE_ID ? '/admin/public' : `/admin/${encodeURIComponent(software.id)}/public`;
-    const options = releases.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join('');
-    return `<article class="card"><h3>${escapeHtml(software.displayName)}</h3><dl><dt>最新版本</dt><dd>${escapeHtml(releaseId(latest) || latestMeta?.release_id || '缺失')}</dd><dt>公开版本</dt><dd>${escapeHtml(releaseId(publicState) || publicMeta?.release_id || '缺失')}</dd><dt>公开版本锁定</dt><dd>${publicState?.locked ? '是' : '否'}</dd><dt>上一版本</dt><dd>${escapeHtml(previousId || '缺失')}</dd></dl><form method="post" action="${actionBase}/lock-previous"><input type="hidden" name="csrf_token" value="${csrf}"><button type="submit" ${previousId ? '' : 'disabled'}>锁定到上一公开版本</button></form><form method="post" action="${actionBase}/unlock"><input type="hidden" name="csrf_token" value="${csrf}"><button type="submit">解除锁定并发布最新版本</button></form><form method="post" action="${actionBase}/set"><input type="hidden" name="csrf_token" value="${csrf}"><select name="release_id" required>${options}</select><button type="submit" ${releases.length ? '' : 'disabled'}>锁定所选版本</button></form></article>`;
-  }));
+  const cards = await Promise.all(profiles().map(async (software) => renderAdminSoftwareCard(
+    software,
+    await readAdminSoftware(env, software),
+    csrf,
+  )));
   const updated = new URL(request.url).searchParams.get('updated');
   const notice = updated === 'wechat-group-qrcode-uploaded'
     ? '<p class="notice" role="status">微信群 QR 圖片已上傳並發布。</p>'
     : updated ? `<p class="notice" role="status">操作已完成：${escapeHtml(updated)}</p>` : '';
   let qrCurrent = '<p class="muted">尚未发布微信群二维码。</p>';
+  let qrStorageAvailable = true;
   try {
     const qr = await latestQr(env, true);
     if (qr) qrCurrent = `<img src="/wechat-group-qrcode" alt="当前微信群二维码" loading="lazy"><dl><dt>当前文件</dt><dd>${escapeHtml(qr.filename || '未命名')}</dd><dt>更新时间</dt><dd>${escapeHtml(qr.uploaded_at || '未知')}</dd><dt>大小</dt><dd>${escapeHtml(formatBytes(qr.size))}</dd><dt>稳定 URL</dt><dd><a href="/wechat-group-qrcode">/wechat-group-qrcode</a></dd></dl>`;
   } catch (error) {
-    if (error instanceof HttpError && error.status !== 404) throw error;
+    qrStorageAvailable = false;
+    qrCurrent = '<p class="error">R2 存储暂时不可用，当前二维码信息无法读取。</p><p class="muted">为避免发布出不一致状态，上传操作已暂时停用。</p>';
   }
-  return htmlPage('R2 管理后台', `${notice}<section class="card"><h1>R2 管理后台</h1><form method="post" action="/admin/logout"><input type="hidden" name="csrf_token" value="${csrf}"><button type="submit">退出登录</button></form></section><section class="download-section"><h2>微信群二维码</h2><article class="card">${qrCurrent}<form method="post" action="/admin/wechat-group-qrcode/upload" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="${csrf}"><input type="file" name="image" accept="image/png,image/jpeg,image/gif,image/webp" required><p class="muted">支持 PNG、JPG、GIF、WebP，文件大小不超过 5 MiB。</p><button type="submit">上传并发布</button></form></article></section><section class="download-section"><h2>软件发布控制</h2><div class="admin-grid">${cards.join('')}</div></section>`);
+  return htmlPage('R2 管理后台', `${notice}<section class="card"><h1>R2 管理后台</h1><form method="post" action="/admin/logout"><input type="hidden" name="csrf_token" value="${csrf}"><button type="submit">退出登录</button></form></section><section class="download-section"><h2>微信群二维码</h2><article class="card">${qrCurrent}<form method="post" action="/admin/wechat-group-qrcode/upload" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="${csrf}"><input type="file" name="image" accept="image/png,image/jpeg,image/gif,image/webp" required><p class="muted">支持 PNG、JPG、GIF、WebP，文件大小不超过 5 MiB。</p><button type="submit" ${qrStorageAvailable ? '' : 'disabled'}>上传并发布</button></form></article></section><section class="download-section"><h2>软件发布控制</h2><div class="admin-grid">${cards.join('')}</div></section>`);
+}
+
+async function readAdminSoftware(env, software) {
+  try {
+    const [latest, publicState, previousState, latestMeta, publicMeta, releases] = await Promise.all([
+      state(env, software, 'latest'), state(env, software, 'public'), state(env, software, 'previous'),
+      optionalAggregate(env, software, 'latest'), optionalAggregate(env, software, 'public'),
+      listReleases(env, software),
+    ]);
+    return { kind: 'ok', latest, publicState, previousState, latestMeta, publicMeta, releases };
+  } catch {
+    return { kind: 'outage' };
+  }
+}
+
+function renderAdminSoftwareCard(software, result, csrf) {
+  const actionBase = software.id === DEFAULT_SOFTWARE_ID ? '/admin/public' : `/admin/${encodeURIComponent(software.id)}/public`;
+  if (result.kind === 'outage') {
+    return `<article class="card"><h3>${escapeHtml(software.displayName)}</h3><p class="error">R2 存储暂时不可用，无法读取发布状态。</p><p class="muted">发布操作已停用，存储恢复后可重新载入本页。</p><form method="post" action="${actionBase}/lock-previous"><button type="submit" disabled>锁定到上一公开版本</button></form><form method="post" action="${actionBase}/unlock"><button type="submit" disabled>解除锁定并发布最新版本</button></form><form method="post" action="${actionBase}/set"><button type="submit" disabled>锁定所选版本</button></form></article>`;
+  }
+  const previousId = releaseId(result.previousState);
+  const options = result.releases.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join('');
+  return `<article class="card"><h3>${escapeHtml(software.displayName)}</h3><dl><dt>最新版本</dt><dd>${escapeHtml(releaseId(result.latest) || result.latestMeta?.release_id || '缺失')}</dd><dt>公开版本</dt><dd>${escapeHtml(releaseId(result.publicState) || result.publicMeta?.release_id || '缺失')}</dd><dt>公开版本锁定</dt><dd>${result.publicState?.locked ? '是' : '否'}</dd><dt>上一版本</dt><dd>${escapeHtml(previousId || '缺失')}</dd></dl><form method="post" action="${actionBase}/lock-previous"><input type="hidden" name="csrf_token" value="${csrf}"><button type="submit" ${previousId ? '' : 'disabled'}>锁定到上一公开版本</button></form><form method="post" action="${actionBase}/unlock"><input type="hidden" name="csrf_token" value="${csrf}"><button type="submit">解除锁定并发布最新版本</button></form><form method="post" action="${actionBase}/set"><input type="hidden" name="csrf_token" value="${csrf}"><select name="release_id" required>${options}</select><button type="submit" ${result.releases.length ? '' : 'disabled'}>锁定所选版本</button></form></article>`;
 }
 async function optionalAggregate(env, software, channel) {
   try { return await aggregate(env, software, channel); }
