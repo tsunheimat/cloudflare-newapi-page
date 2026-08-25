@@ -5,7 +5,7 @@
 ## 已包含
 
 - `/`：公共站点与 integration boundary 概览。
-- `/docs/*` 与 `/console/docs/*`：复用 pinned NewAPI Docs Hub 2.0 的信息层级与 reader chrome，包括分组侧栏、Ctrl/Cmd+K 搜索、页内目录、移动端 drawer、翻页、表格、callout 和可复制代码示例；console alias 在浏览器中映射到 canonical `/docs/*` 页面路径。
+- `/docs/*` 与 `/console/docs/*`：复用 pinned NewAPI Docs Hub 2.0 的信息层级与 reader chrome，包括分组侧栏、Ctrl/Cmd+K 搜索、页内目录、移动端 drawer、翻页、表格、callout 和可复制代码示例；console alias 在浏览器中映射到 canonical `/docs/*` 页面路径。已知旧版 `/docs/tokenrouter`（以及 console alias）会安全映射到 `/docs/quickstart/tokenrouter`；真实 Docs spaces 保持通用路径语义。
 - `/console/pricing` 与 `/pricing`：挂载同一个 canonical NewAPI Pricing runtime，使用同一 `/api/pricing` 数据路径；Worker 仅通过 token-only live-content adapter 读取后端 canonical Pricing。
 - `/api/content/docs`、`/api/content/docs/:slug`：可替换 Docs adapter contract。
 - `/api/front-door/v1/docs/v2/navigation?locale=zh`：public recursive Docs navigation compatibility route backed by the token-only NewAPI live-content endpoint; browser session and identity are not used。

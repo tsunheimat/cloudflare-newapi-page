@@ -28,18 +28,20 @@ import { createStatusAdapter } from './adapters/status.js';
 import { createDocsHubAdapter } from './adapters/docs-hub.js';
 
 const PHASE = '2';
+const DOCS_CACHE_CONTROL = 'public, s-maxage=60, stale-while-revalidate=300';
+const DOCS_CACHEABLE_METHODS = new Set(['GET', 'HEAD']);
 
 export default {
-  async fetch(request, env = {}) {
+  async fetch(request, env = {}, ctx = undefined) {
     try {
-      return await route(request, env);
+      return await route(request, env, ctx);
     } catch (error) {
       return errorResponse(error, request);
     }
   },
 };
 
-export async function route(request, env = {}) {
+export async function route(request, env = {}, ctx = undefined) {
   const url = new URL(request.url);
   const pathname = normalizePath(url.pathname);
 
@@ -98,20 +100,26 @@ export async function route(request, env = {}) {
   // Worker-held service token. Browser cookies, identity, and credentials are
   // intentionally irrelevant to this route.
   if (
-    request.method === 'GET' &&
+    DOCS_CACHEABLE_METHODS.has(request.method) &&
     pathname === PUBLIC_DOCS_NAVIGATION_ROUTE
   ) {
     const adapter = createDocsNavigationAdapter(env);
-    return publicContentResponse(
-      await adapter.getDocsNavigationResponse({
-        ifNoneMatch: conditionalValidator(request),
-      }),
-      (payload) => payload,
+    return handleCachedDocsResponse(
+      request,
+      env,
+      ctx,
+      docsCacheKey(request, pathname, docsNavigationCacheSearch(url)),
+      async () => publicContentResponse(
+        await adapter.getDocsNavigationResponse({
+          ifNoneMatch: conditionalValidator(request),
+        }),
+        (payload) => payload,
+      ),
     );
   }
 
-  if (request.method === 'GET' && pathname.startsWith('/api/docs/v2/')) {
-    return handleDocsHubRoute(request, env, url, pathname);
+  if (DOCS_CACHEABLE_METHODS.has(request.method) && pathname.startsWith('/api/docs/v2/')) {
+    return handleDocsHubRoute(request, env, url, pathname, ctx);
   }
 
 
@@ -243,7 +251,7 @@ function publicContentResponse(result, envelope) {
   return json(envelope(result.payload), 200, headers);
 }
 
-async function handleDocsHubRoute(request, env, url, pathname) {
+async function handleDocsHubRoute(request, env, url, pathname, ctx = undefined) {
   const adapter = createDocsHubAdapter(env);
   const ifNoneMatch = conditionalValidator(request);
   const assetMatch = pathname.match(/^\/api\/docs\/v2\/assets\/([1-9][0-9]{0,10})$/);
@@ -255,14 +263,14 @@ async function handleDocsHubRoute(request, env, url, pathname) {
       return withSecurityHeaders(new Response(null, { status: 304, headers }));
     }
     if (!result || ![200, 404].includes(result.status)) throw new HttpError(503, 'Live content is temporarily unavailable.');
-    if (result.status === 404) return json({ success: false, message: 'asset not found' }, 404);
+    if (result.status === 404) return headResponseIfNeeded(request, json({ success: false, message: 'asset not found' }, 404));
     const headers = new Headers({
       'cache-control': 'private, max-age=3600',
       'content-type': result.contentType || 'application/octet-stream',
     });
     if (result.etag) headers.set('etag', result.etag);
     if (result.disposition) headers.set('content-disposition', result.disposition);
-    return withSecurityHeaders(new Response(result.body, { status: 200, headers }));
+    return headResponseIfNeeded(request, withSecurityHeaders(new Response(result.body, { status: 200, headers })));
   }
   const supported = [
     'config', 'spaces', 'tree', 'navigation', 'search', 'featured', 'recent',
@@ -273,10 +281,146 @@ async function handleDocsHubRoute(request, env, url, pathname) {
     throw new HttpError(404, 'DocsHub route not found.');
   }
   const upstreamPath = buildDocsHubUpstreamPath(pathname, url);
-  return publicContentResponse(
-    await adapter.getResponse(upstreamPath, { ifNoneMatch }),
-    (payload) => payload,
+  return handleCachedDocsResponse(
+    request,
+    env,
+    ctx,
+    docsCacheKey(request, pathname, new URL(upstreamPath, 'https://worker.invalid').search),
+    async () => publicContentResponse(
+      await adapter.getResponse(upstreamPath, { ifNoneMatch }),
+      (payload) => payload,
+    ),
   );
+}
+
+/**
+ * Cache only the Worker-produced, schema-validated public Docs JSON. The
+ * cache key is URL-only (never request headers), so browser cookies, API
+ * keys, and the Worker-held VPC token can never partition or populate it.
+ * Cache errors are disposable: an unavailable cache falls through to the
+ * origin and never changes the fail-closed upstream behavior.
+ */
+async function handleCachedDocsResponse(request, env, ctx, cacheKey, produce) {
+  const cache = docsCache(env);
+  if (cache) {
+    try {
+      const cached = await cache.match(cacheKey);
+      if (cached?.status === 200 && isPublicDocsJson(cached)) {
+        return docsCachedResponse(request, cached);
+      }
+    } catch {
+      // Cache API is an optimization only. Continue to the authoritative VPC
+      // adapter when a platform/cache implementation is unavailable.
+    }
+  }
+
+  const response = markDocsCacheable(await produce());
+  if (cache && response.status === 200 && isPublicDocsJson(response)) {
+    const cacheCopy = response.clone();
+    const write = Promise.resolve().then(() => cache.put(cacheKey, cacheCopy)).catch(() => {});
+    if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(write);
+    else await write;
+  }
+  return headResponseIfNeeded(request, response);
+}
+
+function docsCache(env) {
+  if (env?.DOCS_CACHE && typeof env.DOCS_CACHE.match === 'function' && typeof env.DOCS_CACHE.put === 'function') {
+    return env.DOCS_CACHE;
+  }
+  const cache = globalThis.caches?.default;
+  return cache && typeof cache.match === 'function' && typeof cache.put === 'function'
+    ? cache
+    : null;
+}
+
+function docsCacheKey(request, pathname = new URL(request.url).pathname, search = new URL(request.url).search) {
+  // A GET key is shared by GET and HEAD. Use only the route's validated,
+  // semantically relevant query (rather than arbitrary query material that
+  // could contain a browser secret), while retaining every safe dimension.
+  const keyUrl = new URL(request.url);
+  keyUrl.username = '';
+  keyUrl.password = '';
+  keyUrl.hash = '';
+  keyUrl.pathname = pathname;
+  keyUrl.search = search;
+  return new Request(keyUrl.toString(), { method: 'GET' });
+}
+
+function docsNavigationCacheSearch(url) {
+  const query = new URLSearchParams();
+  const locale = url.searchParams.get('locale');
+  // The compatibility adapter intentionally fixes the upstream locale to zh.
+  // Retain a valid public locale in the key when callers provide one, but do
+  // not turn its historical ignore-unknown-query behavior into a new error.
+  if (locale !== null && locale.length <= 16 && /^[a-z-]+$/i.test(locale)) {
+    query.set('locale', locale);
+  }
+  return query.toString() ? `?${query}` : '';
+}
+
+function markDocsCacheable(response) {
+  if (!response || ![200, 304].includes(response.status)) return response;
+  const headers = new Headers(response.headers);
+  headers.set('cache-control', DOCS_CACHE_CONTROL);
+  return withSecurityHeaders(new Response(response.body, { status: response.status, headers }));
+}
+
+function isPublicDocsJson(response) {
+  const cacheControl = response?.headers?.get('cache-control') || '';
+  return response?.status === 200
+    && /^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || '')
+    && /(?:^|,)\s*public\b/i.test(cacheControl)
+    && !/(?:^|,)\s*(?:private|no-store)\b/i.test(cacheControl)
+    && response.headers.get('set-cookie') === null
+    && response.headers.get('vary') !== '*';
+}
+
+function docsCachedResponse(request, cached) {
+  const etag = cached.headers.get('etag');
+  const validator = conditionalValidator(request);
+  if (etag && entityTagMatches(validator, etag)) {
+    const headers = new Headers({
+      'cache-control': DOCS_CACHE_CONTROL,
+      etag,
+    });
+    return withSecurityHeaders(new Response(null, { status: 304, headers }));
+  }
+  return headResponseIfNeeded(request, withSecurityHeaders(cached.clone()));
+}
+
+function headResponseIfNeeded(request, response) {
+  if (request.method !== 'HEAD' || !response || response.status === 304) return response;
+  return new Response(null, { status: response.status, headers: response.headers });
+}
+
+function entityTagMatches(value, current) {
+  if (typeof value !== 'string' || !current) return false;
+  const fieldValue = value.trim();
+  if (fieldValue === '*') return true;
+  return parseEntityTagList(fieldValue).some((candidate) => (
+    verifiedEntityTag(candidate) && candidate.replace(/^W\//, '') === current.replace(/^W\//, '')
+  ));
+}
+
+function parseEntityTagList(value) {
+  const candidates = [];
+  let start = 0;
+  let inOpaqueTag = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === '"') inOpaqueTag = !inOpaqueTag;
+    else if (character === ',' && !inOpaqueTag) {
+      candidates.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  candidates.push(value.slice(start).trim());
+  return candidates;
+}
+
+function verifiedEntityTag(value) {
+  return /^(?:W\/)?"(?:[\x21\x23-\x7e\x80-\xff])*"$/.test(value);
 }
 
 function buildDocsHubUpstreamPath(pathname, url) {

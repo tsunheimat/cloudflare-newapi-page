@@ -116,6 +116,34 @@ test('console Docs alias mounts the same runtime for root and nested paths', { t
   }
 });
 
+test('legacy tokenrouter Docs aliases resolve to quickstart without a tokenrouter space query', { timeout: 30_000 }, async () => {
+  for (const pathname of ['/docs/tokenrouter', '/console/docs/tokenrouter', '/docs/quickstart/tokenrouter']) {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const page = await newPage(context);
+    const docsRequests = [];
+    await page.route('**/api/docs/v2/**', async (route) => {
+      const url = new URL(route.request().url());
+      docsRequests.push(url);
+      const response = url.pathname.endsWith('/config')
+        ? { success: true, data: { enabled: true } }
+        : url.pathname.endsWith('/spaces')
+          ? { success: true, data: [{ slug: 'quickstart', title: 'Quickstart' }] }
+          : url.pathname.endsWith('/tree') || url.pathname.endsWith('/navigation')
+            ? { success: true, data: [{ type: 'page', id: 1, slug: 'tokenrouter', path: 'tokenrouter', title: 'Tokenrouter', locale: 'zh', children: [] }] }
+            : { success: true, data: { id: 1, space_slug: 'quickstart', slug: 'tokenrouter', title: 'Tokenrouter', locale: 'zh', path: '/docs/quickstart/tokenrouter', content: { blocks: [] }, related: [] } };
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(response) });
+    });
+    await page.goto(`${baseUrl}${pathname}`, { waitUntil: 'domcontentloaded' });
+    await page.locator('.docs-hub-page-title').waitFor();
+    assert.equal(new URL(page.url()).pathname, '/docs/quickstart/tokenrouter');
+    assert.equal((await page.locator('.docs-hub-page-title').textContent()).trim(), 'Tokenrouter');
+    assert.ok(docsRequests.length > 0);
+    assert.ok(docsRequests.every((url) => url.searchParams.get('space') !== 'tokenrouter'));
+    assert.ok(docsRequests.some((url) => url.searchParams.get('space') === 'quickstart'));
+    await context.close();
+  }
+});
+
 test('public Docs navigation ignores browser sessions and stale localStorage', { timeout: 30_000 }, async () => {
   for (const storedUser of [null, { public_id: 'stale-browser-user' }]) {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });

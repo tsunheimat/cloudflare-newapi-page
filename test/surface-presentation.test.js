@@ -63,6 +63,18 @@ test('Docs compatibility alias maps root and nested console paths to the canonic
   assert.match(app, /if \(isDocsPath\(path\)\)[\s\S]*?await renderCanonicalDocs\(\)/);
 });
 
+test('Docs route mapping keeps real spaces generic and resolves only the known legacy page alias', async () => {
+  const [app] = await sources;
+  for (const space of [
+    'quickstart', 'api-reference', 'integrations', 'models',
+    'console', 'billing', 'faq', 'changelog',
+  ]) {
+    assert.match(app, new RegExp(`['"]${space}['"]`));
+  }
+  assert.match(app, /LEGACY_QUICKSTART_PAGE_ALIASES\s*=\s*new Set\(\['tokenrouter'\]\)/);
+  assert.match(app, /function canonicalDocsPageAlias\(path\)[\s\S]*?DOCS_SPACE_SLUGS\.has\(first\)[\s\S]*?return `\/docs\/quickstart\/\$\{segments\.join\('\/'\)\}`/);
+});
+
 test('Pricing presentation mounts one canonical runtime at both public URLs', async () => {
   const [app, _styles, index] = await sources;
   assert.match(index, /href="\/console\/pricing" data-link data-nav="pricing"/);

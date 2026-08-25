@@ -63,6 +63,22 @@ let canonicalDocsMounted = false;
 let pricingLanguageBinding = null;
 let pricingLanguageMenuId = 0;
 
+// The live Docs contract has spaces, while the old public URL exposed a few
+// page slugs directly below /docs. Keep the compatibility list deliberately
+// finite: an arbitrary first path segment must never be guessed to be a page,
+// because it may be a real Docs space in the live navigation.
+const DOCS_SPACE_SLUGS = new Set([
+  'quickstart',
+  'api-reference',
+  'integrations',
+  'models',
+  'console',
+  'billing',
+  'faq',
+  'changelog',
+]);
+const LEGACY_QUICKSTART_PAGE_ALIASES = new Set(['tokenrouter']);
+
 window.addEventListener('popstate', () => {
   canonicalizeDocsLocation();
   if (document.body.classList.contains('canonical-docs-active')) return;
@@ -1205,9 +1221,24 @@ function isConsoleDocsPath(path) {
 }
 
 function canonicalDocsPath(path) {
-  return isConsoleDocsPath(path)
+  const canonical = isConsoleDocsPath(path)
     ? `/docs${path.slice('/console/docs'.length)}`
     : path;
+  return canonicalDocsPageAlias(canonical);
+}
+
+function canonicalDocsPageAlias(path) {
+  if (!path.startsWith('/docs/')) return path;
+  const segments = path.slice('/docs/'.length).split('/').filter(Boolean);
+  const first = segments[0]?.toLowerCase();
+  if (
+    !first
+    || DOCS_SPACE_SLUGS.has(first)
+    || !LEGACY_QUICKSTART_PAGE_ALIASES.has(first)
+  ) {
+    return path;
+  }
+  return `/docs/quickstart/${segments.join('/')}`;
 }
 
 function canonicalizeDocsLocation() {

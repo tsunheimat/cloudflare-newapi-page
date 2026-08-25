@@ -54,7 +54,12 @@ DTOs; unknown credential-shaped fields are redacted and malformed responses,
 timeouts, or oversized bodies fail closed. `public/static/docs-hub.*` is built
 from the approved NewAPI `web/src/pages/DocsHub` and `packages/docs-core`
 sources, preserving the original layout, strings, reader, search, TOC,
-navigation, and block rendering behavior.
+navigation, and block rendering behavior. Validated public Docs V2 JSON `200`
+responses may be stored in the disposable Worker Cache API for 60 seconds at
+the edge with a 300-second stale-while-revalidate window. URL-only keys retain
+the complete safe route/query dimensions and never contain browser or Worker
+credentials; cache errors do not alter the VPC fail-closed path, and NewAPI
+remains the only mutable content authority.
 
 `/console/pricing` and `/pricing` mount the same canonical React SPA runtime.
 Its canonical bundle bootstraps through the public same-origin `/api/status`

@@ -155,7 +155,7 @@ test('public Docs navigation uses the token endpoint and preserves recursive pub
     },
   });
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get('cache-control'), 'no-cache');
+  assert.equal(response.headers.get('cache-control'), 'public, s-maxage=60, stale-while-revalidate=300');
   assert.equal(response.headers.get('etag'), '"docs-navigation-v1"');
   const body = await response.json();
   assert.equal(body.data[0].children[0].children[0].path, 'guides/quickstart/nested');
@@ -204,13 +204,120 @@ test('public Docs navigation is identity-independent and never forwards browser 
   const responseB = await fetchWorker('/api/front-door/v1/docs/v2/navigation?locale=zh', env, { headers: hostile });
   assert.equal(responseA.status, 200);
   assert.equal(responseB.status, 200);
-  assert.equal(responseA.headers.get('cache-control'), 'no-cache');
-  assert.equal(responseB.headers.get('cache-control'), 'no-cache');
+  assert.equal(responseA.headers.get('cache-control'), 'public, s-maxage=60, stale-while-revalidate=300');
+  assert.equal(responseB.headers.get('cache-control'), 'public, s-maxage=60, stale-while-revalidate=300');
   assert.deepEqual(await responseA.json(), await responseB.json());
   assert.deepEqual(seen, [
     { headers: { accept: 'application/json', authorization: `Bearer ${token}` } },
     { headers: { accept: 'application/json', authorization: `Bearer ${token}` } },
   ]);
+});
+
+test('public Docs V2 edge cache isolates URL variants and preserves safe ETag revalidation', async () => {
+  const cacheEntries = new Map();
+  const cache = {
+    async match(request) {
+      const entry = cacheEntries.get(new URL(request.url).toString());
+      return entry?.clone();
+    },
+    async put(request, response) {
+      cacheEntries.set(new URL(request.url).toString(), response.clone());
+    },
+  };
+  const token = `worker-docs-cache-${'x'.repeat(32)}`;
+  const seen = [];
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+    DOCS_CACHE: cache,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        seen.push(new URL(request.url).toString());
+        return new Response(JSON.stringify({
+          success: true,
+          data: { locale: new URL(request.url).searchParams.get('locale') || 'default' },
+        }), {
+          headers: {
+            'content-type': 'application/json',
+            'x-newapi-content-contract': 'v1',
+            etag: '"docs-cache-v1"',
+          },
+        });
+      },
+    },
+  };
+
+  const first = await fetchWorker('/api/docs/v2/tree?locale=zh&space=quickstart', env, {
+    headers: {
+      cookie: 'session=browser-a',
+      authorization: 'Bearer browser-a',
+      'x-api-key': 'browser-key-a',
+    },
+  });
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get('cache-control'), 'public, s-maxage=60, stale-while-revalidate=300');
+  assert.equal((await first.json()).data.locale, 'zh');
+
+  const hit = await fetchWorker('/api/docs/v2/tree?locale=zh&space=quickstart', env, {
+    headers: {
+      cookie: 'session=browser-b',
+      authorization: 'Bearer browser-b',
+      'x-api-key': 'browser-key-b',
+    },
+  });
+  assert.equal(hit.status, 200);
+  assert.equal((await hit.json()).data.locale, 'zh');
+  assert.equal(seen.length, 1, 'a URL-identical public response should be served from edge cache');
+
+  const isolated = await fetchWorker('/api/docs/v2/tree?locale=en&space=quickstart', env);
+  assert.equal(isolated.status, 200);
+  assert.equal((await isolated.json()).data.locale, 'en');
+  const otherSpace = await fetchWorker('/api/docs/v2/tree?locale=zh&space=models', env);
+  assert.equal(otherSpace.status, 200);
+  assert.equal(seen.length, 3, 'locale and space must partition cache keys');
+  assert.equal(cacheEntries.size, 3);
+  assert.ok([...cacheEntries.keys()].some((key) => key.includes('locale=zh&space=quickstart')));
+  assert.ok([...cacheEntries.keys()].some((key) => key.includes('locale=en&space=quickstart')));
+  assert.ok([...cacheEntries.keys()].some((key) => key.includes('locale=zh&space=models')));
+  assert.ok([...cacheEntries.keys()].every((key) => !key.includes('browser-')));
+
+  const notModified = await fetchWorker('/api/docs/v2/tree?locale=zh&space=quickstart', env, {
+    headers: { 'if-none-match': 'W/"docs-cache-v1"' },
+  });
+  assert.equal(notModified.status, 304);
+  assert.equal(notModified.headers.get('etag'), '"docs-cache-v1"');
+  assert.equal(notModified.headers.get('cache-control'), 'public, s-maxage=60, stale-while-revalidate=300');
+  assert.equal(seen.length, 3, 'a matching cached validator must not reach the VPC');
+
+  const head = await fetchWorker('/api/docs/v2/tree?locale=zh&space=quickstart', env, { method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), '');
+  assert.equal(head.headers.get('etag'), '"docs-cache-v1"');
+});
+
+test('Docs cache misses preserve fail-closed backend errors and never store failures', async () => {
+  const cacheEntries = new Map();
+  const cache = {
+    async match(request) { return cacheEntries.get(new URL(request.url).toString())?.clone(); },
+    async put(request, response) { cacheEntries.set(new URL(request.url).toString(), response.clone()); },
+  };
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: `worker-docs-outage-${'x'.repeat(32)}`,
+    DOCS_CACHE: cache,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => new Response('upstream outage', {
+        status: 503,
+        headers: { 'content-type': 'application/json', 'x-newapi-content-contract': 'v1' },
+      }),
+    },
+  };
+  const response = await fetchWorker('/api/docs/v2/navigation?locale=zh&space=quickstart', env);
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'integration_unavailable');
+  assert.equal(cacheEntries.size, 0);
 });
 
 test('content pricing remains on its configured adapter even with New-Api-User', async () => {

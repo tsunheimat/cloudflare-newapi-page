@@ -75,9 +75,14 @@ admin/provider credentials, arbitrary browser headers, and end-user logic are
 never inspected or forwarded. The response is the published normal/public
 recursive folder/layer/group/page tree; the Worker applies a bounded public
 allowlist, omits unknown/private fields, and fails closed on malformed known
-fields. Public Docs responses preserve validated upstream ETags and use the
-Worker's `no-cache` response policy; a verified conditional `304` remains an
-empty `304`. `/api/pricing` is the canonical public Pricing route (with
+fields. Successful public Docs V2 JSON responses are eligible for the
+disposable Worker Cache API with `Cache-Control: public, s-maxage=60,
+stale-while-revalidate=300`. Cache keys are URL-only and include the complete
+safe Docs path and query, so locales, spaces, page paths, limits, and search
+queries cannot share an entry. Cache failures and backend failures remain
+fail-closed; only a validated `200` can be stored, and cached ETags still
+produce a safe empty `304` for a matching browser validator. The cache is never
+a write authority: NewAPI remains the sole mutable content source. `/api/pricing` is the canonical public Pricing route (with
 `/api/content/pricing` retained only as a compatibility alias) and remains on
 the existing service-token adapter regardless of `New-Api-User` or any browser
 session.
