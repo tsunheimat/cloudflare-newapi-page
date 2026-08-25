@@ -391,6 +391,18 @@ function sameQrRecord(actual, expected) {
   return sameLegacyQrRecord(left, right);
 }
 
+function sameQrExpectedRecord(actual, expected) {
+  const left = qrIdentity(actual);
+  const right = qrIdentity(expected);
+  if (!left || !right) return false;
+  if (isQrNewGeneration(left) || isQrNewGeneration(right)) return sameQrRecord(left, right);
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index]
+      && String(left[key]) === String(right[key]));
+}
+
 function sameLegacyQrRecord(left, right) {
   const a = qrIdentity(left);
   const b = qrIdentity(right);
@@ -410,10 +422,13 @@ function sameStoredValue(actual, expected) {
 
 async function verifyQrImage(env, expected) {
   if (!expected?.r2_key) throw new Error('QR image did not reconcile');
-  let object;
-  try { object = await env.DOWNLOADS.get(expected.r2_key); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
+  const object = await readQrImageObject(env, expected.r2_key);
   if (!object) throw new Error('QR image did not reconcile');
   return verifyQrImageObject(object, expected);
+}
+
+async function readQrImageObject(env, key) {
+  try { return await env.DOWNLOADS.get(key); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
 }
 
 async function verifyQrImageObject(object, expected) {
@@ -515,6 +530,9 @@ async function readMarker(env, pendingKey, { optional = true } = {}) {
     || !marker.expected || typeof marker.expected !== 'object'
     || (marker.generation_id !== undefined && marker.expected.generation_id !== marker.generation_id)
     || (isQrNewGeneration(marker.expected) && !completeQrGenerationIdentity(marker.expected))) {
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+  if (typeof result.etag !== 'string' || result.etag === '') {
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   }
   return { ...result, marker };
@@ -636,28 +654,50 @@ async function tombstoneQrMarker(env, pendingKey, operationId) {
   });
 }
 
-async function readQrConsistency(env, { operationId = undefined } = {}) {
+function sameQrReadVersion(before, after, valueKey) {
+  if (!before || !after) return before === after;
+  return typeof before.etag === 'string' && before.etag !== ''
+    && before.etag === after.etag
+    && sameStoredValue(before[valueKey], after[valueKey]);
+}
+
+async function assertQrReadVersion(env, pendingKey, markerResult, formatResult) {
+  // Format is immutable migration evidence. Sample it before the marker so
+  // the marker remains the final R2 read at the snapshot linearization point.
+  const finalFormat = await readQrFormat(env);
+  const finalMarker = await readMarker(env, pendingKey);
+  if (finalMarker?.marker.phase === 'pending'
+    || !sameQrReadVersion(formatResult, finalFormat, 'format')
+    || !sameQrReadVersion(markerResult, finalMarker, 'marker')) {
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+}
+
+async function readQrConsistency(env, { loadImage = false } = {}) {
   const pendingKey = qrKey(env, 'state/pending.json');
   const markerResult = await readMarker(env, pendingKey);
   const marker = markerResult?.marker || null;
+  if (marker?.phase === 'pending') {
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
   const [metadata, state, formatResult] = await Promise.all([
     readJson(env, qrKey(env, 'metadata/latest.json'), { optional: true }),
     readJson(env, qrKey(env, 'state/latest.json'), { optional: true }),
     readQrFormat(env),
   ]);
   const format = formatResult?.format || null;
-  // Only the owning upload invocation may reconcile or advance its marker.
-  // Readers must fail closed while any pending marker remains unresolved.
-  if (marker?.phase === 'pending' && marker.operation_id !== operationId) {
-    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
-  }
-  if (marker?.phase === 'aborted') {
-    if (!metadata || !state || !sameQrRecord(metadata, state)) {
+  let integrityExpected = null;
+  if (marker?.phase === 'aborted' || marker?.phase === 'committed') {
+    const expected = isQrNewGeneration(marker.expected)
+      ? completeQrGenerationIdentity(marker.expected)
+      : qrIdentity(marker.expected);
+    if (!expected || !metadata || !state
+      || !sameQrExpectedRecord(metadata, expected)
+      || !sameQrExpectedRecord(state, expected)
+      || !sameQrRecord(metadata, state)) {
       throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
     }
-    if (isQrNewGeneration(metadata)) {
-      try { await verifyQrImage(env, metadata); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
-    }
+    integrityExpected = isQrNewGeneration(expected) ? expected : null;
   }
   if (marker?.phase === 'tombstone') {
     try {
@@ -669,17 +709,10 @@ async function readQrConsistency(env, { operationId = undefined } = {}) {
       })) {
         throw new Error('QR tombstone did not reconcile');
       }
-      if (isQrNewGeneration(rollback.latestMetadata)) await verifyQrImage(env, rollback.latestMetadata);
+      if (isQrNewGeneration(rollback.latestMetadata)) integrityExpected = rollback.latestMetadata;
     } catch {
       throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
     }
-  }
-  if (marker?.phase === 'committed' && (!sameQrRecord(metadata, marker.expected)
-    || !sameQrRecord(state, marker.expected) || !sameQrRecord(metadata, state))) {
-    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
-  }
-  if (marker?.phase === 'committed') {
-    try { await verifyQrImage(env, marker.expected); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   }
   const metadataNew = isQrNewGeneration(metadata);
   const stateNew = isQrNewGeneration(state);
@@ -692,14 +725,36 @@ async function readQrConsistency(env, { operationId = undefined } = {}) {
       || !completeQrGenerationIdentity(state) || !sameQrRecord(metadata, state)) {
       throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
     }
-    try { await verifyQrImage(env, metadata); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
+    integrityExpected = metadata;
   }
   if (!marker && metadata && state && (metadata.r2_key || state.r2_key)
     && !metadataNew && !stateNew && !sameLegacyQrRecord(metadata, state)) {
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   }
   if (!marker && !metadata && state) throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
-  return { metadata, state, marker };
+  let image = null;
+  try {
+    if (integrityExpected) validateQrMetadata(env, integrityExpected);
+    if (loadImage && metadata) {
+      const validated = validateQrMetadata(env, metadata);
+      const object = await readQrImageObject(env, validated.r2Key);
+      if (!object) {
+        if (integrityExpected) throw new Error('QR image did not reconcile');
+        throw new HttpError(404, `WeChat group QR code not found: ${validated.r2Key}`);
+      }
+      const verified = integrityExpected
+        ? await verifyQrImageObject(object, integrityExpected)
+        : null;
+      image = { object, bytes: verified?.bytes };
+    } else if (integrityExpected) {
+      await verifyQrImage(env, integrityExpected);
+    }
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 404) throw error;
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+  await assertQrReadVersion(env, pendingKey, markerResult, formatResult);
+  return { metadata, state, marker, image };
 }
 
 async function verifyQrPublication(env, expected, pendingKey = undefined, operationId = undefined) {
@@ -741,9 +796,11 @@ async function assertQrSnapshotCurrent(env, snapshots, pendingKey, operationId) 
 
 async function latestQr(env, optional = false) {
   const consistent = await readQrConsistency(env);
-  const metadata = consistent.metadata ?? (optional ? null : await readJson(env, qrKey(env, 'metadata/latest.json')));
-  if (!metadata) return null;
-  return sanitizedQrMetadata(env, metadata);
+  if (!consistent.metadata) {
+    if (optional) return null;
+    throw new HttpError(404, `R2 object not found: ${qrKey(env, 'metadata/latest.json')}`);
+  }
+  return sanitizedQrMetadata(env, consistent.metadata);
 }
 function sanitizedQrMetadata(env, metadata) {
   const validated = validateQrMetadata(env, metadata);
@@ -754,20 +811,16 @@ function sanitizedQrMetadata(env, metadata) {
   return result;
 }
 async function serveQr(env) {
-  const metadata = await latestQr(env);
-  const validated = validateQrMetadata(env, metadata);
   const base = qrPublicBaseUrl(env);
+  const consistent = await readQrConsistency(env, { loadImage: !base });
+  const metadata = consistent.metadata;
+  if (!metadata) throw new HttpError(404, `R2 object not found: ${qrKey(env, 'metadata/latest.json')}`);
+  const validated = validateQrMetadata(env, metadata);
   if (base) return new Response(null, { status: 302, headers: { location: `${base.origin}${base.pathname.replace(/\/+$/, '')}/${validated.r2Key}`, 'cache-control': 'no-store' } });
-  let object;
-  try { object = await env.DOWNLOADS.get(validated.r2Key); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
-  if (!object) throw new HttpError(404, `WeChat group QR code not found: ${validated.r2Key}`);
-  let verified = null;
-  if (isQrNewGeneration(metadata)) {
-    try { verified = await verifyQrImageObject(object, metadata); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
-  }
+  const { object, bytes } = consistent.image;
   const headers = new Headers({ 'content-type': validated.contentType || object.httpMetadata?.contentType || 'application/octet-stream', 'cache-control': 'no-store' });
   if (metadata.size) headers.set('content-length', String(metadata.size));
-  return new Response(verified?.bytes || object.body, { headers });
+  return new Response(bytes || object.body, { headers });
 }
 
 async function handleQrUpload(request, env) {

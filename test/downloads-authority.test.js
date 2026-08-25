@@ -143,6 +143,36 @@ async function sha256Hex(bytes) {
     .map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+async function qrGeneration(label) {
+  return {
+    asset_id: 'wechat-group-qrcode', format_version: 'qr-generation-v1',
+    generation_id: `generation-${label}`, operation_id: `operation-${label}`,
+    version_id: `version-${label}`, uploaded_at: '2026-08-26T00:00:00.000Z',
+    source: 'admin-panel', filename: `${label}.png`,
+    r2_key: `wechat-group-qrcode/images/${label}.png`,
+    sha256: await sha256Hex(png), size: png.length, content_type: 'image/png',
+  };
+}
+
+function setR2Object(runtime, key, value, etag) {
+  runtime.DOWNLOADS.objects.set(key, value);
+  runtime.DOWNLOADS.etags.set(key, etag);
+}
+
+async function bounded(promise, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), 5_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 test('migrated public APIs read dynamic R2 metadata and direct/mounted targets agree', async () => {
   const runtime = env();
   const publicResponse = await get('/api/codex-installer/public', runtime);
@@ -343,6 +373,177 @@ test('concurrent identical uploads have one conditional fence owner and never pu
   assert.equal(apiRead.status, 200);
   assert.equal((await apiRead.json()).generation_id, metadata.generation_id);
   assert.equal((await get('/wechat-group-qrcode/latest', runtime)).status, 302);
+});
+
+for (const initialMarker of ['aborted', 'absent']) {
+  test(`interleaved QR readers never expose a pending generation before ${initialMarker} rollback`, async () => {
+    const runtime = env({
+      ADMIN_PASSWORD: 'correct',
+      ADMIN_SESSION_SECRET: 'session-secret',
+      R2_PUBLIC_BASE_URL: '',
+      WECHAT_GROUP_QR_PUBLIC_BASE_URL: '',
+    });
+    const session = await adminSession(runtime);
+    const pendingKey = 'wechat-group-qrcode/state/pending.json';
+    const formatKey = 'wechat-group-qrcode/state/format.json';
+    let stableGeneration = null;
+    if (initialMarker === 'aborted') {
+      stableGeneration = await qrGeneration('stable');
+      setR2Object(runtime, stableGeneration.r2_key, {
+        bytes: png, httpMetadata: { contentType: 'image/png' },
+      }, 'etag-stable-image');
+      setR2Object(runtime, 'wechat-group-qrcode/metadata/latest.json', stableGeneration, 'etag-stable-metadata');
+      setR2Object(runtime, 'wechat-group-qrcode/state/latest.json', stableGeneration, 'etag-stable-state');
+      setR2Object(runtime, pendingKey, {
+        schema_version: 2, phase: 'aborted',
+        operation_id: stableGeneration.operation_id,
+        generation_id: stableGeneration.generation_id,
+        expected: stableGeneration,
+        aborted_at: '2026-08-26T00:01:00.000Z',
+        abort_reason: 'prior-response-lost',
+      }, 'etag-stable-marker');
+    } else {
+      runtime.DOWNLOADS.objects.delete(pendingKey);
+      runtime.DOWNLOADS.etags.delete(pendingKey);
+    }
+    runtime.DOWNLOADS.objects.delete(formatKey);
+    runtime.DOWNLOADS.etags.delete(formatKey);
+
+    const routes = [
+      { path: '/api/wechat-group-qrcode/latest' },
+      { path: '/downloads/api/wechat-group-qrcode/latest' },
+      { path: '/wechat-group-qrcode' },
+      { path: '/wechat-group-qrcode/latest' },
+      { path: '/downloads/wechat-group-qrcode' },
+      { path: '/downloads/wechat-group-qrcode/latest' },
+      { path: '/admin', init: { headers: { cookie: session.cookie } } },
+      { path: '/downloads/admin', init: { headers: { cookie: session.cookie } } },
+    ];
+    const readersCaptured = deferred();
+    const releaseReaders = deferred();
+    const originalGet = runtime.DOWNLOADS.get.bind(runtime.DOWNLOADS);
+    let captured = 0;
+    runtime.DOWNLOADS.get = async (key) => {
+      if (key === pendingKey && captured < routes.length) {
+        const snapshot = await originalGet(key);
+        captured += 1;
+        if (captured === routes.length) readersCaptured.resolve();
+        await releaseReaders.promise;
+        return snapshot;
+      }
+      return originalGet(key);
+    };
+
+    const readerPromises = routes.map(({ path, init }) => get(path, runtime, init));
+    await bounded(readersCaptured.promise, 'QR readers to capture the initial marker');
+
+    const projectionsWritten = deferred();
+    const releaseRollback = deferred();
+    runtime.DOWNLOADS.beforePut = async (key) => {
+      if (key !== formatKey) return;
+      projectionsWritten.resolve();
+      await releaseRollback.promise;
+      throw new Error('forced-format-write-failure');
+    };
+    const uploadPromise = get(
+      '/admin/wechat-group-qrcode/upload',
+      runtime,
+      qrUploadInit(session, 'transient.png'),
+    );
+    await bounded(Promise.race([
+      projectionsWritten.promise,
+      uploadPromise.then(() => { throw new Error('upload ended before projections were held'); }),
+    ]), 'the transient projections');
+
+    const transient = storedJson(runtime, 'wechat-group-qrcode/metadata/latest.json');
+    const transientState = storedJson(runtime, 'wechat-group-qrcode/state/latest.json');
+    const pendingMarker = storedJson(runtime, pendingKey);
+    releaseReaders.resolve();
+    const responses = await Promise.all(readerPromises);
+    releaseRollback.resolve();
+    const upload = await uploadPromise;
+
+    assert.equal(transient.filename, 'transient.png');
+    assert.equal(transientState.generation_id, transient.generation_id);
+    assert.equal(pendingMarker.phase, 'pending');
+    assert.equal(upload.status, 503);
+    for (const [index, response] of responses.entries()) {
+      assert.equal(response.status, 503, routes[index].path);
+      const body = await response.text();
+      assert.doesNotMatch(body, new RegExp(`${transient.generation_id}|transient\\.png|forced-format-write-failure`), routes[index].path);
+    }
+    assert.equal(storedJson(runtime, pendingKey).phase, 'tombstone');
+    assert.equal(runtime.DOWNLOADS.objects.has(transient.r2_key), false);
+    const restored = await get('/api/wechat-group-qrcode/latest', runtime);
+    assert.equal(restored.status, 200);
+    const restoredMetadata = await restored.json();
+    assert.notEqual(restoredMetadata.generation_id, transient.generation_id);
+    if (stableGeneration) assert.equal(restoredMetadata.generation_id, stableGeneration.generation_id);
+  });
+}
+
+test('aborted and committed QR markers bind projections to their exact expected generation', async () => {
+  for (const phase of ['aborted', 'committed']) {
+    const runtime = env({ R2_PUBLIC_BASE_URL: '', WECHAT_GROUP_QR_PUBLIC_BASE_URL: '' });
+    const expected = await qrGeneration(`expected-${phase}`);
+    const foreign = await qrGeneration(`foreign-${phase}`);
+    setR2Object(runtime, foreign.r2_key, {
+      bytes: png, httpMetadata: { contentType: 'image/png' },
+    }, `etag-${phase}-foreign-image`);
+    setR2Object(runtime, 'wechat-group-qrcode/metadata/latest.json', foreign, `etag-${phase}-foreign-metadata`);
+    setR2Object(runtime, 'wechat-group-qrcode/state/latest.json', foreign, `etag-${phase}-foreign-state`);
+    setR2Object(runtime, 'wechat-group-qrcode/state/pending.json', {
+      schema_version: 2, phase, operation_id: expected.operation_id,
+      generation_id: expected.generation_id, expected,
+    }, `etag-${phase}-marker`);
+
+    const response = await get('/api/wechat-group-qrcode/latest', runtime);
+    assert.equal(response.status, 503, phase);
+    assert.doesNotMatch(await response.text(), new RegExp(`${foreign.generation_id}|${foreign.filename}`));
+  }
+});
+
+test('QR reads reject a rewritten or disappeared terminal marker after image verification', async () => {
+  for (const mutation of ['rewrite', 'delete']) {
+    const runtime = env({ R2_PUBLIC_BASE_URL: '', WECHAT_GROUP_QR_PUBLIC_BASE_URL: '' });
+    const record = await qrGeneration(`version-${mutation}`);
+    const pendingKey = 'wechat-group-qrcode/state/pending.json';
+    const marker = {
+      schema_version: 2, phase: 'committed', operation_id: record.operation_id,
+      generation_id: record.generation_id, expected: record,
+      committed_at: '2026-08-26T00:02:00.000Z',
+    };
+    setR2Object(runtime, record.r2_key, {
+      bytes: png, httpMetadata: { contentType: 'image/png' },
+    }, `etag-${mutation}-image`);
+    setR2Object(runtime, 'wechat-group-qrcode/metadata/latest.json', record, `etag-${mutation}-metadata`);
+    setR2Object(runtime, 'wechat-group-qrcode/state/latest.json', record, `etag-${mutation}-state`);
+    setR2Object(runtime, 'wechat-group-qrcode/state/format.json', {
+      schema_version: 1, format_version: 'qr-generation-v1', immutable: true,
+      established_at: '2026-08-26T00:00:00.000Z',
+    }, `etag-${mutation}-format`);
+    setR2Object(runtime, pendingKey, marker, `etag-${mutation}-marker`);
+
+    const originalGet = runtime.DOWNLOADS.get.bind(runtime.DOWNLOADS);
+    let mutated = false;
+    runtime.DOWNLOADS.get = async (key) => {
+      const object = await originalGet(key);
+      if (key === record.r2_key && !mutated) {
+        mutated = true;
+        if (mutation === 'rewrite') {
+          await runtime.DOWNLOADS.put(pendingKey, `${JSON.stringify(marker)}\n`, {
+            httpMetadata: { contentType: 'application/json; charset=utf-8' },
+          });
+        } else {
+          await runtime.DOWNLOADS.delete(pendingKey);
+        }
+      }
+      return object;
+    };
+    const response = await get('/api/wechat-group-qrcode/latest', runtime);
+    assert.equal(response.status, 503, mutation);
+    assert.doesNotMatch(await response.text(), new RegExp(`${record.generation_id}|${record.filename}`));
+  }
 });
 
 test('stale snapshot cannot replace or tombstone a newer committed QR generation', async () => {
