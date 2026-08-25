@@ -20,15 +20,19 @@ const QR_EXTENSIONS = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
 const QR_MAX_BYTES = 5 * 1024 * 1024;
 const QR_MARKER_SCHEMA = 2;
 const QR_MARKER_SCHEMAS = new Set([1, QR_MARKER_SCHEMA]);
+const QR_GENERATION_FORMAT = 'qr-generation-v1';
 const QR_IDENTITY_FIELDS = Object.freeze([
-  'asset_id', 'generation_id', 'operation_id', 'version_id', 'r2_key',
+  'asset_id', 'generation_id', 'operation_id', 'version_id', 'format_version', 'r2_key',
   'sha256', 'size', 'content_type', 'filename', 'uploaded_at', 'source',
 ]);
 // URL is derived from the reviewed public-base binding and is intentionally
 // excluded. Every listed field is written immutably for a new publication and
 // must be present in both latest records.
 const QR_GENERATION_IDENTITY_FIELDS = QR_IDENTITY_FIELDS;
-const QR_MARKER_PHASES = new Set(['pending', 'committed', 'tombstone']);
+const QR_GENERATION_REQUIRED_FIELDS = Object.freeze(
+  QR_GENERATION_IDENTITY_FIELDS.filter((field) => field !== 'format_version'),
+);
+const QR_MARKER_PHASES = new Set(['pending', 'committed', 'tombstone', 'aborted']);
 const BRAND_ASSETS = { wordmark: '/assets/juapi-logo.png', mark: '/assets/juapi-mark.png', favicon: '/assets/favicon.png' };
 const SITE_PROFILES = {
   tokenrouter: {
@@ -81,7 +85,8 @@ export function isDownloadsAuthorityRoute(pathname) {
   if (pathname === '/wechat-group-qrcode' || pathname.startsWith('/wechat-group-qrcode/')) return true;
   if (pathname === '/api/latest' || pathname === '/api/public' || pathname === '/api/previous') return true;
   if (pathname.startsWith('/api/latest/') || pathname.startsWith('/api/public/')) return true;
-  if (pathname === '/api/wechat-group-qrcode/latest') return true;
+  if (pathname.startsWith('/api/previous/')) return true;
+  if (pathname === '/api/wechat-group-qrcode' || pathname.startsWith('/api/wechat-group-qrcode/')) return true;
   return /^\/api\/[a-z0-9][a-z0-9-]{0,62}\/(latest|public|previous)(?:\/|$)/.test(pathname);
 }
 
@@ -349,10 +354,20 @@ function hasQrGenerationIdentity(value) {
     && (value.generation_id !== undefined || value.operation_id !== undefined));
 }
 
+function hasQrGenerationFormat(value) {
+  return Boolean(value && typeof value === 'object'
+    && Object.prototype.hasOwnProperty.call(value, 'format_version'));
+}
+
+function isQrNewGeneration(value) {
+  return hasQrGenerationIdentity(value) || hasQrGenerationFormat(value);
+}
+
 function completeQrGenerationIdentity(value) {
   const identity = qrIdentity(value);
-  if (!identity || !hasQrGenerationIdentity(identity)) return null;
-  for (const field of QR_GENERATION_IDENTITY_FIELDS) {
+  if (!identity || !isQrNewGeneration(identity)) return null;
+  if (hasQrGenerationFormat(identity) && identity.format_version !== QR_GENERATION_FORMAT) return null;
+  for (const field of QR_GENERATION_REQUIRED_FIELDS) {
     if (identity[field] === undefined || identity[field] === null || identity[field] === '') return null;
   }
   if (!Number.isSafeInteger(identity.size) || identity.size < 0) return null;
@@ -364,8 +379,8 @@ function sameQrRecord(actual, expected) {
   const left = qrIdentity(actual);
   const right = qrIdentity(expected);
   if (!left || !right) return false;
-  const leftNew = hasQrGenerationIdentity(left);
-  const rightNew = hasQrGenerationIdentity(right);
+  const leftNew = isQrNewGeneration(left);
+  const rightNew = isQrNewGeneration(right);
   if (leftNew || rightNew) {
     const completeLeft = completeQrGenerationIdentity(left);
     const completeRight = completeQrGenerationIdentity(right);
@@ -379,7 +394,7 @@ function sameQrRecord(actual, expected) {
 function sameLegacyQrRecord(left, right) {
   const a = qrIdentity(left);
   const b = qrIdentity(right);
-  if (!a || !b || hasQrGenerationIdentity(a) || hasQrGenerationIdentity(b) || a.r2_key !== b.r2_key) return false;
+  if (!a || !b || isQrNewGeneration(a) || isQrNewGeneration(b) || a.r2_key !== b.r2_key) return false;
   for (const field of QR_IDENTITY_FIELDS) {
     // Keep old records readable when an older writer omitted a field, but do
     // not allow two records that both provide a field to disagree.
@@ -499,16 +514,65 @@ async function readMarker(env, pendingKey, { optional = true } = {}) {
     || typeof marker.operation_id !== 'string'
     || !marker.expected || typeof marker.expected !== 'object'
     || (marker.generation_id !== undefined && marker.expected.generation_id !== marker.generation_id)
-    || (hasQrGenerationIdentity(marker.expected) && !completeQrGenerationIdentity(marker.expected))) {
+    || (isQrNewGeneration(marker.expected) && !completeQrGenerationIdentity(marker.expected))) {
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   }
   return { ...result, marker };
+}
+
+function qrFormatKey(env) {
+  return qrKey(env, 'state/format.json');
+}
+
+async function readQrFormat(env, { optional = true } = {}) {
+  const result = await readJsonObject(env, qrFormatKey(env), { optional });
+  if (!result) return null;
+  const format = result.value;
+  if (!format || typeof format !== 'object' || Array.isArray(format)
+    || format.schema_version !== 1
+    || format.format_version !== QR_GENERATION_FORMAT
+    || format.immutable !== true) {
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+  return { ...result, format };
+}
+
+async function ensureQrFormat(env) {
+  const existing = await readQrFormat(env);
+  if (existing) return existing;
+  const format = {
+    schema_version: 1,
+    format_version: QR_GENERATION_FORMAT,
+    immutable: true,
+    established_at: new Date().toISOString(),
+  };
+  let result = null;
+  try {
+    result = await writeJson(env, qrFormatKey(env), format, 'no-store', { etagDoesNotMatch: '*' });
+  } catch {
+    // R2 may commit before returning an error; reconcile below.
+  }
+  if (result !== null) return readQrFormat(env, { optional: false });
+  const observed = await readQrFormat(env);
+  if (!observed) throw new Error('QR generation format did not reconcile');
+  return observed;
 }
 
 async function markerOwner(env, pendingKey, operationId) {
   const current = await readMarker(env, pendingKey);
   if (!current || current.marker.operation_id !== operationId) throw new Error('QR publication marker ownership changed');
   return current;
+}
+
+async function abortQrMarker(env, pendingKey, operationId, reason = 'operation-aborted') {
+  const current = await markerOwner(env, pendingKey, operationId);
+  if (current.marker.phase === 'aborted') return current;
+  return updateQrMarker(env, pendingKey, operationId, {
+    ...current.marker,
+    phase: 'aborted',
+    aborted_at: new Date().toISOString(),
+    abort_reason: reason,
+  });
 }
 
 async function writeJsonVerified(env, key, payload, cacheControl = 'no-store', onlyIf = undefined) {
@@ -525,9 +589,12 @@ async function writeJsonVerified(env, key, payload, cacheControl = 'no-store', o
   }
 }
 
-async function acquireQrMarker(env, pendingKey, marker) {
+async function acquireQrMarker(env, pendingKey, marker, snapshots) {
   const existing = await readMarker(env, pendingKey);
   if (existing?.marker.phase === 'pending') throw new Error('QR publication is already fenced');
+  if (snapshots && !await verifyQrRollback(env, snapshots)) {
+    throw new QrSnapshotDriftError();
+  }
   try {
     const condition = existing?.etag ? { etagMatches: existing.etag } : { etagDoesNotMatch: '*' };
     const result = await writeJson(env, pendingKey, marker, 'no-store', condition);
@@ -569,17 +636,29 @@ async function tombstoneQrMarker(env, pendingKey, operationId) {
   });
 }
 
-async function readQrConsistency(env) {
+async function readQrConsistency(env, { operationId = undefined } = {}) {
   const pendingKey = qrKey(env, 'state/pending.json');
   const markerResult = await readMarker(env, pendingKey);
   const marker = markerResult?.marker || null;
-  const [metadata, state] = await Promise.all([
+  const [metadata, state, formatResult] = await Promise.all([
     readJson(env, qrKey(env, 'metadata/latest.json'), { optional: true }),
     readJson(env, qrKey(env, 'state/latest.json'), { optional: true }),
+    readQrFormat(env),
   ]);
+  const format = formatResult?.format || null;
   // Only the owning upload invocation may reconcile or advance its marker.
   // Readers must fail closed while any pending marker remains unresolved.
-  if (marker?.phase === 'pending') throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  if (marker?.phase === 'pending' && marker.operation_id !== operationId) {
+    throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+  if (marker?.phase === 'aborted') {
+    if (!metadata || !state || !sameQrRecord(metadata, state)) {
+      throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+    }
+    if (isQrNewGeneration(metadata)) {
+      try { await verifyQrImage(env, metadata); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
+    }
+  }
   if (marker?.phase === 'tombstone') {
     try {
       const rollback = marker.rollback;
@@ -590,7 +669,7 @@ async function readQrConsistency(env) {
       })) {
         throw new Error('QR tombstone did not reconcile');
       }
-      if (hasQrGenerationIdentity(rollback.latestMetadata)) await verifyQrImage(env, rollback.latestMetadata);
+      if (isQrNewGeneration(rollback.latestMetadata)) await verifyQrImage(env, rollback.latestMetadata);
     } catch {
       throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
     }
@@ -602,18 +681,22 @@ async function readQrConsistency(env) {
   if (marker?.phase === 'committed') {
     try { await verifyQrImage(env, marker.expected); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   }
-  if (!marker && (hasQrGenerationIdentity(metadata) || hasQrGenerationIdentity(state))
-    && (!metadata || !state || !completeQrGenerationIdentity(metadata)
-      || !completeQrGenerationIdentity(state) || !sameQrRecord(metadata, state))) {
+  const metadataNew = isQrNewGeneration(metadata);
+  const stateNew = isQrNewGeneration(state);
+  if (format && (!metadata || !state || !completeQrGenerationIdentity(metadata)
+    || !completeQrGenerationIdentity(state) || !sameQrRecord(metadata, state))) {
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+  }
+  if (!marker && (metadataNew || stateNew)) {
+    if (!metadata || !state || !completeQrGenerationIdentity(metadata)
+      || !completeQrGenerationIdentity(state) || !sameQrRecord(metadata, state)) {
+      throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+    }
+    try { await verifyQrImage(env, metadata); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   }
   if (!marker && metadata && state && (metadata.r2_key || state.r2_key)
-    && !hasQrGenerationIdentity(metadata) && !hasQrGenerationIdentity(state)
-    && !sameLegacyQrRecord(metadata, state)) {
+    && !metadataNew && !stateNew && !sameLegacyQrRecord(metadata, state)) {
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
-  }
-  if (!marker && (hasQrGenerationIdentity(metadata) || hasQrGenerationIdentity(state))) {
-    try { await verifyQrImage(env, metadata); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   }
   if (!marker && !metadata && state) throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   return { metadata, state, marker };
@@ -644,6 +727,18 @@ async function verifyQrRollback(env, snapshots) {
     && sameStoredValue(previous, snapshots.previousState);
 }
 
+class QrSnapshotDriftError extends Error {
+  constructor() {
+    super('QR publication snapshot drifted');
+    this.name = 'QrSnapshotDriftError';
+  }
+}
+
+async function assertQrSnapshotCurrent(env, snapshots, pendingKey, operationId) {
+  await markerOwner(env, pendingKey, operationId);
+  if (!await verifyQrRollback(env, snapshots)) throw new QrSnapshotDriftError();
+}
+
 async function latestQr(env, optional = false) {
   const consistent = await readQrConsistency(env);
   const metadata = consistent.metadata ?? (optional ? null : await readJson(env, qrKey(env, 'metadata/latest.json')));
@@ -667,7 +762,7 @@ async function serveQr(env) {
   try { object = await env.DOWNLOADS.get(validated.r2Key); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   if (!object) throw new HttpError(404, `WeChat group QR code not found: ${validated.r2Key}`);
   let verified = null;
-  if (hasQrGenerationIdentity(metadata)) {
+  if (isQrNewGeneration(metadata)) {
     try { verified = await verifyQrImageObject(object, metadata); } catch { throw new HttpError(503, 'Downloads storage is temporarily unavailable.'); }
   }
   const headers = new Headers({ 'content-type': validated.contentType || object.httpMetadata?.contentType || 'application/octet-stream', 'cache-control': 'no-store' });
@@ -699,7 +794,8 @@ async function handleQrUpload(request, env) {
   const base = qrPublicBaseUrl(env);
   const uploadedAt = new Date().toISOString();
   const metadata = {
-    asset_id: 'wechat-group-qrcode', generation_id: generationId, operation_id: operationId,
+    asset_id: 'wechat-group-qrcode', format_version: QR_GENERATION_FORMAT,
+    generation_id: generationId, operation_id: operationId,
     version_id: version, uploaded_at: uploadedAt, source: 'admin-panel', filename, r2_key: key,
     ...(base ? { url: `${base.origin}${base.pathname.replace(/\/+$/, '')}/${key}` } : {}),
     sha256: digest, size: bytes.length, content_type: contentType,
@@ -720,18 +816,14 @@ async function handleQrUpload(request, env) {
   };
   const touched = [];
   let markerAcquired = false;
+  let formatEstablished = false;
   try {
-    await acquireQrMarker(env, pendingKey, marker);
+    await acquireQrMarker(env, pendingKey, marker, snapshots);
     markerAcquired = true;
-    await markerOwner(env, pendingKey, operationId);
-    // Snapshotting precedes conditional acquisition so legacy readers remain
-    // available until the fence is owned. A completed upload can land between
-    // those steps; never publish or roll back across that changed generation.
-    if (!await verifyQrRollback(env, snapshots)) {
-      await tombstoneQrMarker(env, pendingKey, operationId);
-      markerAcquired = false;
-      throw new Error('QR publication changed before marker acquisition');
-    }
+    // Snapshotting precedes conditional acquisition so a newer committed
+    // generation can win while this operation is preparing. The stale writer
+    // aborts before writing or tombstoning that winner.
+    await assertQrSnapshotCurrent(env, snapshots, pendingKey, operationId);
     touched.push(key);
     await markerOwner(env, pendingKey, operationId);
     await putBinary(env, key, bytes, { httpMetadata: { contentType, cacheControl: 'public, max-age=31536000, immutable' } });
@@ -747,9 +839,20 @@ async function handleQrUpload(request, env) {
     await markerOwner(env, pendingKey, operationId);
     await writeJsonVerified(env, qrKey(env, 'state/latest.json'), metadata);
     await verifyQrPublication(env, metadata, pendingKey, operationId);
+    await ensureQrFormat(env);
+    formatEstablished = true;
     await updateQrMarker(env, pendingKey, operationId, { ...marker, phase: 'committed', committed_at: new Date().toISOString() });
-  } catch {
-    if (markerAcquired) await rollbackQrState(env, snapshots, touched, key, pendingKey, operationId);
+  } catch (error) {
+    if (markerAcquired && snapshots) {
+      if (error instanceof QrSnapshotDriftError || formatEstablished) {
+        const reason = error instanceof QrSnapshotDriftError ? 'snapshot-drift' : 'commit-after-format-failed';
+        try { await abortQrMarker(env, pendingKey, operationId, reason); } catch { /* ownership may have moved */ }
+      } else {
+        await rollbackQrState(env, snapshots, touched, key, pendingKey, operationId);
+      }
+    } else if (markerAcquired) {
+      try { await abortQrMarker(env, pendingKey, operationId, 'snapshot-unavailable'); } catch { /* ownership may have moved */ }
+    }
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   }
   return redirect('/admin?updated=wechat-group-qrcode-uploaded');

@@ -138,6 +138,11 @@ function deferred() {
   return { promise, resolve };
 }
 
+async function sha256Hex(bytes) {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+    .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 test('migrated public APIs read dynamic R2 metadata and direct/mounted targets agree', async () => {
   const runtime = env();
   const publicResponse = await get('/api/codex-installer/public', runtime);
@@ -188,6 +193,36 @@ test('production R2 mode fails closed without get/put and never calls the rollba
   });
   assert.equal((await get('/api/codex-installer/public', getOnly)).status, 503);
   assert.equal(serviceCalled, false);
+});
+
+test('production R2 route matrix fails closed before any rollback service fallback', async () => {
+  let serviceCalls = 0;
+  const runtime = env({
+    DOWNLOADS_INTEGRATION: 'production-r2-binding',
+    DOWNLOADS: undefined,
+    DOWNLOADS_SERVICE: { fetch: async () => {
+      serviceCalls += 1;
+      return new Response('legacy-service-must-not-run', { status: 200 });
+    } },
+  });
+  const routes = [
+    '/downloads', '/downloads/software/codex-installer', '/downloads/api/previous/foo',
+    '/assets/juapi-logo.png', '/software/codex-installer', '/download/tokenrouter/windows/x64',
+    '/admin', '/admin/public/lock-previous', '/wechat-group-qrcode',
+    '/wechat-group-qrcode/latest', '/api/latest', '/api/latest/tokenrouter/windows/x64',
+    '/api/public', '/api/public/tokenrouter/windows/x64', '/api/previous',
+    '/api/previous/tokenrouter/windows/x64', '/api/wechat-group-qrcode',
+    '/api/wechat-group-qrcode/latest', '/api/wechat-group-qrcode/history/current',
+    '/api/codex-installer/latest', '/api/codex-installer/latest/tokenrouter/windows/x64',
+    '/api/codex-installer/public', '/api/codex-installer/public/tokenrouter/windows/x64',
+    '/api/codex-installer/previous', '/api/codex-installer/previous/tokenrouter/windows/x64',
+  ];
+  for (const path of routes) {
+    const response = await get(path, runtime);
+    assert.equal(response.status, 503, path);
+    assert.doesNotMatch(await response.text(), /legacy-service-must-not-run/);
+  }
+  assert.equal(serviceCalls, 0);
 });
 
 test('direct assets use NewAPI ASSETS with R2 authority and retain service fallback without R2', async () => {
@@ -308,6 +343,62 @@ test('concurrent identical uploads have one conditional fence owner and never pu
   assert.equal(apiRead.status, 200);
   assert.equal((await apiRead.json()).generation_id, metadata.generation_id);
   assert.equal((await get('/wechat-group-qrcode/latest', runtime)).status, 302);
+});
+
+test('stale snapshot cannot replace or tombstone a newer committed QR generation', async () => {
+  const runtime = env({
+    ADMIN_PASSWORD: 'correct',
+    ADMIN_SESSION_SECRET: 'session-secret',
+    R2_PUBLIC_BASE_URL: '',
+    WECHAT_GROUP_QR_PUBLIC_BASE_URL: '',
+  });
+  const session = await adminSession(runtime);
+  const snapshotPaused = deferred();
+  const releaseSnapshot = deferred();
+  const originalGet = runtime.DOWNLOADS.get.bind(runtime.DOWNLOADS);
+  let paused = false;
+  runtime.DOWNLOADS.get = async (key) => {
+    const result = await originalGet(key);
+    if (!paused && key === 'wechat-group-qrcode/state/previous.json') {
+      paused = true;
+      snapshotPaused.resolve();
+      await releaseSnapshot.promise;
+    }
+    return result;
+  };
+
+  const staleUpload = get('/admin/wechat-group-qrcode/upload', runtime, qrUploadInit(session, 'stale.png'));
+  await snapshotPaused.promise;
+
+  const digest = await sha256Hex(png);
+  const newer = {
+    asset_id: 'wechat-group-qrcode', format_version: 'qr-generation-v1',
+    generation_id: 'generation-a', operation_id: 'operation-a', version_id: 'version-a',
+    uploaded_at: '2026-08-25T12:00:00.000Z', source: 'admin-panel', filename: 'a.png',
+    r2_key: 'wechat-group-qrcode/images/version-a.png', sha256: digest, size: png.length,
+    content_type: 'image/png',
+  };
+  runtime.DOWNLOADS.objects.set(newer.r2_key, { bytes: png, httpMetadata: { contentType: 'image/png' } });
+  runtime.DOWNLOADS.objects.set('wechat-group-qrcode/metadata/latest.json', newer);
+  runtime.DOWNLOADS.objects.set('wechat-group-qrcode/state/latest.json', newer);
+  runtime.DOWNLOADS.objects.set('wechat-group-qrcode/state/pending.json', {
+    schema_version: 2, phase: 'committed', operation_id: newer.operation_id,
+    generation_id: newer.generation_id, expected: newer,
+  });
+  runtime.DOWNLOADS.etags.set('wechat-group-qrcode/metadata/latest.json', 'etag-a-metadata');
+  runtime.DOWNLOADS.etags.set('wechat-group-qrcode/state/latest.json', 'etag-a-state');
+  runtime.DOWNLOADS.etags.set('wechat-group-qrcode/state/pending.json', 'etag-a-marker');
+  releaseSnapshot.resolve();
+
+  const stale = await staleUpload;
+  assert.equal(stale.status, 503);
+  assert.deepEqual(runtime.DOWNLOADS.deletes, []);
+  assert.equal(storedJson(runtime, 'wechat-group-qrcode/state/pending.json').phase, 'committed');
+  assert.equal(storedJson(runtime, 'wechat-group-qrcode/state/pending.json').operation_id, 'operation-a');
+  assert.equal((await get('/api/wechat-group-qrcode/latest', runtime)).status, 200);
+  assert.equal((await get('/wechat-group-qrcode', runtime)).status, 200);
+  assert.deepEqual(new Uint8Array(await (await get('/wechat-group-qrcode', runtime)).arrayBuffer()), png);
+  assert.equal((await get('/admin', runtime, { headers: { cookie: session.cookie } })).status, 200);
 });
 
 test('stale writer cannot delete or overwrite a foreign pending marker', async () => {
@@ -444,6 +535,33 @@ test('new-generation QR reads fail closed for deletion, replacement, size, and d
     assert.equal((await get('/api/wechat-group-qrcode/latest', runtime)).status, 503);
     assert.equal((await get('/wechat-group-qrcode/latest', runtime)).status, 503);
     assert.equal((await get('/admin', runtime, { headers: { cookie: session.cookie } })).status, 503);
+  }
+});
+
+test('new-generation format proof survives marker and generation-field loss', async () => {
+  const runtime = env({ ADMIN_PASSWORD: 'correct', ADMIN_SESSION_SECRET: 'session-secret' });
+  const session = await adminSession(runtime);
+  assert.equal((await get('/admin/wechat-group-qrcode/upload', runtime, qrUploadInit(session, 'proof.png'))).status, 303);
+  const metadataKey = 'wechat-group-qrcode/metadata/latest.json';
+  const stateKey = 'wechat-group-qrcode/state/latest.json';
+  const pendingKey = 'wechat-group-qrcode/state/pending.json';
+  const metadata = storedJson(runtime, metadataKey);
+  const state = storedJson(runtime, stateKey);
+  delete metadata.generation_id;
+  delete metadata.operation_id;
+  delete state.generation_id;
+  delete state.operation_id;
+  runtime.DOWNLOADS.objects.set(metadataKey, metadata);
+  runtime.DOWNLOADS.objects.set(stateKey, state);
+  await runtime.DOWNLOADS.delete(pendingKey);
+  runtime.DOWNLOADS.objects.set(metadata.r2_key, {
+    bytes: Uint8Array.from([...png, 0]),
+    httpMetadata: { contentType: 'image/png' },
+  });
+  for (const path of ['/api/wechat-group-qrcode/latest', '/wechat-group-qrcode', '/admin']) {
+    const response = await get(path, runtime, path === '/admin' ? { headers: { cookie: session.cookie } } : undefined);
+    assert.equal(response.status, 503, path);
+    assert.doesNotMatch(await response.text(), /proof\.png/);
   }
 });
 
