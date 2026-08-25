@@ -60,6 +60,8 @@ test('Docs compatibility alias maps root and nested console paths to the canonic
   assert.match(app, /function isConsoleDocsPath\(path\)[\s\S]*?path === '\/console\/docs'[\s\S]*?path\.startsWith\('\/console\/docs\/'\)/);
   assert.match(app, /function canonicalDocsPath\(path\)[\s\S]*?`\/docs\$\{path\.slice\('\/console\/docs'\.length\)\}`/);
   assert.match(app, /function canonicalizeDocsLocation\(\)[\s\S]*?window\.history\.replaceState[\s\S]*?window\.location\.search[\s\S]*?window\.location\.hash/);
+  assert.match(app, /function installDocsHistoryNormalizer\(\)[\s\S]*?window\.history\[method\][\s\S]*?normalizeDocsHistoryUrl\(url\)/);
+  assert.match(app, /function normalizeDocsHistoryUrl\(value\)[\s\S]*?canonicalDocsPath\(currentPath\)/);
   assert.match(app, /if \(isDocsPath\(path\)\)[\s\S]*?await renderCanonicalDocs\(\)/);
 });
 

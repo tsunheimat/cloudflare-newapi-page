@@ -144,6 +144,66 @@ test('legacy tokenrouter Docs aliases resolve to quickstart without a tokenroute
   }
 });
 
+test('mounted DocsHub related navigation normalizes legacy aliases before fetching', { timeout: 30_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await newPage(context);
+  const docsRequests = [];
+  await page.route('**/api/docs/v2/**', async (route) => {
+    const url = new URL(route.request().url());
+    docsRequests.push(url);
+    let response;
+    if (url.pathname.endsWith('/config')) {
+      response = { success: true, data: { enabled: true } };
+    } else if (url.pathname.endsWith('/spaces')) {
+      response = { success: true, data: [{ slug: 'quickstart', title: 'Quickstart' }] };
+    } else if (url.pathname.endsWith('/tree') || url.pathname.endsWith('/navigation')) {
+      response = {
+        success: true,
+        data: [{ type: 'page', id: 1, slug: 'quickstart', path: 'quickstart', title: 'Quickstart', locale: 'zh', children: [] }],
+      };
+    } else if (url.pathname.endsWith('/pages/quickstart')) {
+      response = {
+        success: true,
+        data: {
+          id: 1,
+          space_slug: 'quickstart',
+          slug: 'quickstart',
+          title: 'Quickstart',
+          locale: 'zh',
+          path: '/docs/quickstart/quickstart',
+          content: { blocks: [] },
+          related: [{ page_id: 2, title: 'Tokenrouter', relation_type: 'related', path: '/docs/tokenrouter' }],
+        },
+      };
+    } else {
+      response = {
+        success: true,
+        data: {
+          id: 2,
+          space_slug: 'quickstart',
+          slug: 'tokenrouter',
+          title: 'Tokenrouter',
+          locale: 'zh',
+          path: '/docs/quickstart/tokenrouter',
+          content: { blocks: [] },
+          related: [],
+        },
+      };
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(response) });
+  });
+
+  await page.goto(`${baseUrl}/docs/quickstart/quickstart`, { waitUntil: 'domcontentloaded' });
+  await page.locator('.docs-hub-page-title').waitFor();
+  await page.locator('.docs-hub-related a').click();
+  await page.waitForURL((url) => url.pathname === '/docs/quickstart/tokenrouter');
+  await page.locator('.docs-hub-page-title').filter({ hasText: 'Tokenrouter' }).waitFor();
+
+  assert.ok(docsRequests.some((url) => url.pathname.endsWith('/pages/tokenrouter') && url.searchParams.get('space') === 'quickstart'));
+  assert.ok(docsRequests.every((url) => url.searchParams.get('space') !== 'tokenrouter'));
+  await context.close();
+});
+
 test('public Docs navigation ignores browser sessions and stale localStorage', { timeout: 30_000 }, async () => {
   for (const storedUser of [null, { public_id: 'stale-browser-user' }]) {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });

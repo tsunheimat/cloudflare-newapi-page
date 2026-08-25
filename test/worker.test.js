@@ -296,6 +296,87 @@ test('public Docs V2 edge cache isolates URL variants and preserves safe ETag re
   assert.equal(head.headers.get('etag'), '"docs-cache-v1"');
 });
 
+test('public Docs cache ages entries and refreshes them during the stale window', async () => {
+  const cacheEntries = new Map();
+  const cache = {
+    async match(request) {
+      return cacheEntries.get(new URL(request.url).toString())?.clone();
+    },
+    async put(request, response) {
+      cacheEntries.set(new URL(request.url).toString(), response.clone());
+    },
+  };
+  const token = `worker-docs-revalidation-${'x'.repeat(32)}`;
+  let version = 1;
+  let upstreamCalls = 0;
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+    DOCS_CACHE: cache,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => {
+        upstreamCalls += 1;
+        return new Response(JSON.stringify({ success: true, data: { version } }), {
+          headers: {
+            'content-type': 'application/json',
+            'x-newapi-content-contract': 'v1',
+            etag: `"docs-revalidation-v${version}"`,
+          },
+        });
+      },
+    },
+  };
+  const path = '/api/docs/v2/config';
+  const first = await fetchWorker(path, env);
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get('x-worker-docs-cache-stored-at'), null, 'cache age metadata must stay internal');
+  assert.equal((await first.json()).data.version, 1);
+  assert.equal(upstreamCalls, 1);
+
+  const key = [...cacheEntries.keys()][0];
+  const stored = cacheEntries.get(key);
+  const agedHeaders = new Headers(stored.headers);
+  agedHeaders.set('x-worker-docs-cache-stored-at', String(Date.now() - 61_000));
+  cacheEntries.set(key, new Response(await stored.text(), {
+    status: stored.status,
+    headers: agedHeaders,
+  }));
+
+  version = 2;
+  const waitUntilPromises = [];
+  const stale = await worker.fetch(
+    new Request(`https://public.example${path}`),
+    env,
+    { waitUntil(promise) { waitUntilPromises.push(promise); } },
+  );
+  assert.equal(stale.status, 200);
+  assert.equal((await stale.json()).data.version, 1, 'stale-while-revalidate may serve the validated prior body');
+  assert.equal(upstreamCalls, 2, 'stale response returns while the revalidation request is scheduled');
+  assert.equal(waitUntilPromises.length, 1);
+  await Promise.all(waitUntilPromises);
+  assert.equal(upstreamCalls, 2);
+
+  const refreshed = await fetchWorker(path, env);
+  assert.equal(refreshed.status, 200);
+  assert.equal((await refreshed.json()).data.version, 2);
+  assert.equal(refreshed.headers.get('etag'), '"docs-revalidation-v2"');
+  assert.equal(upstreamCalls, 2, 'the refreshed entry is reused while fresh');
+
+  const refreshedEntry = cacheEntries.get(key);
+  const expiredHeaders = new Headers(refreshedEntry.headers);
+  expiredHeaders.set('x-worker-docs-cache-stored-at', String(Date.now() - 361_000));
+  cacheEntries.set(key, new Response(await refreshedEntry.text(), {
+    status: refreshedEntry.status,
+    headers: expiredHeaders,
+  }));
+  version = 3;
+  const expired = await fetchWorker(path, env);
+  assert.equal(expired.status, 200);
+  assert.equal((await expired.json()).data.version, 3);
+  assert.equal(upstreamCalls, 3, 'entries beyond stale-while-revalidate synchronously refresh from NewAPI');
+});
+
 test('Docs cache misses preserve fail-closed backend errors and never store failures', async () => {
   const cacheEntries = new Map();
   const cache = {

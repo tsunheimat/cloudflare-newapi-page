@@ -30,6 +30,9 @@ import { createDocsHubAdapter } from './adapters/docs-hub.js';
 const PHASE = '2';
 const DOCS_CACHE_CONTROL = 'public, s-maxage=60, stale-while-revalidate=300';
 const DOCS_CACHEABLE_METHODS = new Set(['GET', 'HEAD']);
+const DOCS_CACHE_FRESH_SECONDS = 60;
+const DOCS_CACHE_STALE_SECONDS = 300;
+const DOCS_CACHE_STORED_AT_HEADER = 'x-worker-docs-cache-stored-at';
 
 export default {
   async fetch(request, env = {}, ctx = undefined) {
@@ -302,11 +305,21 @@ async function handleDocsHubRoute(request, env, url, pathname, ctx = undefined) 
  */
 async function handleCachedDocsResponse(request, env, ctx, cacheKey, produce) {
   const cache = docsCache(env);
+  let cached = null;
   if (cache) {
     try {
-      const cached = await cache.match(cacheKey);
+      cached = await cache.match(cacheKey);
       if (cached?.status === 200 && isPublicDocsJson(cached)) {
-        return docsCachedResponse(request, cached);
+        const age = docsCacheAgeSeconds(cached);
+        if (age !== null && age <= DOCS_CACHE_FRESH_SECONDS) {
+          return docsCachedResponse(request, cached);
+        }
+        if (age !== null && age <= DOCS_CACHE_FRESH_SECONDS + DOCS_CACHE_STALE_SECONDS) {
+          const revalidation = refreshDocsCache(cache, cacheKey, cached, produce);
+          if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(revalidation);
+          else await revalidation;
+          return docsCachedResponse(request, cached);
+        }
       }
     } catch {
       // Cache API is an optimization only. Continue to the authoritative VPC
@@ -316,12 +329,37 @@ async function handleCachedDocsResponse(request, env, ctx, cacheKey, produce) {
 
   const response = markDocsCacheable(await produce());
   if (cache && response.status === 200 && isPublicDocsJson(response)) {
-    const cacheCopy = response.clone();
+    const cacheCopy = docsCacheEntry(response);
     const write = Promise.resolve().then(() => cache.put(cacheKey, cacheCopy)).catch(() => {});
+    if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(write);
+    else await write;
+  } else if (cache && cached?.status === 200 && response.status === 304 && isPublicDocsJson(cached)) {
+    // A conditional revalidation can confirm that the expired representation
+    // is still authoritative without returning a body. Refresh its explicit
+    // age metadata so it does not become an immortal hit.
+    const write = Promise.resolve()
+      .then(() => cache.put(cacheKey, docsCacheEntry(cached)))
+      .catch(() => {});
     if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(write);
     else await write;
   }
   return headResponseIfNeeded(request, response);
+}
+
+async function refreshDocsCache(cache, cacheKey, cached, produce) {
+  try {
+    const response = markDocsCacheable(await produce());
+    if (response.status === 200 && isPublicDocsJson(response)) {
+      await cache.put(cacheKey, docsCacheEntry(response));
+    } else if (response.status === 304 && isPublicDocsJson(cached)) {
+      // Keep the validated public body but reset its age after a successful
+      // conditional check. Error responses are never written.
+      await cache.put(cacheKey, docsCacheEntry(cached));
+    }
+  } catch {
+    // Revalidation is best effort during the stale window. The prior entry is
+    // still a validated public response; an upstream failure is never cached.
+  }
 }
 
 function docsCache(env) {
@@ -366,6 +404,23 @@ function markDocsCacheable(response) {
   return withSecurityHeaders(new Response(response.body, { status: response.status, headers }));
 }
 
+function docsCacheEntry(response) {
+  const headers = new Headers(response.headers);
+  headers.set(DOCS_CACHE_STORED_AT_HEADER, String(Date.now()));
+  return new Response(response.clone().body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function docsCacheAgeSeconds(response) {
+  const storedAt = Number(response?.headers?.get(DOCS_CACHE_STORED_AT_HEADER));
+  if (!Number.isFinite(storedAt) || storedAt < 0) return null;
+  const elapsed = Date.now() - storedAt;
+  return Math.max(0, elapsed) / 1_000;
+}
+
 function isPublicDocsJson(response) {
   const cacheControl = response?.headers?.get('cache-control') || '';
   return response?.status === 200
@@ -386,7 +441,13 @@ function docsCachedResponse(request, cached) {
     });
     return withSecurityHeaders(new Response(null, { status: 304, headers }));
   }
-  return headResponseIfNeeded(request, withSecurityHeaders(cached.clone()));
+  const headers = new Headers(cached.headers);
+  headers.delete(DOCS_CACHE_STORED_AT_HEADER);
+  return headResponseIfNeeded(request, withSecurityHeaders(new Response(cached.clone().body, {
+    status: cached.status,
+    statusText: cached.statusText,
+    headers,
+  })));
 }
 
 function headResponseIfNeeded(request, response) {

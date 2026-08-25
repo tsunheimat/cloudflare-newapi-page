@@ -60,6 +60,7 @@ const contentApiCache = new Map();
 let canonicalPricingScriptPromise = null;
 let canonicalDocsScriptPromise = null;
 let canonicalDocsMounted = false;
+let docsHistoryNormalizerInstalled = false;
 let pricingLanguageBinding = null;
 let pricingLanguageMenuId = 0;
 
@@ -78,6 +79,12 @@ const DOCS_SPACE_SLUGS = new Set([
   'changelog',
 ]);
 const LEGACY_QUICKSTART_PAGE_ALIASES = new Set(['tokenrouter']);
+
+// The mounted DocsHub owns its own React Router history. Intercept only
+// same-origin history writes so links emitted by that runtime receive the
+// same finite alias mapping as the Worker shell and browser popstate path.
+// Non-Docs routes, external URLs, and unknown Docs segments are untouched.
+installDocsHistoryNormalizer();
 
 window.addEventListener('popstate', () => {
   canonicalizeDocsLocation();
@@ -1252,6 +1259,34 @@ function canonicalizeDocsLocation() {
     );
   }
   return path;
+}
+
+function installDocsHistoryNormalizer() {
+  if (docsHistoryNormalizerInstalled) return;
+  for (const method of ['pushState', 'replaceState']) {
+    const original = window.history[method].bind(window.history);
+    window.history[method] = (state, title, url) => original(
+      state,
+      title,
+      normalizeDocsHistoryUrl(url),
+    );
+  }
+  docsHistoryNormalizerInstalled = true;
+}
+
+function normalizeDocsHistoryUrl(value) {
+  if (value === null || value === undefined) return value;
+  let target;
+  try {
+    target = new URL(String(value), window.location.href);
+  } catch {
+    return value;
+  }
+  if (target.origin !== window.location.origin) return value;
+  const currentPath = normalizePath(target.pathname);
+  const canonical = canonicalDocsPath(currentPath);
+  if (canonical === currentPath) return value;
+  return `${canonical}${target.search}${target.hash}`;
 }
 
 function docsPath(slug) {
