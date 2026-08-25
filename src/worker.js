@@ -33,6 +33,10 @@ const DOCS_CACHEABLE_METHODS = new Set(['GET', 'HEAD']);
 const DOCS_CACHE_FRESH_SECONDS = 60;
 const DOCS_CACHE_STALE_SECONDS = 300;
 const DOCS_CACHE_STORED_AT_HEADER = 'x-worker-docs-cache-stored-at';
+// A module-level flight registry is isolate-local in Workers. Keying first by
+// the injected/cache API object keeps tests and multiple cache implementations
+// independent while coalescing requests for the same URL within one isolate.
+const DOCS_CACHE_REFRESH_FLIGHTS = new WeakMap();
 
 export default {
   async fetch(request, env = {}, ctx = undefined) {
@@ -112,9 +116,9 @@ export async function route(request, env = {}, ctx = undefined) {
       env,
       ctx,
       docsCacheKey(request, pathname, docsNavigationCacheSearch(url)),
-      async () => publicContentResponse(
+      async (ifNoneMatch) => publicContentResponse(
         await adapter.getDocsNavigationResponse({
-          ifNoneMatch: conditionalValidator(request),
+          ifNoneMatch,
         }),
         (payload) => payload,
       ),
@@ -289,8 +293,8 @@ async function handleDocsHubRoute(request, env, url, pathname, ctx = undefined) 
     env,
     ctx,
     docsCacheKey(request, pathname, new URL(upstreamPath, 'https://worker.invalid').search),
-    async () => publicContentResponse(
-      await adapter.getResponse(upstreamPath, { ifNoneMatch }),
+    async (revalidationValidator) => publicContentResponse(
+      await adapter.getResponse(upstreamPath, { ifNoneMatch: revalidationValidator }),
       (payload) => payload,
     ),
   );
@@ -307,59 +311,87 @@ async function handleCachedDocsResponse(request, env, ctx, cacheKey, produce) {
   const cache = docsCache(env);
   let cached = null;
   if (cache) {
-    try {
-      cached = await cache.match(cacheKey);
-      if (cached?.status === 200 && isPublicDocsJson(cached)) {
-        const age = docsCacheAgeSeconds(cached);
-        if (age !== null && age <= DOCS_CACHE_FRESH_SECONDS) {
-          return docsCachedResponse(request, cached);
-        }
-        if (age !== null && age <= DOCS_CACHE_FRESH_SECONDS + DOCS_CACHE_STALE_SECONDS) {
-          const revalidation = refreshDocsCache(cache, cacheKey, cached, produce);
-          if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(revalidation);
-          else await revalidation;
-          return docsCachedResponse(request, cached);
-        }
-      }
-    } catch {
+    try { cached = await cache.match(cacheKey); } catch {
       // Cache API is an optimization only. Continue to the authoritative VPC
       // adapter when a platform/cache implementation is unavailable.
     }
+    if (cached?.status === 200 && isPublicDocsJson(cached)) {
+      const age = docsCacheAgeSeconds(cached);
+      if (age !== null && age <= DOCS_CACHE_FRESH_SECONDS) {
+        return docsCachedResponse(request, cached);
+      }
+      if (age !== null && age <= DOCS_CACHE_FRESH_SECONDS + DOCS_CACHE_STALE_SECONDS) {
+        const revalidation = coalescedDocsCacheRefresh(cache, cacheKey, cached, produce);
+        const bestEffort = revalidation.catch(() => {});
+        if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(bestEffort);
+        else await bestEffort;
+        return docsCachedResponse(request, cached);
+      }
+
+      // Entries beyond the stale window (and legacy entries without age
+      // metadata) synchronously revalidate. The refresh itself is still
+      // coalesced with any stale-window flight already in progress.
+      const refreshed = await coalescedDocsCacheRefresh(cache, cacheKey, cached, produce);
+      if (refreshed.entry) return docsCachedResponse(request, refreshed.entry);
+      return headResponseIfNeeded(request, refreshed.response);
+    }
   }
 
-  const response = markDocsCacheable(await produce());
+  const response = markDocsCacheable(await produce(conditionalValidator(request)));
   if (cache && response.status === 200 && isPublicDocsJson(response)) {
     const cacheCopy = docsCacheEntry(response);
     const write = Promise.resolve().then(() => cache.put(cacheKey, cacheCopy)).catch(() => {});
-    if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(write);
-    else await write;
-  } else if (cache && cached?.status === 200 && response.status === 304 && isPublicDocsJson(cached)) {
-    // A conditional revalidation can confirm that the expired representation
-    // is still authoritative without returning a body. Refresh its explicit
-    // age metadata so it does not become an immortal hit.
-    const write = Promise.resolve()
-      .then(() => cache.put(cacheKey, docsCacheEntry(cached)))
-      .catch(() => {});
     if (typeof ctx?.waitUntil === 'function') ctx.waitUntil(write);
     else await write;
   }
   return headResponseIfNeeded(request, response);
 }
 
-async function refreshDocsCache(cache, cacheKey, cached, produce) {
-  try {
-    const response = markDocsCacheable(await produce());
-    if (response.status === 200 && isPublicDocsJson(response)) {
-      await cache.put(cacheKey, docsCacheEntry(response));
-    } else if (response.status === 304 && isPublicDocsJson(cached)) {
-      // Keep the validated public body but reset its age after a successful
-      // conditional check. Error responses are never written.
-      await cache.put(cacheKey, docsCacheEntry(cached));
-    }
-  } catch {
-    // Revalidation is best effort during the stale window. The prior entry is
-    // still a validated public response; an upstream failure is never cached.
+function coalescedDocsCacheRefresh(cache, cacheKey, cached, produce) {
+  let flights = DOCS_CACHE_REFRESH_FLIGHTS.get(cache);
+  if (!flights) {
+    flights = new Map();
+    DOCS_CACHE_REFRESH_FLIGHTS.set(cache, flights);
   }
+  const key = cacheKey.url || String(cacheKey);
+  const existing = flights.get(key);
+  if (existing) return existing;
+
+  // Defer the async operation before publishing the promise so another
+  // request cannot observe a partially initialized refresh.
+  const flight = Promise.resolve().then(() => refreshDocsCache(cache, cacheKey, cached, produce));
+  flights.set(key, flight);
+  const cleanup = () => {
+    if (flights.get(key) === flight) flights.delete(key);
+    if (flights.size === 0) DOCS_CACHE_REFRESH_FLIGHTS.delete(cache);
+  };
+  void flight.then(cleanup, cleanup);
+  return flight;
+}
+
+async function refreshDocsCache(cache, cacheKey, cached, produce) {
+  // A cache refresh is conditional on the representation being refreshed,
+  // never on an unrelated browser validator. Client validators are evaluated
+  // later by docsCachedResponse against the final cached representation.
+  const cachedEtag = cached?.headers?.get('etag') || undefined;
+  const response = markDocsCacheable(await produce(cachedEtag));
+  let entry = null;
+  if (response.status === 200 && isPublicDocsJson(response)) {
+    entry = docsCacheEntry(response);
+  } else if (response.status === 304 && isPublicDocsJson(cached)) {
+    // Keep the validated public body but reset its age after a successful
+    // conditional check. Error responses are never written.
+    entry = docsCacheEntry(cached);
+  }
+  if (entry) {
+    try {
+      await cache.put(cacheKey, entry.clone());
+    } catch {
+      // Cache writes are best effort. The refreshed entry is still returned to
+      // a synchronously revalidating caller, while stale callers keep old data.
+    }
+  }
+  return { response, entry };
 }
 
 function docsCache(env) {

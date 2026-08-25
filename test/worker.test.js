@@ -377,6 +377,153 @@ test('public Docs cache ages entries and refreshes them during the stale window'
   assert.equal(upstreamCalls, 3, 'entries beyond stale-while-revalidate synchronously refresh from NewAPI');
 });
 
+test('stale Docs revalidation uses the cached ETag, not the browser validator', async () => {
+  const cacheEntries = new Map();
+  const cache = {
+    async match(request) {
+      return cacheEntries.get(new URL(request.url).toString())?.clone();
+    },
+    async put(request, response) {
+      cacheEntries.set(new URL(request.url).toString(), response.clone());
+    },
+  };
+  const token = `worker-docs-revalidation-validator-${'x'.repeat(32)}`;
+  let upstreamCalls = 0;
+  const seenValidators = [];
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+    DOCS_CACHE: cache,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async (request) => {
+        upstreamCalls += 1;
+        seenValidators.push(request.headers.get('if-none-match'));
+        if (upstreamCalls === 2) {
+          return new Response(null, {
+            status: 304,
+            headers: {
+              'x-newapi-content-contract': 'v1',
+              etag: '"docs-revalidation-v2"',
+            },
+          });
+        }
+        return new Response(JSON.stringify({ success: true, data: { version: 1 } }), {
+          headers: {
+            'content-type': 'application/json',
+            'x-newapi-content-contract': 'v1',
+            etag: '"docs-revalidation-v1"',
+          },
+        });
+      },
+    },
+  };
+  const path = '/api/docs/v2/config';
+  await fetchWorker(path, env);
+  const key = [...cacheEntries.keys()][0];
+  const stored = cacheEntries.get(key);
+  const originalStoredAt = String(Date.now() - 61_000);
+  const agedHeaders = new Headers(stored.headers);
+  agedHeaders.set('x-worker-docs-cache-stored-at', originalStoredAt);
+  cacheEntries.set(key, new Response(await stored.text(), {
+    status: stored.status,
+    headers: agedHeaders,
+  }));
+
+  const waitUntilPromises = [];
+  const stale = await worker.fetch(
+    new Request(`https://public.example${path}`, {
+      headers: { 'if-none-match': '"docs-revalidation-v2"' },
+    }),
+    env,
+    { waitUntil(promise) { waitUntilPromises.push(promise); } },
+  );
+  assert.equal(stale.status, 200);
+  assert.equal((await stale.json()).data.version, 1);
+  assert.equal(upstreamCalls, 2);
+  assert.deepEqual(seenValidators, [null, '"docs-revalidation-v1"']);
+  await Promise.all(waitUntilPromises);
+  assert.equal(
+    cacheEntries.get(key).headers.get('x-worker-docs-cache-stored-at'),
+    originalStoredAt,
+    'a 304 for a newer validator must not refresh the old cached entry timestamp',
+  );
+});
+
+test('concurrent stale Docs requests share one refresh flight per cache key', async () => {
+  const cacheEntries = new Map();
+  let cachePuts = 0;
+  const cache = {
+    async match(request) {
+      return cacheEntries.get(new URL(request.url).toString())?.clone();
+    },
+    async put(request, response) {
+      cachePuts += 1;
+      cacheEntries.set(new URL(request.url).toString(), response.clone());
+    },
+  };
+  const token = `worker-docs-single-flight-${'x'.repeat(32)}`;
+  let version = 1;
+  let upstreamCalls = 0;
+  let releaseRefresh;
+  const refreshGate = new Promise((resolve) => { releaseRefresh = resolve; });
+  const env = {
+    ...fixtureEnv,
+    CONTENT_ADAPTER: 'newapi',
+    LIVE_CONTENT_ADAPTER_TOKEN: token,
+    DOCS_CACHE: cache,
+    NEWAPI_VPC_SERVICE: {
+      fetch: async () => {
+        upstreamCalls += 1;
+        if (upstreamCalls === 2) await refreshGate;
+        return new Response(JSON.stringify({ success: true, data: { version } }), {
+          headers: {
+            'content-type': 'application/json',
+            'x-newapi-content-contract': 'v1',
+            etag: `"docs-single-flight-v${version}"`,
+          },
+        });
+      },
+    },
+  };
+  const path = '/api/docs/v2/config';
+  await fetchWorker(path, env);
+  const key = [...cacheEntries.keys()][0];
+  const stored = cacheEntries.get(key);
+  const agedHeaders = new Headers(stored.headers);
+  agedHeaders.set('x-worker-docs-cache-stored-at', String(Date.now() - 61_000));
+  cacheEntries.set(key, new Response(await stored.text(), {
+    status: stored.status,
+    headers: agedHeaders,
+  }));
+  version = 2;
+
+  const waitUntilPromises = [];
+  const staleRequest = () => worker.fetch(
+    new Request(`https://public.example${path}`),
+    env,
+    { waitUntil(promise) { waitUntilPromises.push(promise); } },
+  );
+  const first = staleRequest();
+  const second = staleRequest();
+  const [firstResponse, secondResponse] = await Promise.all([first, second]);
+  assert.equal(firstResponse.status, 200);
+  assert.equal(secondResponse.status, 200);
+  assert.equal((await firstResponse.json()).data.version, 1);
+  assert.equal((await secondResponse.json()).data.version, 1);
+  assert.equal(upstreamCalls, 2, 'concurrent stale requests must issue one VPC refresh');
+  assert.equal(waitUntilPromises.length, 2, 'each stale request may register the shared flight');
+
+  releaseRefresh();
+  await Promise.all(waitUntilPromises);
+  assert.equal(upstreamCalls, 2);
+  assert.equal(cachePuts, 2, 'the shared refresh must produce one cache write');
+  const refreshed = await fetchWorker(path, env);
+  assert.equal(refreshed.status, 200);
+  assert.equal((await refreshed.json()).data.version, 2);
+  assert.equal(upstreamCalls, 2);
+});
+
 test('Docs cache misses preserve fail-closed backend errors and never store failures', async () => {
   const cacheEntries = new Map();
   const cache = {
