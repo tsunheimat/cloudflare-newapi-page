@@ -16,6 +16,7 @@ const WRANGLER_BIN_PATH = resolve(
 
 export const PRODUCTION_CONTRACT = Object.freeze({
   workerName: 'cloudflare-newapi-page',
+  productionWorkerName: 'cloudflare-newapi-page-production',
   defaultContentAdapter: 'fixture',
   stagingContentAdapter: 'fixture',
   productionContentAdapter: 'newapi',
@@ -128,6 +129,10 @@ export function assertProductionConfig(source) {
   );
 
   assert.equal(value(sections, '<root>', 'name'), PRODUCTION_CONTRACT.workerName);
+  assert.equal(
+    value(sections, 'env.production', 'name'),
+    PRODUCTION_CONTRACT.productionWorkerName,
+  );
   assert.equal(
     value(sections, 'vars', 'CONTENT_ADAPTER'),
     PRODUCTION_CONTRACT.defaultContentAdapter,

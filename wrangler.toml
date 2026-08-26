@@ -49,6 +49,7 @@ binding = "NEWAPI_VPC_SERVICE"
 service_id = "01a027bb-280d-7630-b837-7afd6a0ca196"
 
 [env.production]
+name = "cloudflare-newapi-page-production"
 workers_dev = true
 
 [env.production.vars]

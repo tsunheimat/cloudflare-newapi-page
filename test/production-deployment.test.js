@@ -11,6 +11,7 @@ import {
   FORBIDDEN_PRODUCTION_ENVIRONMENT_VARIABLES,
   WRANGLER_PRODUCTION_DOTENV_FILES,
   assertCleanCommit,
+  PRODUCTION_CONTRACT,
   assertProductionConfig,
   assertProductionRuntimeContract,
   assertCredentialPrerequisites,
@@ -60,6 +61,10 @@ const syntheticDeployEnvironment = () => ({
 
 test('production preflight accepts the committed deployment contract', async () => {
   const source = await readFile(CONFIG_URL, 'utf8');
+  assert.match(
+    source,
+    new RegExp(`\\[env\\.production\\]\\s+name = "${PRODUCTION_CONTRACT.productionWorkerName}"`),
+  );
   assert.doesNotThrow(() => assertProductionConfig(source));
   await assert.doesNotReject(assertProductionRuntimeContract());
 });
