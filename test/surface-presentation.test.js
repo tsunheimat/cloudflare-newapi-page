@@ -89,7 +89,8 @@ test('front-door home/header remain present and content calls stay fixture API-r
   const [app, _styles, index] = await sources;
 
   assert.match(index, /<header class="site-header">/);
-  assert.match(index, /<span class="brand-mark" aria-hidden="true">J<\/span>/);
+  assert.match(index, /src="\/brand\/juapi-logo\.png"[\s\S]*?alt="JuAPI"/);
+  assert.match(index, /class="brand-logo brand-logo--dark"/);
   assert.match(index, /<span class="nav-phase">Phase 2<\/span>/);
   assert.match(app, /把接口能力，变成清晰的开发体验。/);
   assert.match(app, /PHASE 2 DEPLOYMENT BOUNDARY/);

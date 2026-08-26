@@ -11,10 +11,13 @@
 - `/api/content/pricing`：保留 NewAPI pricing fields 的 fixture contract。
 - `/api/integrations/downloads`：既有下载 Worker Service Binding 的状态、route mode 与能力边界。
 - Worker security headers、API fail-closed 行为与 SPA asset fallback。
+- 统一的 JuAPI 界面：三个页面共用同一套 logo、色板、排版与组件，支持浅色 / 深色主题（跟随系统，可在 header 手动切换）。
 
 所有 fixture 内容在 API 和 UI 都明确标记为演示数据，不代表 live NewAPI、provider 能力或生产报价。
 
-Docs/Pricing presentation 的 canonical source 是 NewAPI commit `4d27865ce8342530f362595fdcd134eb83062a35`。本仓库保留 QuantumNous copyright 与 GNU AGPL v3-or-later license；完整 provenance 见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，license text 见 [LICENSE](LICENSE)。`/` 首页、现有 header、Worker adapter、download boundary 与 deployment contract 不属于该 presentation port。
+Docs/Pricing presentation 的 canonical source 是 NewAPI commit `4d27865ce8342530f362595fdcd134eb83062a35`。本仓库保留 QuantumNous copyright 与 GNU AGPL v3-or-later license；完整 provenance 见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，license text 见 [LICENSE](LICENSE)。`/` 首页、header/footer、视觉设计系统、Worker adapter、download boundary 与 deployment contract 不属于该 presentation port。
+
+界面文件：`public/index.html`（外壳、header、footer）、`public/static/styles.css`（设计 token 与全部样式）、`public/static/app.js`（路由与三个页面的渲染）、`public/static/theme.js`（首屏前应用主题，避免闪烁）、`public/brand/`（JuAPI logo）。Docs 与 Pricing 的版式与数据保持不变，只重新定义了 token。
 
 ## 本地运行
 

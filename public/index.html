@@ -5,29 +5,95 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="独立的 NewAPI 公共文档与模型价格站点。"
+      content="JuAPI 开发者中心：开发文档、模型价格与客户端下载入口。"
     />
-    <meta name="theme-color" content="#f4f1ea" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="theme-color"
+      content="#ffffff"
+      media="(prefers-color-scheme: light)"
+    />
+    <meta
+      name="theme-color"
+      content="#080d18"
+      media="(prefers-color-scheme: dark)"
+    />
     <title>JuAPI 开发者中心</title>
+    <link rel="icon" href="/brand/juapi-mark.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/brand/juapi-mark.png" />
+    <link rel="preload" as="image" href="/brand/juapi-logo.png" />
     <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/theme.js"></script>
     <script type="module" src="/static/app.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
     <header class="site-header">
-      <a class="brand" href="/" data-link aria-label="JuAPI 开发者中心首页">
-        <span class="brand-mark" aria-hidden="true">J</span>
-        <span class="brand-copy">
-          <strong>JuAPI</strong>
-          <small>开发者中心</small>
-        </span>
-      </a>
-      <nav class="primary-nav" aria-label="主导航">
-        <a href="/docs/quickstart" data-link data-nav="docs">文档</a>
-        <a href="/pricing" data-link data-nav="pricing">价格</a>
-        <span class="nav-divider" aria-hidden="true"></span>
-        <span class="nav-phase">Phase 2</span>
-      </nav>
+      <div class="site-header__inner">
+        <a class="brand" href="/" data-link aria-label="JuAPI 开发者中心首页">
+          <img
+            class="brand-logo"
+            src="/brand/juapi-logo.png"
+            alt="JuAPI"
+            width="1255"
+            height="304"
+            draggable="false"
+          />
+          <img
+            class="brand-logo brand-logo--dark"
+            src="/brand/juapi-logo-dark.png"
+            alt=""
+            aria-hidden="true"
+            width="1255"
+            height="304"
+            draggable="false"
+          />
+          <span class="brand-divider" aria-hidden="true"></span>
+          <span class="brand-copy">开发者中心</span>
+        </a>
+        <nav class="primary-nav" aria-label="主导航">
+          <a href="/" data-link data-nav="home">首页</a>
+          <a href="/docs/quickstart" data-link data-nav="docs">文档</a>
+          <a href="/pricing" data-link data-nav="pricing">价格</a>
+        </nav>
+        <div class="header-actions">
+          <span class="nav-phase">Phase 2</span>
+          <button
+            type="button"
+            class="theme-toggle"
+            data-theme-toggle
+            aria-label="切换深色 / 浅色主题"
+            title="切换深色 / 浅色主题"
+          >
+            <svg
+              class="theme-toggle__sun"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+            >
+              <circle cx="12" cy="12" r="4.2" />
+              <path
+                d="M12 2.6v2.2M12 19.2v2.2M4.2 12H2M22 12h-2.2M6.1 6.1 4.5 4.5M19.5 19.5l-1.6-1.6M17.9 6.1l1.6-1.6M4.5 19.5l1.6-1.6"
+              />
+            </svg>
+            <svg
+              class="theme-toggle__moon"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M20 13.4A8.2 8.2 0 1 1 10.6 4a6.6 6.6 0 0 0 9.4 9.4Z" />
+            </svg>
+          </button>
+        </div>
+      </div>
     </header>
     <main id="main-content" tabindex="-1">
       <div class="loading-shell" aria-live="polite">
@@ -35,6 +101,35 @@
         正在载入开发者中心…
       </div>
     </main>
+    <footer class="site-footer">
+      <div class="site-footer__inner">
+        <div class="site-footer__brand">
+          <img
+            class="site-footer__mark"
+            src="/brand/juapi-mark.png"
+            alt=""
+            aria-hidden="true"
+            width="384"
+            height="384"
+            draggable="false"
+          />
+          <div>
+            <strong>JuAPI 开发者中心</strong>
+            <span>开发文档 · 模型价格 · 客户端下载</span>
+          </div>
+        </div>
+        <nav class="site-footer__links" aria-label="页脚导航">
+          <a href="/docs/quickstart" data-link>开发文档</a>
+          <a href="/pricing" data-link>模型价格</a>
+          <a href="/downloads">客户端下载</a>
+          <a href="/api/health">服务状态</a>
+        </nav>
+        <p class="site-footer__legal">
+          Docs 与 Pricing 表现层改编自 QuantumNous NewAPI，依 GNU AGPL v3
+          或更新版本授权。
+        </p>
+      </div>
+    </footer>
     <div id="toast-region" class="toast-region" aria-live="polite"></div>
   </body>
 </html>

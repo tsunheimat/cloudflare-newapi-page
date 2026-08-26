@@ -12,6 +12,7 @@ import {
 } from './pricing.js';
 
 const PRICING_MOBILE_QUERY = '(max-width: 767px)';
+const THEME_STORAGE_KEY = 'juapi-theme';
 const pricingMobileMedia = window.matchMedia?.(PRICING_MOBILE_QUERY) || null;
 
 const state = {
@@ -61,7 +62,46 @@ document.addEventListener('click', (event) => {
   navigate(`${target.pathname}${target.search}`);
 });
 
+installThemeToggle();
 renderRoute();
+
+/*
+`theme.js` has already resolved and applied the theme before first paint. This
+only owns the toggle itself, and keeps following the OS while the visitor has
+not made an explicit choice.
+*/
+function installThemeToggle() {
+  const root = document.documentElement;
+  const toggle = document.querySelector('[data-theme-toggle]');
+  const syncPressedState = () => {
+    toggle?.setAttribute(
+      'aria-pressed',
+      String(root.getAttribute('data-theme') === 'dark'),
+    );
+  };
+
+  toggle?.addEventListener('click', () => {
+    const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    root.setAttribute('data-theme-source', 'user');
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      // Private-mode storage denial must not break the toggle itself.
+    }
+    syncPressedState();
+  });
+
+  window
+    .matchMedia?.('(prefers-color-scheme: dark)')
+    .addEventListener('change', (event) => {
+      if (root.getAttribute('data-theme-source') === 'user') return;
+      root.setAttribute('data-theme', event.matches ? 'dark' : 'light');
+      syncPressedState();
+    });
+
+  syncPressedState();
+}
 
 function handlePricingViewportChange() {
   if (normalizePath(window.location.pathname) !== '/pricing' || !state.pricing) return;
@@ -104,34 +144,66 @@ async function renderHome() {
     state.integration = await api('/api/integrations/downloads');
   }
   document.title = 'JuAPI 开发者中心';
+  const downloads = state.integration.data;
   const fragment = document.createDocumentFragment();
+
   const hero = node('section', { class: 'home-hero' });
-  const eyebrow = node('div', { class: 'eyebrow' }, 'NEWAPI PUBLIC SURFACE');
-  const heading = node('h1', {}, '把接口能力，变成清晰的开发体验。');
-  const copy = node(
-    'p',
-    { class: 'home-lead' },
-    '独立的 Cloudflare Worker 公共站点。Docs 与 Pricing 保持明确的 fixture／非 live 数据；命名 staging 与 production 环境可通过 Service Binding 使用既有下载服务，default 开发环境继续 fail closed。',
-  );
+  const heroInner = node('div', { class: 'home-hero__inner' });
   const actions = node('div', { class: 'hero-actions' });
   actions.append(
-    linkButton('/docs/quickstart', '开始阅读', 'primary'),
-    linkButton('/pricing', '查看价格', 'secondary'),
+    linkButton('/docs/quickstart', '开始阅读文档', 'primary'),
+    linkButton('/pricing', '查看模型价格', 'secondary'),
   );
-  hero.append(eyebrow, heading, copy, actions);
+  heroInner.append(
+    node('div', { class: 'eyebrow' }, 'NEWAPI PUBLIC SURFACE'),
+    node('h1', {}, '把接口能力，变成清晰的开发体验。'),
+    node(
+      'p',
+      { class: 'home-lead' },
+      '开发文档、模型价格与客户端下载的公共入口，运行在独立的 Cloudflare Worker 上。文档与价格内容由上游应用提供，本站只负责呈现。',
+    ),
+    actions,
+    heroMeta(downloads),
+  );
+  hero.append(heroInner);
 
-  const cards = node('section', {
+  const overview = node('section', { class: 'home-section' });
+  const head = node('div', { class: 'home-section__head' });
+  head.append(
+    node('div', { class: 'eyebrow' }, 'SITE MAP'),
+    node('h2', {}, '三个入口，一套界面语言。'),
+    node(
+      'p',
+      {},
+      '文档、价格与下载共用同一套排版、色板与组件，切换页面时不会有断层。',
+    ),
+  );
+  const cards = node('div', {
     class: 'home-grid',
-    'aria-label': 'Phase 2 功能与数据边界',
+    'aria-label': '站点入口',
   });
   cards.append(
-    featureCard('01', 'Docs', '结构化导航、页内目录、搜索和可复制示例。', '/docs/quickstart', '打开文档'),
-    featureCard('02', 'Pricing', '固定普通用户 default/default 上下文，沿用 NewAPI 价格字段和计算分支。', '/pricing', '打开价格'),
-    statusCard(state.integration.data),
+    featureCard(
+      '01',
+      '开发文档',
+      '结构化导航、页内目录、全站搜索和可一键复制的请求示例。',
+      '/docs/quickstart',
+      '打开文档',
+    ),
+    featureCard(
+      '02',
+      '模型价格',
+      '按供应商、计费方式与能力筛选，支持表格与卡片两种阅读视图。',
+      '/pricing',
+      '打开价格',
+    ),
+    downloadsCard(downloads),
   );
+  overview.append(head, cards);
 
   const boundary = node('section', { class: 'boundary-panel' });
-  boundary.append(
+  const boundaryCard = node('div', { class: 'boundary-panel__card' });
+  boundaryCard.append(
     node('div', { class: 'eyebrow' }, 'PHASE 2 DEPLOYMENT BOUNDARY'),
     node('h2', {}, 'Production downloads 可接入，内容仍是 fixture。'),
     node(
@@ -140,8 +212,30 @@ async function renderHome() {
       '页面明确标识 fixture 来源；只有命名 staging／production 的对应 runtime gate 与 callable binding 同时成立才会转发。即使 bound，状态仍是未验证健康、非 live。下载、admin、R2、rollback 和微信群二维码继续由原 Worker 持有。',
     ),
   );
-  fragment.append(hero, cards, boundary);
+  boundary.append(boundaryCard);
+
+  fragment.append(hero, overview, boundary);
   replaceMain(fragment);
+}
+
+function heroMeta(downloads) {
+  const list = node('dl', { class: 'hero-meta' });
+  [
+    ['内容来源', 'Fixture · 非 live'],
+    ['价格上下文', 'default / default · 已锁定'],
+    ['客户端下载', downloadsSummary(downloads)],
+  ].forEach(([term, description]) => {
+    const item = node('div', { class: 'hero-meta__item' });
+    item.append(node('dt', {}, term), node('dd', {}, description));
+    list.append(item);
+  });
+  return list;
+}
+
+function downloadsSummary(status) {
+  if (status.active) return 'Bound-unverified · 非 live';
+  if (!status.enabled) return '当前环境 disabled · fail closed';
+  return status.binding_present ? '当前环境 binding 无效' : '当前环境 binding 未提供';
 }
 
 async function renderDocs(slug) {
@@ -717,6 +811,14 @@ function renderPricingSearchActions(payload, results, countTag) {
     void renderPricing();
   });
   const switcher = node('div', { class: 'pricing-view-switch', role: 'group', 'aria-label': '表格视图 / 卡片视图' });
+  const viewButtons = [];
+  const syncViewButtons = () => {
+    viewButtons.forEach(([button, value]) => {
+      const selected = state.viewMode === value;
+      button.classList.toggle('is-primary', selected);
+      button.setAttribute('aria-pressed', String(selected));
+    });
+  };
   [
     ['table', '表格视图', 'table'],
     ['card', '卡片视图', 'grid'],
@@ -727,8 +829,12 @@ function renderPricingSearchActions(payload, results, countTag) {
     button.setAttribute('aria-pressed', String(active));
     button.addEventListener('click', () => {
       state.viewMode = value;
+      // Only the result list is re-rendered here, so the switch keeps its own
+      // selected state in step by hand.
+      syncViewButtons();
       renderPricingResults(payload, results, countTag);
     });
+    viewButtons.push([button, value]);
     switcher.append(button);
   });
   actions.append(filter, switcher);
@@ -1281,23 +1387,28 @@ function featureCard(number, title, description, href, action) {
   return card;
 }
 
-function statusCard(status) {
+function downloadsCard(status) {
+  const copy = [
+    node('span', { class: 'feature-number' }, '03'),
+    node('h2', {}, '客户端下载'),
+    node(
+      'p',
+      {},
+      '安装包由既有下载 Worker 提供；命名 staging／production 环境通过 Service Binding 显式挂载在 /downloads。',
+    ),
+  ];
+  if (status.active) {
+    const card = node('a', {
+      class: 'feature-card status-card',
+      href: '/downloads',
+    });
+    card.append(...copy, node('strong', { class: 'status-on' }, '打开下载页 →'));
+    return card;
+  }
   const card = node('article', { class: 'feature-card status-card' });
   card.append(
-    node('span', { class: 'feature-number' }, '03'),
-    node('h2', {}, 'Downloads binding'),
-    node('p', {}, '既有 Worker 保持独立；命名 staging／production 环境以各自 gate 显式启用 Service Binding。'),
-    node(
-      'strong',
-      { class: status.active ? 'status-on' : 'status-off' },
-      status.active
-        ? 'Bound-unverified · 非 healthy/live'
-        : status.enabled
-          ? status.binding_present
-            ? '当前环境 binding 无效'
-            : '当前环境 binding 未提供'
-          : '当前环境 disabled · fail closed',
-    ),
+    ...copy,
+    node('strong', { class: 'status-off' }, downloadsSummary(status)),
   );
   return card;
 }
@@ -1491,7 +1602,10 @@ async function api(path) {
 
 function updateActiveNavigation(path) {
   document.querySelectorAll('[data-nav]').forEach((link) => {
-    const active = path.startsWith(`/${link.dataset.nav}`);
+    const active =
+      link.dataset.nav === 'home'
+        ? path === '/'
+        : path.startsWith(`/${link.dataset.nav}`);
     link.classList.toggle('active', active);
     if (active) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
