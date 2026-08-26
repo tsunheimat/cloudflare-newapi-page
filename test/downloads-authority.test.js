@@ -258,6 +258,19 @@ test('migrated routes prefer R2 and never call the rollback service binding', as
   assert.equal(called, false);
 });
 
+test('migrated route HTML carries a nonce CSP while the rollback service remains untouched', async () => {
+  const response = await get('/downloads', env());
+  assert.equal(response.status, 200);
+  const csp = response.headers.get('content-security-policy');
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /script-src 'none'/);
+  assert.match(csp, /style-src 'nonce-[A-Za-z0-9]+'/);
+  const nonce = csp.match(/style-src 'nonce-([^']+)'/)[1];
+  assert.match(await response.text(), new RegExp(`<style nonce="${nonce}">`));
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(response.headers.get('x-frame-options'), 'DENY');
+});
+
 test('production R2 mode fails closed without get/put and never calls the rollback service', async () => {
   let serviceCalled = false;
   const runtime = env({
@@ -364,6 +377,10 @@ test('admin authentication fails closed without ADMIN_PASSWORD and does not expo
   assert.equal(response.status, 503);
   const body = await response.text();
   assert.doesNotMatch(body, /known-secret|guess|ADMIN_PASSWORD/);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(response.headers.get('x-frame-options'), 'DENY');
+  assert.match(response.headers.get('content-security-policy'), /script-src 'self'/);
 });
 
 test('admin login rejects a missing or mismatched CSRF token', async () => {

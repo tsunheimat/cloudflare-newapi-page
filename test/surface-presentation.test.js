@@ -77,6 +77,15 @@ test('Docs route mapping keeps real spaces generic and resolves only the known l
   assert.match(app, /function canonicalDocsPageAlias\(path\)[\s\S]*?DOCS_SPACE_SLUGS\.has\(first\)[\s\S]*?return `\/docs\/quickstart\/\$\{segments\.join\('\/'\)\}`/);
 });
 
+test('Docs navigation can leave the canonical bundle and handle browser history again', async () => {
+  const [app, styles] = await sources;
+  assert.match(app, /function deactivateCanonicalDocs\(\)/);
+  assert.match(app, /if \(!canonicalDocs\) deactivateCanonicalDocs\(\)/);
+  assert.match(app, /canonicalDocsRoot\?\.remove\(\)/);
+  assert.match(app, /renderRoute\(\);\n}\);\npricingMobileMedia/);
+  assert.match(styles, /body\.canonical-docs-active \.site-header/);
+});
+
 test('Pricing presentation mounts one canonical runtime at both public URLs', async () => {
   const [app, _styles, index] = await sources;
   assert.match(index, /href="\/console\/pricing" data-link data-nav="pricing"/);

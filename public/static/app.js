@@ -60,6 +60,7 @@ const contentApiCache = new Map();
 let canonicalPricingScriptPromise = null;
 let canonicalDocsScriptPromise = null;
 let canonicalDocsMounted = false;
+let canonicalDocsRoot = null;
 let docsHistoryNormalizerInstalled = false;
 let pricingLanguageBinding = null;
 let pricingLanguageMenuId = 0;
@@ -88,7 +89,6 @@ installDocsHistoryNormalizer();
 
 window.addEventListener('popstate', () => {
   canonicalizeDocsLocation();
-  if (document.body.classList.contains('canonical-docs-active')) return;
   renderRoute();
 });
 pricingMobileMedia?.addEventListener('change', handlePricingViewportChange);
@@ -168,6 +168,8 @@ function handlePricingViewportChange() {
 
 async function renderRoute() {
   const path = canonicalizeDocsLocation();
+  const canonicalDocs = isDocsPath(path);
+  if (!canonicalDocs) deactivateCanonicalDocs();
   const canonicalPricing = isPricingPath(path);
   document.body.classList.toggle('canonical-pricing-active', canonicalPricing);
   const canonicalStyles = document.querySelector('link[data-canonical-pricing-css]');
@@ -206,8 +208,7 @@ async function renderRoute() {
 }
 
 async function renderCanonicalDocs() {
-  if (canonicalDocsMounted) return;
-  document.body.classList.add('canonical-docs-active');
+  document.body.classList.add('canonical-docs-active', 'docs-hub-worker-body');
   document.body.classList.remove('canonical-pricing-active');
   const canonicalStyles = document.querySelector('link[data-canonical-docs-css]') || node('link', {
     rel: 'stylesheet',
@@ -215,15 +216,30 @@ async function renderCanonicalDocs() {
     'data-canonical-docs-css': '',
   });
   if (!canonicalStyles.isConnected) document.head.append(canonicalStyles);
-  main.replaceChildren();
-  const root = node('div', { id: 'root' });
-  main.append(root);
+
+  if (canonicalDocsMounted && canonicalDocsRoot?.isConnected) {
+    document.title = '文档';
+    return;
+  }
+  if (!canonicalDocsRoot) canonicalDocsRoot = node('div', { id: 'root' });
+  main.replaceChildren(canonicalDocsRoot);
   if (!canonicalDocsScriptPromise) {
     canonicalDocsScriptPromise = import('./docs-hub.js');
   }
   await canonicalDocsScriptPromise;
   canonicalDocsMounted = true;
   document.title = '文档';
+}
+
+function deactivateCanonicalDocs() {
+  if (
+    !canonicalDocsMounted
+    && !canonicalDocsRoot?.isConnected
+    && !document.body.classList.contains('canonical-docs-active')
+  ) return;
+  canonicalDocsRoot?.remove();
+  document.querySelector('link[data-canonical-docs-css]')?.remove();
+  document.body.classList.remove('canonical-docs-active', 'docs-hub-worker-body');
 }
 
 async function renderHome() {

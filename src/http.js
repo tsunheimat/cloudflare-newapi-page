@@ -119,8 +119,13 @@ function adminErrorHtml(status, message) {
   const safe = String(message || 'Request failed.')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+  const headers = new Headers({
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  applySecurityHeaders(headers);
   return new Response(
     `<!doctype html><html lang="zh-Hans"><head><meta charset="utf-8"><title>管理员操作失败</title></head><body><main><h1>管理员操作失败</h1><p class="error">${safe}</p><p><a href="/admin">返回管理后台</a></p></main></body></html>`,
-    { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } },
+    { status, headers },
   );
 }
