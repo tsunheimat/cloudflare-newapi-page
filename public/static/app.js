@@ -12,6 +12,7 @@ import {
   contentStatus,
   docsNavigationSlug,
 } from './content-meta.js';
+import { createDocsAwareShellNavigator } from './docs-lifecycle.js';
 
 const PRICING_MOBILE_QUERY = '(max-width: 767px)';
 const THEME_STORAGE_KEY = 'juapi-theme';
@@ -86,6 +87,13 @@ const LEGACY_QUICKSTART_PAGE_ALIASES = new Set(['tokenrouter']);
 // same finite alias mapping as the Worker shell and browser popstate path.
 // Non-Docs routes, external URLs, and unknown Docs segments are untouched.
 installDocsHistoryNormalizer();
+
+const navigate = createDocsAwareShellNavigator({
+  windowObject: window,
+  isDocsPath,
+  isCanonicalDocsMounted: () => canonicalDocsMounted,
+  renderRoute,
+});
 
 window.addEventListener('popstate', () => {
   canonicalizeDocsLocation();
@@ -1130,12 +1138,6 @@ function icon(name) {
     }
   });
   return svg;
-}
-
-function navigate(path) {
-  window.history.pushState({}, '', path);
-  window.scrollTo({ top: 0, behavior: 'instant' });
-  renderRoute();
 }
 
 function replaceMain(content) {

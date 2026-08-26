@@ -321,6 +321,34 @@ test('public Docs navigation is required even when a browser has no session', { 
   await context.close();
 });
 
+test('shell Home -> Docs re-entry refreshes the mounted page and preserves history transitions', { timeout: 30_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await newPage(context);
+
+  await page.goto(`${baseUrl}/docs/quickstart/responses`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: 'Responses API', exact: true }).waitFor();
+
+  await page.locator('a[data-nav="home"]').click();
+  await page.waitForURL((url) => url.pathname === '/');
+  await page.getByRole('heading', { name: '把接口能力，变成清晰的开发体验。', exact: true }).waitFor();
+  assert.equal(await page.locator('.docs-hub-page-title').count(), 0);
+
+  await page.locator('a[data-nav="docs"]').click();
+  await page.waitForURL((url) => url.pathname === '/docs/quickstart/quickstart');
+  await page.getByRole('heading', { name: '快速开始', exact: true }).waitFor();
+  assert.equal(await page.getByRole('heading', { name: 'Responses API', exact: true }).count(), 0);
+
+  await page.goBack();
+  await page.waitForURL((url) => url.pathname === '/');
+  await page.getByRole('heading', { name: '把接口能力，变成清晰的开发体验。', exact: true }).waitFor();
+
+  await page.goForward();
+  await page.waitForURL((url) => url.pathname === '/docs/quickstart/quickstart');
+  await page.getByRole('heading', { name: '快速开始', exact: true }).waitFor();
+  assert.equal(await page.getByRole('heading', { name: 'Responses API', exact: true }).count(), 0);
+  await context.close();
+});
+
 test('desktop Ctrl/Cmd+K finds rendered text and endpoint paths with exact anchors', { timeout: 25_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   const page = await newPage(context);
