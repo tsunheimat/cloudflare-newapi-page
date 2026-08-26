@@ -508,6 +508,13 @@ body.canonical-docs-active main {
   font-weight: 600;
 }
 
+@media (max-width: 820px) {
+  .pricing-language-bar {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+}
+
 /* ============================================================
    5. Footer, loading, toast
    ============================================================ */
