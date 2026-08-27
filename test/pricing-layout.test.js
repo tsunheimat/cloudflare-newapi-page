@@ -133,6 +133,28 @@ test('Pricing group cards render the group name in the former discount-label slo
   assert.match(layout, /\.pricing-group-card \.pricing-group-name\s*\{[\s\S]*?white-space:\s*normal/);
 });
 
+test('in-card savings badge keeps a primary-blue, large, wrapping presentation contract', async () => {
+  const [layout, canonical] = await sources;
+
+  // The savings value is emitted by the canonical card comparison node. Keep
+  // the assertion tied to that existing DOM seam so this remains a
+  // presentation-only repair and cannot reintroduce the retired group badge.
+  assert.match(canonical, /className:\s*`pricing-card-comparison is-\$\{de\.kind\}`/);
+  assert.doesNotMatch(canonical, /pricing-group-discount/);
+
+  const badgeRule = /body\.canonical-pricing-active \.pricing-card-comparison\.is-saving > strong\s*\{([\s\S]*?)\}/.exec(layout)?.[1] || '';
+  assert.match(badgeRule, /display:\s*inline-flex/);
+  assert.match(badgeRule, /color:\s*var\(--semi-color-primary\)\s*!important/);
+  // 18px is the explicit lower bound: materially larger than the 13px
+  // secondary treatment this companion stylesheet previously supplied.
+  assert.match(badgeRule, /font-size:\s*clamp\(18px,/);
+  assert.match(badgeRule, /max-width:\s*100%/);
+  assert.match(badgeRule, /overflow-wrap:\s*anywhere/);
+  assert.match(badgeRule, /word-break:\s*break-word/);
+  assert.match(badgeRule, /white-space:\s*normal/);
+  assert.match(badgeRule, /background:\s*var\(--semi-color-primary-light-default\)/);
+});
+
 test('public Pricing initializes the canonical runtime in card view at every public breakpoint', async () => {
   const [_layout, canonical, app] = await sources;
 

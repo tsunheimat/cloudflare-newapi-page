@@ -286,6 +286,30 @@ body.canonical-pricing-active .pricing-card-comparison > strong {
   white-space: normal;
 }
 
+/* Savings are the customer-facing positive comparison; keep premium and
+ * neutral comparison values on their canonical treatment. */
+body.canonical-pricing-active .pricing-card-comparison.is-saving > strong {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  justify-self: end;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--semi-color-primary) 30%, transparent);
+  border-radius: 9999px;
+  background: var(--semi-color-primary-light-default);
+  color: var(--semi-color-primary) !important;
+  font-size: clamp(18px, 1.5vw, 22px);
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 /* Dynamic expressions retain every backend value, but read as secondary detail. */
 body.canonical-pricing-active .pricing-dynamic-card-prices {
   min-width: 0;

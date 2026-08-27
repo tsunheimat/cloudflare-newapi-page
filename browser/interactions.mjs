@@ -923,6 +923,114 @@ test('Pricing group cards move the name into the former discount slot in every l
   }
 });
 
+test('in-card savings badge stays locale-correct, primary blue, large, and contained', { timeout: 45_000 }, async () => {
+  const payload = {
+    success: true,
+    data: [{
+      model_name: 'savings badge long mixed-language model 名称 / enterprise-plan',
+      vendor_id: 1,
+      quota_type: 0,
+      model_ratio: 1,
+      completion_ratio: 2,
+      enable_groups: ['default'],
+      supported_endpoint_types: ['openai'],
+    }],
+    vendors: [{ id: 1, name: 'Canonical vendor / 中文供应商' }],
+    group_ratio: { default: 0.5 },
+    usable_group: { default: 'Default / 默认分组' },
+    supported_endpoint: {},
+    auto_groups: [],
+    video_resolution_dimensions: {},
+    pricing_version: 'browser-savings-badge-v1',
+  };
+  const status = {
+    success: true,
+    data: {
+      display_in_currency: true,
+      quota_display_type: 'USD',
+      price: 1,
+      usd_exchange_rate: 1,
+      custom_currency_exchange_rate: 1,
+      custom_currency_symbol: '¤',
+      quota_per_unit: 1_000_000,
+      model_marketplace_default: { vendor: '1', group: 'default' },
+    },
+  };
+
+  for (const viewport of [
+    { name: 'desktop', width: 1280, height: 900 },
+    { name: 'mobile', width: 390, height: 844 },
+  ]) {
+    const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height } });
+    const page = await newPage(context);
+    await page.route('**/api/status', async (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(status),
+    }));
+    await page.route('**/api/pricing', async (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(payload),
+    }));
+    await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
+    await page.locator('.pricing-model-card').first().waitFor();
+
+    for (const [language, expected] of [
+      ['en', /save\s+50%/i],
+      ['zh-CN', /省\s*50%/],
+      ['zh-TW', /省\s*50%/],
+    ]) {
+      await page.evaluate((nextLanguage) => window.__i18n.changeLanguage(nextLanguage), language);
+      await page.waitForFunction((pattern) => {
+        const text = document.querySelector('.pricing-card-comparison.is-saving > strong')?.textContent || '';
+        return new RegExp(pattern, 'i').test(text);
+      }, expected.source);
+      const badge = page.locator('.pricing-card-comparison.is-saving > strong').first();
+      const metrics = await badge.evaluate((element) => {
+        const card = element.closest('.pricing-model-card');
+        const comparison = element.closest('.pricing-card-comparison');
+        const style = getComputedStyle(element);
+        const color = style.color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        const secondary = comparison.querySelector('.pricing-card-comparison-formula');
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--semi-color-primary)';
+        document.body.append(probe);
+        const primaryColor = getComputedStyle(probe).color;
+        probe.remove();
+        const rect = element.getBoundingClientRect();
+        const cardRect = card.getBoundingClientRect();
+        const comparisonRect = comparison.getBoundingClientRect();
+        const following = element.closest('.pricing-card-price-block')?.nextElementSibling;
+        const followingRect = following?.getBoundingClientRect();
+        return {
+          text: element.textContent.trim(),
+          fontSize: Number.parseFloat(style.fontSize),
+          secondaryFontSize: secondary ? Number.parseFloat(getComputedStyle(secondary).fontSize) : 0,
+          color: color ? color.slice(1).map(Number) : null,
+          primaryColor,
+          overflow: element.scrollWidth > element.clientWidth,
+          cardOverflow: card.scrollWidth > card.clientWidth,
+          withinComparison: rect.top >= comparisonRect.top && rect.bottom <= comparisonRect.bottom + 1,
+          withinCard: rect.left >= cardRect.left && rect.right <= cardRect.right + 1,
+          notCoveringFollowingContent: !followingRect || rect.bottom <= followingRect.top + 1,
+        };
+      });
+      assert.match(metrics.text, expected, `${viewport.name} ${language} savings text must stay locale-correct`);
+      assert.ok(metrics.fontSize >= 18, `${viewport.name} ${language} savings badge must be at least 18px`);
+      assert.ok(metrics.fontSize >= metrics.secondaryFontSize + 5, `${viewport.name} ${language} savings badge must materially exceed secondary text`);
+      assert.ok(metrics.color && metrics.color[2] > metrics.color[0] && metrics.color[2] > metrics.color[1], `${viewport.name} ${language} savings badge must be blue`);
+      assert.equal(`rgb(${metrics.color?.join(', ')})`, metrics.primaryColor, `${viewport.name} ${language} savings badge must use the primary color token`);
+      assert.equal(metrics.overflow, false, `${viewport.name} ${language} savings badge text must not overflow`);
+      assert.equal(metrics.cardOverflow, false, `${viewport.name} ${language} card must not overflow`);
+      assert.equal(metrics.withinComparison, true, `${viewport.name} ${language} savings badge must remain in comparison area`);
+      assert.equal(metrics.withinCard, true, `${viewport.name} ${language} savings badge must remain within card bounds`);
+      assert.equal(metrics.notCoveringFollowingContent, true, `${viewport.name} ${language} savings badge must not cover following card content`);
+    }
+    await context.close();
+  }
+});
+
 test('[mocked/source evidence] Downloads root keeps every program and file target in one panel', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await newPage(context);
