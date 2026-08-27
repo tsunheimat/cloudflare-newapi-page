@@ -1,0 +1,158 @@
+/*
+ * JuAPI integration of NewAPI b83a0ae06e1fb9735e0cd0be3c9bdd8807cff66b
+ * (fix(web): improve English pricing page layout).
+ *
+ * This is a presentation-only companion to the canonical Pricing CSS. It is
+ * loaded after canonical-pricing.css so the existing runtime, live data, and
+ * visual tokens remain authoritative while translated labels can reflow.
+ */
+body.canonical-pricing-active :is(.canonical-pricing-root,.pricing-page-shell) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+body.canonical-pricing-active :is(.canonical-pricing-root,.pricing-page-shell) :is(
+  .pricing-page-intro,
+  .pricing-price-list-header,
+  .pricing-price-list-title-row,
+  .pricing-section-heading,
+  .pricing-advanced-header,
+  .pricing-search-actions,
+  .pricing-toolbar-actions,
+  .pricing-card-comparison,
+  .pricing-group-description
+) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* Provider, group, and model names wrap instead of widening the panel. */
+body.canonical-pricing-active :is(.pricing-vendor-chip,.pricing-group-card,.pricing-model-card) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+body.canonical-pricing-active :is(.pricing-vendor-chip > span:nth-child(2),.pricing-vendor-name,
+  .pricing-group-name,.pricing-model-name,.pricing-model-vendor) {
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  text-overflow: clip;
+}
+
+/* Long translated controls reflow inside the available toolbar width. */
+body.canonical-pricing-active :is(.pricing-search-actions,.pricing-toolbar-actions,.pricing-mode-switch,
+  .pricing-view-switch) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pricing-search-actions {
+  flex-wrap: wrap;
+}
+
+.pricing-search-input {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pricing-toolbar-actions {
+  flex-wrap: wrap;
+}
+
+body.canonical-pricing-active :is(.pricing-toolbar-actions > .semi-button,.pricing-mode-switch .semi-button,
+  .pricing-view-switch .semi-button) {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 32px;
+}
+
+body.canonical-pricing-active :is(.pricing-toolbar-actions .semi-button-content,
+  .pricing-mode-switch .semi-button-content,
+  .pricing-view-switch .semi-button-content) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-align: center;
+}
+
+/* Comparison copy, badges, and dynamic-tier labels share the same contract. */
+body.canonical-pricing-active :is(.pricing-comparison-cell,.pricing-card-comparison,
+  .pricing-comparison-formula,.pricing-card-comparison-formula,
+  .pricing-save-badge,.sbg-badge,.pricing-native-tier-cell,
+  .pricing-native-tier-condition,.pricing-native-tier-rule,
+  .pricing-native-tier-expr,.pricing-tier-extra-label,
+  .dynamic-tier-price-label,.dynamic-tier-price-item,
+  .pricing-group-rate,.pricing-group-formula,
+  .pricing-provider-description,.pricing-section-label,
+  .pricing-model-table .semi-table-row-head,
+  .pricing-model-table .semi-table-header-wrapper,
+  .semi-tag,.semi-tag-content) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.pricing-comparison-cell,
+.pricing-card-comparison {
+  align-items: flex-start;
+}
+
+.pricing-card-comparison span {
+  min-width: 0;
+  text-align: left;
+}
+
+.pricing-native-tier-cell .semi-tag-content {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+body.canonical-pricing-active .pricing-model-table .semi-table-row-head {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+body.canonical-pricing-active .dynamic-tier-price-item {
+  white-space: normal;
+}
+
+@media (max-width: 767px) {
+  /* Keep the mobile header/action row usable with longer English labels. */
+  .pricing-language-bar {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .pricing-price-list-title-row,
+  .pricing-section-heading,
+  .pricing-advanced-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .pricing-price-list-title-row h2 {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .pricing-mode-switch,
+  .pricing-view-switch {
+    max-width: 100%;
+  }
+
+  .pricing-toolbar-actions > .semi-button {
+    flex: 1 1 auto;
+  }
+}

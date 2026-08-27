@@ -282,6 +282,8 @@ async function renderRoute() {
   document.body.classList.toggle('canonical-pricing-active', canonicalPricing);
   const canonicalStyles = document.querySelector('link[data-canonical-pricing-css]');
   if (canonicalStyles) canonicalStyles.disabled = !canonicalPricing;
+  const canonicalPricingLayoutStyles = document.querySelector('link[data-canonical-pricing-layout-css]');
+  if (canonicalPricingLayoutStyles) canonicalPricingLayoutStyles.disabled = !canonicalPricing;
   if (!canonicalPricing) {
     globalThis.__unmountCanonicalPricing?.();
     unbindPricingLanguageSelector();
@@ -788,6 +790,16 @@ async function renderCanonicalPricing(renderToken = workspaceRenderToken) {
     document.head.append(stylesheet);
   } else {
     document.querySelector('link[data-canonical-pricing-css]').disabled = false;
+  }
+  if (!document.querySelector('link[data-canonical-pricing-layout-css]')) {
+    const layoutStylesheet = node('link', {
+      rel: 'stylesheet',
+      href: '/static/canonical-pricing-layout.css',
+      'data-canonical-pricing-layout-css': '1',
+    });
+    document.head.append(layoutStylesheet);
+  } else {
+    document.querySelector('link[data-canonical-pricing-layout-css]').disabled = false;
   }
   if (!canonicalPricingScriptPromise) {
     canonicalPricingScriptPromise = new Promise((resolve, reject) => {
