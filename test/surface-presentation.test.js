@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import {
+  MAX_DOWNLOAD_PROGRAMS,
+  projectDownloadMetadata,
+  projectDownloadSoftwareCatalog,
+} from '../public/static/downloads-presentation.js';
 
 const APP_URL = new URL('../public/static/app.js', import.meta.url);
 const STYLES_URL = new URL('../public/static/styles.css', import.meta.url);
@@ -105,12 +110,56 @@ test('Downloads presentation is a workspace panel with the existing authority fl
   assert.match(app, /\/downloads\/download\/\$\{encodeURIComponent\(softwareId\)\}/);
   assert.match(app, /JSON\.stringify\(metadata, null, 2\)/);
   assert.match(app, /暂无可用下载/);
-  assert.match(app, /公开元数据暂时无法载入/);
+  assert.match(app, /版本信息暂时无法载入/);
   assert.match(styles, /\.downloads-file-grid/);
   assert.match(styles, /\.downloads-metadata-details/);
   assert.match(styles, /\.workspace-shell/);
   assert.match(styles, /\.workspace-panel\[hidden\]/);
   assert.doesNotMatch(styles, /body\.canonical-(?:docs|pricing)-active[^}]*display:\s*none/);
+});
+
+test('Downloads customer projection caps five valid programs at four deterministically', () => {
+  const catalog = [
+    { id: 'zeta-tool', label: 'Zeta' },
+    { id: 'alpha-tool', label: 'Alpha' },
+    { id: 'bad id', label: 'invalid' },
+    { id: 'delta-tool', label: 'Delta' },
+    { id: 'beta-tool', label: 'Beta' },
+    { id: 'gamma-tool', label: 'Gamma' },
+    { id: 'beta-tool', label: 'duplicate' },
+  ];
+  const projection = projectDownloadSoftwareCatalog(catalog);
+  assert.equal(MAX_DOWNLOAD_PROGRAMS, 4);
+  assert.deepEqual(projection.map((item) => item.id), [
+    'alpha-tool', 'beta-tool', 'delta-tool', 'gamma-tool',
+  ]);
+  assert.equal(projection.length, 4);
+});
+
+test('Downloads customer metadata projection excludes implementation and status fields', () => {
+  const projection = projectDownloadMetadata({
+    release_id: '2026.08',
+    phase: 'committed',
+    deployment: 'production',
+    binding: 'DOWNLOADS',
+    status: 'live',
+    files: [{ platform: 'linux', arch: 'amd64', r2_key: 'internal/key', filename: 'app.tar.gz' }],
+  });
+  assert.deepEqual(projection, {
+    release_id: '2026.08',
+    files: [{ platform: 'linux', arch: 'amd64', filename: 'app.tar.gz' }],
+  });
+  assert.doesNotMatch(JSON.stringify(projection), /phase|deployment|binding|status|r2_key/i);
+});
+
+test('Customer-visible shell copy does not expose service status or deployment details', async () => {
+  const [app, _styles, index] = await sources;
+  for (const internalCopy of ['下载服务已连接', '下载服务暂不可用', '下载服务暂时不可用', '服务状态', 'JUAPI SERVICE', '表现层改编', '下游最新公开元数据']) {
+    assert.doesNotMatch(app, new RegExp(internalCopy));
+    assert.doesNotMatch(index, new RegExp(internalCopy));
+  }
+  assert.match(index, /QuantumNous NewAPI/);
+  assert.match(index, /GNU AGPL v3/);
 });
 test('public Pricing route ships the canonical component bundle without browser auth', async () => {
   const [app, bundle, stylesheet] = await Promise.all([

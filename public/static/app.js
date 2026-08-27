@@ -1,6 +1,11 @@
 /* Copyright (C) 2025 QuantumNous. See LICENSE and THIRD_PARTY_NOTICES.md. */
 import { docsNavigationSlug } from './content-meta.js';
 import {
+  MAX_DOWNLOAD_PROGRAMS,
+  projectDownloadMetadata,
+  projectDownloadSoftwareCatalog,
+} from './downloads-presentation.js';
+import {
   createDocsAwareShellNavigator,
   createDocsPreloadManager,
   installDocsPreloadFetchBridge,
@@ -418,12 +423,12 @@ async function renderHome(renderToken) {
   const boundary = node('section', { class: 'boundary-panel' });
   const boundaryCard = node('div', { class: 'boundary-panel__card' });
   boundaryCard.append(
-    node('div', { class: 'eyebrow' }, 'JUAPI SERVICE'),
+    node('div', { class: 'eyebrow' }, 'JUAPI 支持'),
     node('h2', {}, '需要帮助？从文档与下载中心开始。'),
     node(
       'p',
       {},
-      '文档持续更新，下载中心会显示版本、平台、校验信息和可用状态。',
+      '文档持续更新，下载中心会显示版本、平台与校验信息。',
     ),
   );
   boundary.append(boundaryCard);
@@ -447,9 +452,7 @@ function heroMeta(downloads) {
 }
 
 function downloadsSummary(status) {
-  if (status.active) return '下载服务已连接';
-  if (!status.enabled) return '下载服务暂不可用';
-  return status.binding_present ? '下载服务已连接' : '下载服务暂不可用';
+  return status?.active ? '查看可用版本' : '版本信息稍后提供';
 }
 
 async function loadContentSurfaces() {
@@ -502,7 +505,7 @@ async function renderDownloads(path, renderToken) {
   }
   const catalog = await ensureDownloadCatalog();
 
-  const cards = await Promise.all(catalog.software.map(async (software) => {
+  const cards = await Promise.all(projectDownloadSoftwareCatalog(catalog.software, MAX_DOWNLOAD_PROGRAMS).map(async (software) => {
     let metadata = null;
     let error = null;
     let fallback = false;
@@ -548,7 +551,7 @@ async function renderDownloadSoftware(catalog, softwareId, renderToken) {
     node('a', { class: 'downloads-back-link', href: '/downloads', 'data-link': '' }, '← 全部软件'),
     node('div', { class: 'eyebrow' }, 'PUBLIC RELEASE'),
     node('h1', {}, software.label || humanizeSoftwareId(software.id)),
-    node('p', { class: 'downloads-lead' }, `软件 ID：${software.id}`),
+    node('p', { class: 'downloads-lead' }, '选择适合你平台的安装包。'),
   );
   content.append(hero);
   if (!isCurrentRender(renderToken)) return;
@@ -563,7 +566,7 @@ async function renderDownloadSoftware(catalog, softwareId, renderToken) {
     return;
   }
   if (!isCurrentRender(renderToken)) return;
-  const metadata = resolved.metadata;
+  const metadata = projectDownloadMetadata(resolved.metadata);
   const files = Array.isArray(metadata?.files) ? metadata.files : [];
   const releaseDate = metadata?.release_date || metadata?.generated_at || metadata?.updated_at;
   const summary = node('section', { class: 'downloads-release-summary', 'aria-labelledby': 'downloads-release-heading' });
@@ -580,7 +583,7 @@ async function renderDownloadSoftware(catalog, softwareId, renderToken) {
   );
   content.append(summary);
   if (resolved.fallback) {
-    content.append(node('p', { class: 'downloads-fallback-notice', role: 'status' }, '公开版本暂不可用，当前显示下游最新公开元数据。'));
+    content.append(node('p', { class: 'downloads-fallback-notice', role: 'status' }, '公开版本暂不可用，当前显示最新可用版本信息。'));
   }
   if (!files.length) {
     content.append(downloadsEmpty('这个软件当前没有可下载文件。'));
@@ -596,7 +599,7 @@ async function renderDownloadSoftware(catalog, softwareId, renderToken) {
     content.append(fileSection);
   }
   const details = node('details', { class: 'downloads-metadata-details' });
-  details.append(node('summary', {}, '查看完整公开元数据'));
+  details.append(node('summary', {}, '查看版本信息'));
   details.append(node('pre', {}, JSON.stringify(metadata, null, 2)));
   content.append(details);
 }
@@ -604,9 +607,7 @@ async function renderDownloadSoftware(catalog, softwareId, renderToken) {
 async function ensureDownloadCatalog() {
   if (state.downloadCatalog) return state.downloadCatalog;
   const response = await api('/api/downloads/catalog');
-  const software = Array.isArray(response?.data?.software)
-    ? response.data.software.filter((item) => item && /^[a-z0-9][a-z0-9-]{0,62}$/.test(item.id))
-    : [];
+  const software = projectDownloadSoftwareCatalog(response?.data?.software);
   state.downloadCatalog = { software };
   return state.downloadCatalog;
 }
@@ -633,6 +634,7 @@ function downloadSoftwareId(path) {
 }
 
 function downloadSoftwareCard(software, metadata, error, fallback = false) {
+  metadata = projectDownloadMetadata(metadata);
   const card = node('article', {
     class: 'downloads-software-card',
     'data-download-software': software.id,
@@ -642,7 +644,6 @@ function downloadSoftwareCard(software, metadata, error, fallback = false) {
   card.append(
     node('span', { class: 'downloads-card-kicker' }, 'SOFTWARE'),
     node('h2', {}, software.label || metadata?.name || metadata?.title || humanizeSoftwareId(software.id)),
-    node('code', {}, software.id),
     error
       ? node('span', { class: 'downloads-card-status downloads-card-status--error' }, '公开版本暂时不可用')
       : node('span', { class: `downloads-card-status${fallback ? ' downloads-card-status--fallback' : ''}` }, `${fallback ? '当前为最新公开版本 · ' : ''}${metadata?.release_id || '版本信息待更新'} · ${formatDownloadDate(metadata?.release_date || metadata?.generated_at || metadata?.updated_at)}`),
@@ -666,7 +667,7 @@ function downloadSoftwareCard(software, metadata, error, fallback = false) {
   if (!error && metadata && typeof metadata === 'object') {
     const details = node('details', { class: 'downloads-metadata-details' });
     details.append(node('summary', {}, '查看版本详情'));
-    details.append(node('pre', {}, JSON.stringify(metadata, null, 2)));
+    details.append(node('pre', {}, JSON.stringify(projectDownloadMetadata(metadata), null, 2)));
     card.append(details);
   }
   return card;
@@ -699,7 +700,7 @@ function downloadFileCard(softwareId, file) {
   if (file && typeof file === 'object') {
     const details = node('details', { class: 'downloads-file-details' });
     details.append(node('summary', {}, '详情'));
-    details.append(node('pre', {}, JSON.stringify(file, null, 2)));
+    details.append(node('pre', {}, JSON.stringify(projectDownloadMetadata({ files: [file] }).files[0], null, 2)));
     card.append(details);
   }
   return card;
@@ -728,8 +729,8 @@ function downloadsEmpty(message) {
 
 function downloadError(error) {
   return node('div', { class: 'downloads-empty downloads-error', role: 'alert' },
-    node('h2', {}, '公开元数据暂时无法载入'),
-    node('p', {}, '下载服务暂时不可用，请稍后重试。'),
+    node('h2', {}, '版本信息暂时无法载入'),
+    node('p', {}, '请稍后重试。'),
   );
 }
 
