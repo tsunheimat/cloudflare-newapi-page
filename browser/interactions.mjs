@@ -835,7 +835,7 @@ test('Pricing language switching changes the mounted runtime and persists anonym
   await context.close();
 });
 
-test('Pricing discount labels stay compact and locale-correct in the canonical group card', { timeout: 45_000 }, async () => {
+test('Pricing group cards move the name into the former discount slot in every locale', { timeout: 45_000 }, async () => {
   for (const viewport of [
     { width: 1280, height: 900 },
     { width: 390, height: 844 },
@@ -870,11 +870,17 @@ test('Pricing discount labels stay compact and locale-correct in the canonical g
         quota_type: 0,
         model_ratio: 1,
         completion_ratio: 2,
-        enable_groups: ['default'],
+        enable_groups: ['all'],
       }],
       vendors: [{ id: 1, name: 'Canonical vendor with a representative long label' }],
-      group_ratio: { default: 0.029 },
-      usable_group: { default: 'Default / 默认分组' },
+      group_ratio: {
+        'default-简体中文-繁體中文-very-long-group-name-for-wrapping': 0.029,
+        'short-group': 0.05,
+      },
+      usable_group: {
+        'default-简体中文-繁體中文-very-long-group-name-for-wrapping': 'Default / 默认分组',
+        'short-group': 'Short group',
+      },
       supported_endpoint: {},
       auto_groups: [],
       video_resolution_dimensions: {},
@@ -884,14 +890,35 @@ test('Pricing discount labels stay compact and locale-correct in the canonical g
     await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
     await page.locator('.pricing-group-card').first().waitFor();
 
-    const discount = page.locator('.pricing-group-discount').first();
-    assert.equal((await discount.textContent()).trim(), '0.29折');
-
-    await page.evaluate(() => window.__i18n.changeLanguage('en'));
-    await page.waitForFunction(() => document.documentElement.lang === 'en');
-    assert.equal((await discount.textContent()).trim(), '97.1% off');
-    assert.match((await discount.textContent()).trim(), /^\d+(?:\.\d+)?% off$/);
-    assert.doesNotMatch((await discount.textContent()).trim(), /off\s+\d+%|\/10 price|^\d+(?:\.\d+)?%$/);
+    for (const language of ['zh-CN', 'zh-TW', 'en']) {
+      await page.evaluate((nextLanguage) => window.__i18n.changeLanguage(nextLanguage), language);
+      await page.waitForFunction((expected) => document.documentElement.lang === expected, language);
+      const card = page.locator('.pricing-group-card').first();
+      const name = card.locator('.pricing-group-name');
+      assert.equal(await page.locator('.pricing-group-card .pricing-group-discount').count(), 0);
+      assert.equal((await name.textContent()).trim(), 'default-简体中文-繁體中文-very-long-group-name-for-wrapping');
+      const metrics = await name.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const cardRect = element.closest('.pricing-group-card').getBoundingClientRect();
+        const rect = element.getBoundingClientRect();
+        return {
+          fontSize: Number.parseFloat(style.fontSize),
+          lineHeight: Number.parseFloat(style.lineHeight),
+          textAlign: style.textAlign,
+          cardRight: cardRect.right,
+          nameRight: rect.right,
+          cardTop: cardRect.top,
+          nameTop: rect.top,
+          overflow: element.scrollWidth > element.clientWidth,
+        };
+      });
+      assert.ok(metrics.fontSize >= 19, `${language} group name should use enlarged label size`);
+      assert.ok(metrics.lineHeight > 0, `${language} group name should have a usable line height`);
+      assert.equal(metrics.textAlign, 'right', `${language} group name should be right aligned`);
+      assert.ok(metrics.cardRight - metrics.nameRight < 20, `${language} group name should occupy the upper-right edge`);
+      assert.ok(metrics.nameTop - metrics.cardTop < 20, `${language} group name should start in the card header`);
+      assert.equal(metrics.overflow, false, `${language} group name must not overflow`);
+    }
     await context.close();
   }
 });

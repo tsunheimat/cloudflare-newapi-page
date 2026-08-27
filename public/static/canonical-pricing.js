@@ -188631,7 +188631,6 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
                       "aria-pressed": Y,
                       onClick: () => J(re.name),
                       children: [
-                        re.discount != null && /* @__PURE__ */ a.jsx("strong", { className: "pricing-group-discount", children: Aht(K0.language) === "en" ? P("{{percent}}% off", { percent: re.comparison.percent }) : P("{{discount}}折", { discount: re.discount }) }),
                         /* @__PURE__ */ a.jsx("span", { className: "pricing-group-name", children: re.name }),
                         /* @__PURE__ */ a.jsx("span", { className: "pricing-group-rate", children: P(re.headline.key, re.headline.params) }),
                         re.formula && /* @__PURE__ */ a.jsx("span", { className: "pricing-group-formula", children: P(re.formula.key, re.formula.params) }),

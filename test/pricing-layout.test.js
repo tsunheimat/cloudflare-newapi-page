@@ -113,6 +113,26 @@ test('customer pricing cards have a deterministic hierarchy at laptop and mobile
   assert.match(app, /lower\.startsWith\('zh-hant'\)/);
 });
 
+test('Pricing group cards render the group name in the former discount-label slot', async () => {
+  const [layout, canonical] = await sources;
+
+  // The canonical renderer must not emit the retired blue discount node. The
+  // comparison/savings data remains computed upstream for the surrounding
+  // Pricing surfaces; only this card label is removed.
+  assert.doesNotMatch(canonical, /className:\s*["']pricing-group-discount["']/);
+  assert.match(canonical, /className:\s*["']pricing-group-name["']/);
+  assert.match(canonical, /discount:\s*F/);
+  assert.match(canonical, /pricePercent:\s*F\s*==\s*null\s*\?\s*null\s*:\s*F\s*\*\s*10/);
+  assert.match(canonical, /className:\s*["']pricing-group-rate["']/);
+
+  // The existing name node is enlarged to the former label's visual size and
+  // aligned to the card's upper-right edge while retaining safe wrapping.
+  assert.match(layout, /\.pricing-group-card \.pricing-group-name\s*\{[\s\S]*?font-size:\s*19px/);
+  assert.match(layout, /\.pricing-group-card \.pricing-group-name\s*\{[\s\S]*?text-align:\s*right/);
+  assert.match(layout, /\.pricing-group-card \.pricing-group-name\s*\{[\s\S]*?overflow-wrap:\s*anywhere/);
+  assert.match(layout, /\.pricing-group-card \.pricing-group-name\s*\{[\s\S]*?white-space:\s*normal/);
+});
+
 test('public Pricing initializes the canonical runtime in card view at every public breakpoint', async () => {
   const [_layout, canonical, app] = await sources;
 

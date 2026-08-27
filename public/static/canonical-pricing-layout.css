@@ -45,6 +45,25 @@ body.canonical-pricing-active :is(.pricing-vendor-chip > span:nth-child(2),.pric
   text-overflow: clip;
 }
 
+/* Group names occupy the former discount-label slot in the card header. The
+ * name stays in normal flow so translated and mixed-language labels can wrap
+ * without covering rates, formulas, meters, or model counts. */
+body.canonical-pricing-active .pricing-group-card .pricing-group-name {
+  align-self: stretch;
+  width: 100%;
+  margin: 0 0 8px;
+  color: var(--semi-color-text-0);
+  font-size: 19px;
+  font-weight: 760;
+  line-height: 1.1;
+  text-align: right;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+  text-overflow: clip;
+}
+
 /* Long translated controls reflow inside the available toolbar width. */
 body.canonical-pricing-active :is(.pricing-search-actions,.pricing-toolbar-actions,.pricing-mode-switch,
   .pricing-view-switch) {
