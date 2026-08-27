@@ -1,26 +1,16 @@
-/*
-Copyright (C) 2025 QuantumNous
-
-The Docs compatibility renderer in this file adapts the user-facing NewAPI
-SPA. The public `/console/pricing` surface is mounted from the
-canonical React bundle built from approved NewAPI commit
-85143bc49260f9c7ab1efd6a5122558e58d0bee2. These adapted assets remain licensed
-under GNU AGPL v3 or later; see LICENSE and THIRD_PARTY_NOTICES.md. The
-front-door home and header renderer are original to this Worker.
-*/
+/* Copyright (C) 2025 QuantumNous. See LICENSE and THIRD_PARTY_NOTICES.md. */
+import { docsNavigationSlug } from './content-meta.js';
 import {
-  contentStatus,
-  docsNavigationSlug,
-} from './content-meta.js';
-import { createDocsAwareShellNavigator } from './docs-lifecycle.js';
+  createDocsAwareShellNavigator,
+  createDocsPreloadManager,
+  installDocsPreloadFetchBridge,
+} from './docs-lifecycle.js';
 
 const PRICING_MOBILE_QUERY = '(max-width: 767px)';
 const THEME_STORAGE_KEY = 'juapi-theme';
 const PRICING_GROUP_DATA_ATTRIBUTE = ['data', 'pricing', 'group'].join('-');
 const pricingMobileMedia = window.matchMedia?.(PRICING_MOBILE_QUERY) || null;
-// Keep this list aligned with the pinned NewAPI header LanguageSelector. The
-// canonical bundle owns all translations; the Worker shell only supplies the
-// missing public control that invokes its i18n instance.
+// Languages available in the pricing view.
 const CANONICAL_PRICING_LANGUAGES = [
   { value: 'zh-CN', label: '简体中文' },
   { value: 'zh-TW', label: '繁體中文' },
@@ -66,8 +56,7 @@ let activeDocsSearchButton = null;
 let activeDocsTocObserver = null;
 let surfaceReturnFocus = null;
 let activeSurfaceDismiss = null;
-// Public Docs navigation is fetched afresh and is never retained in browser
-// memory or validators. Pricing is owned by the canonical bundle.
+// Docs navigation is fetched afresh. Pricing data is owned by its view.
 const contentApiCache = new Map();
 let canonicalPricingScriptPromise = null;
 let canonicalDocsScriptPromise = null;
@@ -76,11 +65,16 @@ let canonicalDocsRoot = null;
 let docsHistoryNormalizerInstalled = false;
 let pricingLanguageBinding = null;
 let pricingLanguageMenuId = 0;
+const docsPreloadManager = createDocsPreloadManager({ windowObject: window });
+installDocsPreloadFetchBridge({
+  windowObject: window,
+  manager: docsPreloadManager,
+});
+// Start Docs data requests during the initial shell paint. The manager keeps
+// pending, success, and failure states observable and reuses successful
+// responses when DocsHub mounts for the first time.
+docsPreloadManager.start();
 
-// The live Docs contract has spaces, while the old public URL exposed a few
-// page slugs directly below /docs. Keep the compatibility list deliberately
-// finite: an arbitrary first path segment must never be guessed to be a page,
-// because it may be a real Docs space in the live navigation.
 const DOCS_SPACE_SLUGS = new Set([
   'quickstart',
   'api-reference',
@@ -93,10 +87,6 @@ const DOCS_SPACE_SLUGS = new Set([
 ]);
 const LEGACY_QUICKSTART_PAGE_ALIASES = new Set(['tokenrouter']);
 
-// The mounted DocsHub owns its own React Router history. Intercept only
-// same-origin history writes so links emitted by that runtime receive the
-// same finite alias mapping as the Worker shell and browser popstate path.
-// Non-Docs routes, external URLs, and unknown Docs segments are untouched.
 installDocsHistoryNormalizer();
 
 const navigate = createDocsAwareShellNavigator({
@@ -186,12 +176,6 @@ function handlePricingViewportChange() {
   void renderPricing(workspaceRenderToken);
 }
 
-/**
- * The public site is one document. Each surface gets a persistent panel so
- * switching tabs never tears down the JuAPI shell or performs a document
- * navigation. Canonical Docs/Pricing runtimes are mounted into their panels;
- * their existing URLs remain history-compatible aliases for this workspace.
- */
 function ensureWorkspaceShell() {
   if (!main) return null;
   if (workspaceShell?.isConnected) return workspaceShell;
@@ -199,13 +183,13 @@ function ensureWorkspaceShell() {
   workspaceShell = node('div', {
     class: 'workspace-shell',
     'data-workspace-shell': '',
-    'aria-label': 'JuAPI 工作区',
+    'aria-label': 'JuAPI 导航',
   });
   document.body.classList.add('workspace-active');
   const tabs = node('nav', {
     class: 'workspace-tabs',
     role: 'tablist',
-    'aria-label': 'JuAPI 工作区分区',
+    'aria-label': 'JuAPI 分区导航',
   });
   const panels = node('div', { class: 'workspace-panels' });
 
@@ -217,6 +201,7 @@ function ensureWorkspaceShell() {
       class: 'workspace-tab',
       href: surface.href,
       'data-link': '',
+      'data-nav': surface.id,
       'data-workspace-tab': surface.id,
       'aria-controls': panelId,
       role: 'tab',
@@ -384,15 +369,15 @@ async function renderHome(renderToken) {
     linkButton('/pricing', '查看模型价格', 'secondary'),
   );
   heroInner.append(
-    node('div', { class: 'eyebrow' }, 'NEWAPI PUBLIC SURFACE'),
+    node('div', { class: 'eyebrow' }, 'JUAPI DEVELOPER CENTRE'),
     node('h1', {}, '把接口能力，变成清晰的开发体验。'),
     node(
       'p',
       { class: 'home-lead' },
-      `首页、开发文档、模型价格与客户端下载共用一个 JuAPI document workspace，切换时保持同一 shell。Docs ${content.docs.sourceText}，Pricing ${content.pricing.sourceText}。`,
+      '从开发文档到模型价格与客户端下载，JuAPI 为你提供一套连贯的开发入口。',
     ),
     actions,
-    heroMeta(downloads, content),
+    heroMeta(downloads),
   );
   hero.append(heroInner);
 
@@ -400,11 +385,11 @@ async function renderHome(renderToken) {
   const head = node('div', { class: 'home-section__head' });
   head.append(
     node('div', { class: 'eyebrow' }, 'SITE MAP'),
-    node('h2', {}, '四个 surface，一套工作区。'),
+    node('h2', {}, '从开始到上线，一站式准备。'),
     node(
       'p',
       {},
-      '首页、文档、价格与下载共用同一套排版、色板与组件，在同一个 document 内原地切换，不会出现分裂页面。',
+      '查阅接入指南、比较模型价格，并下载适合你平台的客户端。',
     ),
   );
   const cards = node('div', {
@@ -433,12 +418,12 @@ async function renderHome(renderToken) {
   const boundary = node('section', { class: 'boundary-panel' });
   const boundaryCard = node('div', { class: 'boundary-panel__card' });
   boundaryCard.append(
-    node('div', { class: 'eyebrow' }, 'PHASE 2 DEPLOYMENT BOUNDARY'),
-    node('h2', {}, 'Production downloads 可接入，内容状态随响应 metadata 标识。'),
+    node('div', { class: 'eyebrow' }, 'JUAPI SERVICE'),
+    node('h2', {}, '需要帮助？从文档与下载中心开始。'),
     node(
       'p',
       {},
-      `Docs：${content.docs.badge}；Pricing：${content.pricing.badge}。Downloads、admin、R2、rollback 和微信群二维码由 NewAPI Worker 的 DOWNLOADS R2 authority 持有；状态仍明确区分 binding、healthy 与 live。`,
+      '文档持续更新，下载中心会显示版本、平台、校验信息和可用状态。',
     ),
   );
   boundary.append(boundaryCard);
@@ -447,11 +432,11 @@ async function renderHome(renderToken) {
   if (isCurrentRender(renderToken)) replaceMain(fragment, renderToken);
 }
 
-function heroMeta(downloads, content) {
+function heroMeta(downloads) {
   const list = node('dl', { class: 'hero-meta' });
   [
-    ['内容来源', `${content.docs.badge} / ${content.pricing.badge}`],
-    ['价格上下文', 'default / default · 已锁定'],
+    ['开发文档', '持续更新的接入指南'],
+    ['模型价格', '实时价格与计费说明'],
     ['客户端下载', downloadsSummary(downloads)],
   ].forEach(([term, description]) => {
     const item = node('div', { class: 'hero-meta__item' });
@@ -462,9 +447,9 @@ function heroMeta(downloads, content) {
 }
 
 function downloadsSummary(status) {
-  if (status.active) return 'Bound-unverified · 非 live';
-  if (!status.enabled) return '当前环境 disabled · fail closed';
-  return status.binding_present ? '当前环境 binding 无效' : '当前环境 binding 未提供';
+  if (status.active) return '下载服务已连接';
+  if (!status.enabled) return '下载服务暂不可用';
+  return status.binding_present ? '下载服务已连接' : '下载服务暂不可用';
 }
 
 async function loadContentSurfaces() {
@@ -473,12 +458,13 @@ async function loadContentSurfaces() {
   await ensureDocsNavigation();
   return {
     docs: {
-      ...contentStatus(docsResponse.data.meta),
       defaultSlug: docsNavigationSlug(docsResponse),
+      badge: '官方文档',
+      sourceText: '官方文档',
     },
     pricing: {
-      badge: 'NewAPI · Canonical',
-      sourceText: 'NewAPI（canonical）',
+      badge: '实时数据',
+      sourceText: '实时数据',
     },
   };
 }
@@ -502,8 +488,7 @@ async function ensureDocsNavigation() {
 }
 
 async function renderPricing(renderToken = workspaceRenderToken) {
-  // Both public pricing URLs are the same canonical NewAPI runtime. There is
-  // no handcrafted compatibility renderer for `/pricing`.
+  // Both public pricing URLs share the same pricing view.
   await renderCanonicalPricing(renderToken);
   return;
 }
@@ -536,15 +521,15 @@ async function renderDownloads(path, renderToken) {
     node('section', { class: 'downloads-hero' },
       node('div', { class: 'eyebrow' }, 'JUAPI PUBLIC DOWNLOADS'),
       node('h1', {}, '软件下载中心'),
-      node('p', { class: 'downloads-lead' }, '从现有下载服务读取公开版本、平台目标、校验信息与下载入口。'),
+      node('p', { class: 'downloads-lead' }, '在这里查看 JuAPI 客户端的最新版本、支持平台与下载文件。每个程序都在本页提供完整信息。'),
     ),
     node('section', { class: 'downloads-section', 'aria-labelledby': 'downloads-software-heading' },
       node('div', { class: 'downloads-section-heading' },
         node('div', { class: 'eyebrow' }, 'AVAILABLE SOFTWARE'),
-        node('h2', { id: 'downloads-software-heading' }, '软件'),
+        node('h2', { id: 'downloads-software-heading' }, '可用程序'),
       ),
       cards.length
-        ? node('div', { class: 'downloads-card-grid' }, cards)
+        ? node('div', { class: 'downloads-card-grid', 'data-download-program-grid': '' }, cards)
         : downloadsEmpty('当前没有配置可展示的软件。'),
     ),
   );
@@ -559,8 +544,7 @@ async function renderDownloadSoftware(catalog, softwareId, renderToken) {
   const content = node('div', { class: 'downloads-page downloads-detail-page' });
   const hero = node('section', { class: 'downloads-hero downloads-detail-hero' });
   hero.append(
-    // Detail navigation stays inside the Downloads panel while preserving the
-    // downstream service's mounted metadata/download authority routes.
+    // Direct detail URLs remain available for bookmarks and compatibility.
     node('a', { class: 'downloads-back-link', href: '/downloads', 'data-link': '' }, '← 全部软件'),
     node('div', { class: 'eyebrow' }, 'PUBLIC RELEASE'),
     node('h1', {}, software.label || humanizeSoftwareId(software.id)),
@@ -649,10 +633,9 @@ function downloadSoftwareId(path) {
 }
 
 function downloadSoftwareCard(software, metadata, error, fallback = false) {
-  const card = node('a', {
+  const card = node('article', {
     class: 'downloads-software-card',
-    href: `/downloads/software/${encodeURIComponent(software.id)}`,
-    'data-link': '',
+    'data-download-software': software.id,
   });
   const files = Array.isArray(metadata?.files) ? metadata.files : [];
   const targets = [...new Set(files.map((file) => [file?.platform, file?.arch].filter(Boolean).join(' · ')))];
@@ -661,11 +644,31 @@ function downloadSoftwareCard(software, metadata, error, fallback = false) {
     node('h2', {}, software.label || metadata?.name || metadata?.title || humanizeSoftwareId(software.id)),
     node('code', {}, software.id),
     error
-      ? node('span', { class: 'downloads-card-status downloads-card-status--error' }, error.message || '公开元数据暂时不可用')
-      : node('span', { class: `downloads-card-status${fallback ? ' downloads-card-status--fallback' : ''}` }, `${fallback ? '当前为最新版本 · ' : ''}${formatDownloadDate(metadata?.release_date || metadata?.generated_at || metadata?.updated_at)} · ${files.length} 个目标`),
+      ? node('span', { class: 'downloads-card-status downloads-card-status--error' }, '公开版本暂时不可用')
+      : node('span', { class: `downloads-card-status${fallback ? ' downloads-card-status--fallback' : ''}` }, `${fallback ? '当前为最新公开版本 · ' : ''}${metadata?.release_id || '版本信息待更新'} · ${formatDownloadDate(metadata?.release_date || metadata?.generated_at || metadata?.updated_at)}`),
     targets.length ? node('span', { class: 'downloads-card-targets' }, targets.join('、')) : null,
-    node('span', { class: 'downloads-card-action' }, '查看公开版本 →'),
   );
+  if (error) {
+    card.append(downloadsEmpty('暂时无法读取这个程序的公开版本，请稍后再试。'));
+  } else if (!files.length) {
+    card.append(downloadsEmpty('这个程序当前没有可下载文件。'));
+  } else {
+    const filesSection = node('section', {
+      class: 'downloads-card-files',
+      'aria-labelledby': `downloads-files-${software.id}`,
+    });
+    filesSection.append(
+      node('h3', { id: `downloads-files-${software.id}` }, '下载文件'),
+      node('div', { class: 'downloads-file-grid' }, files.map((file) => downloadFileCard(software.id, file))),
+    );
+    card.append(filesSection);
+  }
+  if (!error && metadata && typeof metadata === 'object') {
+    const details = node('details', { class: 'downloads-metadata-details' });
+    details.append(node('summary', {}, '查看版本详情'));
+    details.append(node('pre', {}, JSON.stringify(metadata, null, 2)));
+    card.append(details);
+  }
   return card;
 }
 
@@ -726,7 +729,7 @@ function downloadsEmpty(message) {
 function downloadError(error) {
   return node('div', { class: 'downloads-empty downloads-error', role: 'alert' },
     node('h2', {}, '公开元数据暂时无法载入'),
-    node('p', {}, error?.message || '下载服务暂时不可用，请稍后重试。'),
+    node('p', {}, '下载服务暂时不可用，请稍后重试。'),
   );
 }
 
@@ -758,9 +761,7 @@ function formatDownloadDate(value) {
 }
 
 async function renderCanonicalPricing(renderToken = workspaceRenderToken) {
-  // `/console/pricing` is the public default view. It has no browser session
-  // or end-user credential boundary; the canonical bundle calls the public
-  // Worker Pricing endpoint backed by the server-side live-content adapter.
+  // Pricing is a public, read-only view.
   if (isCurrentRender(renderToken)) document.title = '模型价格 · JuAPI';
   const languageBar = node('div', { class: 'pricing-language-bar' });
   languageBar.append(createPricingLanguageSelector());
@@ -773,9 +774,7 @@ async function renderCanonicalPricing(renderToken = workspaceRenderToken) {
   surface.append(languageBar, root);
   if (!isCurrentRender(renderToken)) return;
   replaceMain(surface, renderToken);
-  // Semi's distributed CommonJS helpers retain a guarded process.env read;
-  // provide the browser-safe production value before the canonical module is
-  // evaluated without shipping a Node runtime shim.
+  // Some distributed helpers read process.env while loading in a browser.
   globalThis.process ||= {};
   globalThis.process.env ||= {};
   globalThis.process.env.NODE_ENV ||= 'production';
@@ -1067,14 +1066,6 @@ function pricingLanguageIcon() {
 }
 
 
-function renderDataBadge(meta, label = undefined) {
-  const status = contentStatus(meta);
-  const badge = node('span', { class: `data-badge ${status.kind}` });
-  const displayLabel = label || status.badge;
-  badge.append(node('i', { 'aria-hidden': 'true' }), document.createTextNode(displayLabel));
-  return badge;
-}
-
 function featureCard(number, title, description, href, action) {
   const card = node('a', { class: 'feature-card', href, 'data-link': '' });
   card.append(
@@ -1093,7 +1084,7 @@ function downloadsCard(status) {
     node(
       'p',
       {},
-      '安装包由既有下载 Worker 提供；命名 staging／production 环境通过 Service Binding 显式挂载在 /downloads。',
+      '查看适用于不同平台的客户端版本与下载文件。',
     ),
   ];
   if (status.active) {
@@ -1291,7 +1282,7 @@ function renderError(error, renderToken = workspaceRenderToken) {
   replaceMain(node('section', { class: 'error-page' },
     node('span', {}, 'ERROR'),
     node('h1', {}, '内容暂时无法载入'),
-    node('p', {}, error.message || '请稍后重试。'),
+    node('p', {}, '请稍后重试，或返回首页继续浏览。'),
     linkButton('/', '返回首页', 'primary'),
   ), renderToken);
 }

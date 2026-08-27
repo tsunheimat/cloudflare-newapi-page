@@ -1,7 +1,73 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createDocsAwareShellNavigator } from '../public/static/docs-lifecycle.js';
+import {
+  createDocsAwareShellNavigator,
+  createDocsPreloadManager,
+  installDocsPreloadFetchBridge,
+} from '../public/static/docs-lifecycle.js';
+
+test('Docs preload manager coalesces initial resources and exposes deterministic lifecycle states', async () => {
+  const pending = new Map();
+  const calls = [];
+  const fetchImpl = (path) => {
+    calls.push(path);
+    return new Promise((resolve, reject) => pending.set(path, { resolve, reject }));
+  };
+  const manager = createDocsPreloadManager({
+    fetchImpl,
+    windowObject: { location: { href: 'https://juaiapi.wdtokenacc.top/' } },
+    requests: ['/api/docs/v2/config', '/api/docs/v2/spaces?locale=zh'],
+  });
+
+  manager.start();
+  assert.deepEqual(manager.status(), {
+    '/api/docs/v2/config': 'pending',
+    '/api/docs/v2/spaces?locale=zh': 'pending',
+  });
+  manager.start();
+  assert.equal(calls.length, 2, 'repeated starts must not duplicate requests');
+
+  pending.get('/api/docs/v2/config').resolve(new Response(JSON.stringify({ success: true, data: { version: 1 } }), {
+    headers: { 'content-type': 'application/json' },
+  }));
+  pending.get('/api/docs/v2/spaces?locale=zh').reject(new Error('offline'));
+  await Promise.all([
+    manager.responseFor('/api/docs/v2/config'),
+    manager.responseFor('/api/docs/v2/spaces?locale=zh'),
+  ]);
+  assert.equal(manager.status()['/api/docs/v2/config'], 'success');
+  assert.equal(manager.status()['/api/docs/v2/spaces?locale=zh'], 'failure');
+  assert.doesNotMatch(JSON.stringify(manager.requests), /pricing/i);
+});
+
+test('Docs preload fetch bridge reuses a successful response and falls back for uncached paths', async () => {
+  const calls = [];
+  const originalFetch = async (path) => {
+    calls.push(String(path));
+    return new Response(JSON.stringify({ success: true, source: 'network' }), {
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  const windowObject = {
+    location: { href: 'https://juaiapi.wdtokenacc.top/' },
+    fetch: originalFetch,
+  };
+  const manager = createDocsPreloadManager({
+    fetchImpl: originalFetch,
+    windowObject,
+    requests: ['/api/docs/v2/config'],
+  });
+  installDocsPreloadFetchBridge({ windowObject, manager });
+  manager.start();
+  const [preloaded, uncached] = await Promise.all([
+    windowObject.fetch('/api/docs/v2/config'),
+    windowObject.fetch('/api/docs/v2/pages/quickstart'),
+  ]);
+  assert.deepEqual(await preloaded.json(), { success: true, source: 'network' });
+  assert.deepEqual(await uncached.json(), { success: true, source: 'network' });
+  assert.equal(calls.length, 2, 'the preload request and one uncached request are expected');
+});
 
 test('Docs shell re-entry synchronizes a mounted router and browser history', async () => {
   const windowObject = new FakeWindow('/docs/quickstart/quickstart');

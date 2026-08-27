@@ -7,14 +7,12 @@ GNU AGPL v3 or later; see LICENSE and THIRD_PARTY_NOTICES.md.
 
 JuAPI developer-centre design system
 ===================================
-One token set drives all four surfaces (Home, Docs, Pricing, Downloads) so they
-read as the same site. The canonical Docs and Pricing layouts are deliberately
-preserved inside the workspace — only their shared skin and shell are adapted —
-because their data comes from another application.
+One token set keeps the site consistent across its home, docs, pricing and
+downloads experiences.
 
   1. Tokens            6. Home
   2. Base              7. Error states
-  3. Skip link         8. Surface primitives (shared by Docs + Pricing)
+  3. Skip link         8. Shared surface primitives
   4. Header            9. Docs hub
   5. Footer / toast   10. Overlays   11. Pricing   12. Responsive
 */
@@ -47,6 +45,13 @@ because their data comes from another application.
   --line-strong: rgba(11, 18, 32, 0.17);
   --fill-0: rgba(11, 18, 32, 0.04);
   --fill-1: rgba(11, 18, 32, 0.07);
+  --ink-soft: var(--ink-2);
+  --surface-muted: var(--fill-0);
+  --red: var(--brand);
+  --amber: var(--warning);
+  --amber-soft: var(--warning-soft);
+  --code-ink: var(--ink);
+  --code: var(--fill-0);
 
   /* Status */
   --success: #0f9d58;
@@ -81,11 +86,7 @@ because their data comes from another application.
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
 
-  /*
-    Bridge to the token names the adapted NewAPI Docs/Pricing rules consume.
-    Redefining these — rather than the rules themselves — is what re-skins both
-    surfaces without touching a single line of their layout.
-  */
+  /* Shared aliases used by the documentation and pricing visual systems. */
   --semi-blue-5: var(--brand-rgb);
   --semi-color-primary: var(--brand);
   --semi-color-primary-hover: var(--brand-strong);
@@ -315,53 +316,12 @@ main {
   white-space: nowrap;
 }
 
-.primary-nav {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 2px;
-  margin-right: auto;
-}
-
-.primary-nav a {
-  position: relative;
-  border-radius: 999px;
-  padding: 7px 14px;
-  color: var(--ink-2);
-  font-size: 14px;
-  font-weight: 600;
-  text-decoration: none;
-  transition: color 160ms ease, background 160ms ease;
-}
-
-.primary-nav a:hover {
-  color: var(--ink);
-  background: var(--fill-0);
-}
-
-.primary-nav a.active {
-  color: var(--brand);
-  background: var(--brand-soft);
-}
-
 .header-actions {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   gap: 10px;
-}
-
-.nav-phase {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 4px 10px;
-  color: var(--ink-2);
-  background: var(--fill-0);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
+  margin-left: auto;
 }
 
 .theme-toggle {
@@ -402,7 +362,7 @@ main {
   display: block;
 }
 
-/* Canonical runtimes inherit the workspace document and its JuAPI chrome. */
+/* Documentation and pricing views inherit the JuAPI visual chrome. */
 body.canonical-docs-active,
 body.docs-hub-worker-body {
   background: var(--semi-color-bg-0, #fff);
@@ -412,8 +372,7 @@ body.canonical-docs-active main {
   min-height: 100vh;
 }
 
-/* The canonical Pricing bundle owns the panel; this language control remains
-   outside it while still using the same workspace geometry. */
+/* The pricing language control stays above the canonical pricing view. */
 .canonical-pricing-surface {
   min-height: 100vh;
   background: var(--semi-color-bg-0, #fff);
@@ -942,7 +901,7 @@ a.feature-card:hover::before {
   box-shadow: var(--shadow-sm);
 }
 
-/* Fixture / live provenance badge — shared by Home, Docs and Pricing. */
+/* Content status badge shared by the public views. */
 
 .downloads-page {
   max-width: 1180px;
@@ -1008,15 +967,16 @@ a.feature-card:hover::before {
 
 .downloads-software-card {
   display: grid;
+  align-content: start;
+  gap: 12px;
   min-height: 210px;
   padding: 26px;
   color: inherit;
-  text-decoration: none;
   transition: transform 140ms ease, background 140ms ease;
 }
 
 .downloads-software-card:hover {
-  background: var(--surface-muted);
+  background: var(--fill-0);
   transform: translateY(-2px);
 }
 
@@ -1030,8 +990,7 @@ a.feature-card:hover::before {
 }
 
 .downloads-software-card h2 {
-  align-self: end;
-  margin: 26px 0 8px;
+  margin: 10px 0 0;
   font-family: Georgia, "Noto Serif SC", serif;
   font-size: 28px;
   font-weight: 500;
@@ -1049,19 +1008,29 @@ a.feature-card:hover::before {
   line-height: 1.5;
 }
 
+.downloads-card-files {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+.downloads-card-files h3 {
+  margin: 0 0 12px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.downloads-card-files .downloads-file-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
 .downloads-card-status--error {
   color: var(--amber);
 }
 
 .downloads-card-status--fallback {
   color: var(--amber);
-}
-
-.downloads-card-action {
-  align-self: end;
-  margin-top: 22px;
-  font-size: 13px;
-  font-weight: 800;
 }
 
 .downloads-back-link {
@@ -1279,7 +1248,7 @@ a.feature-card:hover::before {
 }
 
 /* ============================================================
-   8. Surface primitives — shared by Docs and Pricing
+   8. Shared surface primitives
    ============================================================ */
 
 @media (max-width: 540px) {
@@ -1402,7 +1371,7 @@ a.feature-card:hover::before {
 }
 
 /*
- * NewAPI Docs Hub 2.0 and model-pricing surface adaptation.
+ * Documentation and model-pricing component styles.
  * Copyright (C) 2025 QuantumNous
  * GNU Affero General Public License v3 or later.
  * Source reference: approved NewAPI 85143bc49260f9c7ab1efd6a5122558e58d0bee2.
@@ -3307,18 +3276,12 @@ a.feature-card:hover::before {
 
 @media (max-width: 860px) {
   .brand-copy,
-  .brand-divider,
-  .nav-phase {
+  .brand-divider {
     display: none;
   }
 
   .site-header__inner {
     gap: 12px;
-  }
-
-  .primary-nav a {
-    padding: 7px 11px;
-    font-size: 13.5px;
   }
 
   .site-footer__inner {
@@ -3580,11 +3543,10 @@ body.canonical-pricing-active main {
 }
 
 /* ============================================================
-   JuAPI single-document workspace
+   Shared navigation and surface layout
    ============================================================ */
 
-/* Canonical runtimes are panels inside the shell; the shared header, skip
-   link, and footer remain present while users switch surfaces. */
+/* The shared header, skip link, and footer remain present while switching. */
 body.workspace-active main {
   min-height: calc(100vh - var(--header-height));
 }
@@ -3666,9 +3628,7 @@ body.workspace-active main {
   min-height: calc(100vh - var(--header-height) - 52px);
 }
 
-/* Docs Hub was originally rendered as a full-page route with its own 64px
-   top offset. In the shared document that offset belongs to the header and
-   workspace tabs, so keep the canonical reader geometry below both layers. */
+/* Keep the reader geometry below the header and navigation strip. */
 body.workspace-active .workspace-panel--docs .docs-hub-shell {
   min-height: calc(100vh - var(--header-height) - var(--workspace-tabs-height));
   margin-top: 0;

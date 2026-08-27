@@ -79,7 +79,7 @@ test('Docs route mapping keeps real spaces generic and resolves only the known l
 
 test('Pricing presentation mounts one canonical runtime at both public URLs', async () => {
   const [app, _styles, index] = await sources;
-  assert.match(index, /href="\/console\/pricing" data-link data-nav="pricing"/);
+  assert.match(app, /id: 'pricing', label: '价格', href: '\/console\/pricing'/);
   assert.match(app, /function isPricingPath\(path\)[\s\S]*?\/console\/pricing'[\s\S]*?'\/pricing'/);
   assert.match(app, /renderCanonicalPricing/);
   assert.match(app, /canonical-pricing\.js/);
@@ -88,14 +88,18 @@ test('Pricing presentation mounts one canonical runtime at both public URLs', as
 
 test('Downloads presentation is a workspace panel with the existing authority flows', async () => {
   const [app, styles, index] = await sources;
-  assert.match(index, /href="\/downloads" data-link data-nav="downloads"/);
+  assert.match(app, /id: 'downloads', label: '下载', href: '\/downloads'/);
   assert.match(app, /WORKSPACE_SURFACES/);
   assert.match(app, /workspace-tabs/);
   assert.match(app, /workspace-panel--\$\{surface\.id\}/);
   assert.match(app, /function surfaceForPath\(path\)/);
   assert.match(app, /function isDownloadsPath\(path\)/);
   assert.match(app, /function downloadSoftwareId\(path\)/);
+  assert.match(app, /data-download-program-grid/);
+  assert.match(app, /data-download-software/);
+  assert.match(app, /downloads-card-files/);
   assert.match(app, /class: 'downloads-back-link', href: '\/downloads', 'data-link'/);
+  assert.doesNotMatch(app, /class: 'downloads-software-card',[\s\S]*?href: `\/downloads\/software/);
   assert.match(app, /\/api\/downloads\/catalog/);
   assert.match(app, /\/downloads\/api\/\$\{encoded\}\/public/);
   assert.match(app, /\/downloads\/download\/\$\{encodeURIComponent\(softwareId\)\}/);
@@ -182,16 +186,21 @@ test('front-door home/header remain present and content calls stay API-relative'
   const [app, _styles, index] = await sources;
 
   assert.match(index, /<header class="site-header">/);
+  assert.match(index, /rel="modulepreload" href="\/static\/docs-hub\.js"/);
   assert.match(index, /src="\/brand\/juapi-logo\.png"[\s\S]*?alt="JuAPI"/);
   assert.match(index, /class="brand-logo brand-logo--dark"/);
-  assert.match(index, /<span class="nav-phase">Phase 2<\/span>/);
+  assert.doesNotMatch(index, /nav-phase|Phase 2/i);
+  assert.doesNotMatch(index, /class="primary-nav"/);
   assert.match(app, /把接口能力，变成清晰的开发体验。/);
-  assert.match(app, /PHASE 2 DEPLOYMENT BOUNDARY/);
+  assert.match(app, /需要帮助？从文档与下载中心开始。/);
+  assert.doesNotMatch(app, /四个 surface，一套工作区|PHASE 2|DEPLOYMENT BOUNDARY|Service Binding 显式挂载/);
+  assert.match(app, /createDocsPreloadManager/);
+  assert.match(app, /docsPreloadManager\.start\(\)/);
   assert.doesNotMatch(app, /node\('main'/, 'route renderers must not nest a second main landmark');
 
   assert.match(app, /api\('\/api\/content\/docs'\)/);
   assert.doesNotMatch(app, /api\('\/api\/content\/pricing'\)/);
-  assert.match(app, /NewAPI（canonical）/);
+  assert.match(app, /实时数据/);
   assert.match(app, /loadContentSurfaces\(\)/);
   assert.doesNotMatch(app, /官方价格为 fixture 中配置/);
   assert.doesNotMatch(app, /内容仍是 fixture/);

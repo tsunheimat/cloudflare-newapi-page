@@ -249,7 +249,8 @@ test('public Docs navigation ignores browser sessions and stale localStorage', {
     });
     await page.goto(`${baseUrl}/docs`, { waitUntil: 'domcontentloaded' });
     await page.locator('.docs-hub-page-title').waitFor();
-    assert.equal(navigationRequests, 2, 'the canonical DocsHub refreshes navigation during root and page mounting');
+    assert.ok(navigationRequests >= 1, 'Docs navigation remains available after the initial preload');
+    await page.getByText('Public guides', { exact: true }).waitFor();
     assert.equal(await page.locator('.docs-hub-tree-group').getByText('Public guides', { exact: true }).count(), 1);
     assert.equal(await page.locator('.docs-hub-tree-group').getByText('快速开始', { exact: true }).count(), 0);
     await context.close();
@@ -284,7 +285,7 @@ test('public Docs navigation failure follows the canonical tree fallback', { tim
   });
   await page.goto(`${baseUrl}/docs`, { waitUntil: 'domcontentloaded' });
   await page.locator('.docs-hub-page-title').waitFor();
-  assert.equal(navigationRequests, 2, 'the canonical hub falls back to the published page tree');
+  assert.ok(navigationRequests >= 1, 'the canonical hub falls back to the published page tree');
   assert.equal(await page.locator('.error-page').count(), 0);
   assert.equal(await page.locator('.docs-hub-tree-group').count() > 0, true);
   await context.close();
@@ -315,7 +316,7 @@ test('public Docs navigation is required even when a browser has no session', { 
   });
   await page.goto(`${baseUrl}/docs`, { waitUntil: 'domcontentloaded' });
   await page.locator('.docs-hub-page-title').waitFor();
-  assert.equal(navigationRequests, 2, 'the canonical DocsHub refreshes navigation during root and page mounting');
+  assert.ok(navigationRequests >= 1, 'Docs navigation remains required without a session');
   assert.equal(new URL(page.url()).pathname, '/docs/quickstart/quickstart');
   assert.equal((await page.locator('.docs-hub-page-title').textContent()).trim(), '快速开始');
   await context.close();
@@ -346,6 +347,39 @@ test('shell Home -> Docs re-entry refreshes the mounted page and preserves histo
   await page.waitForURL((url) => url.pathname === '/docs/quickstart/quickstart');
   await page.getByRole('heading', { name: '快速开始', exact: true }).waitFor();
   assert.equal(await page.getByRole('heading', { name: 'Responses API', exact: true }).count(), 0);
+  await context.close();
+});
+
+test('Docs initial preload starts from Home and is reused on first entry', { timeout: 30_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await newPage(context);
+  let configRequests = 0;
+  await page.route('**/api/docs/v2/config', async (route) => {
+    configRequests += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { enabled: true } }),
+    });
+  });
+  await page.route('**/api/docs/v2/spaces*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: [{ slug: 'quickstart', title: 'Quickstart' }] }),
+    });
+  });
+  await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: '把接口能力，变成清晰的开发体验。', exact: true }).waitFor();
+  assert.equal(configRequests, 1, 'Home should start one Docs config preload');
+  await page.locator('[data-workspace-tab="docs"]').click();
+  await page.locator('.docs-hub-page-title').waitFor();
+  assert.equal(configRequests, 1, 'first Docs entry should reuse the preload response');
+  await page.locator('[data-workspace-tab="home"]').click();
+  await page.getByRole('heading', { name: '把接口能力，变成清晰的开发体验。', exact: true }).waitFor();
+  await page.locator('[data-workspace-tab="docs"]').click();
+  await page.locator('.docs-hub-page-title').waitFor();
+  assert.equal(configRequests, 1, 'repeated Docs entry should remain coalesced');
   await context.close();
 });
 
@@ -624,7 +658,7 @@ test('Pricing language switching changes the mounted runtime and persists anonym
   await context.close();
 });
 
-test('[mocked/source evidence] Downloads root renders inside the shared workspace and preserves both software groups', { timeout: 30_000 }, async () => {
+test('[mocked/source evidence] Downloads root keeps every program and file target in one panel', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await newPage(context);
   await page.route('**/api/downloads/catalog', async (route) => {
@@ -649,7 +683,10 @@ test('[mocked/source evidence] Downloads root renders inside the shared workspac
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ release_id: `${id}-v1`, files: [] }),
+        body: JSON.stringify({ release_id: `${id}-v1`, files: [{
+          site: 'tokenrouter', platform: 'windows', arch: 'x64',
+          filename: `${id}.zip`, size: 1024, sha256: 'a'.repeat(64),
+        }] }),
       });
     });
   }
@@ -661,18 +698,14 @@ test('[mocked/source evidence] Downloads root renders inside the shared workspac
   assert.equal(await page.locator('.workspace-panel--home[hidden]').count(), 1);
   assert.equal(await page.getByRole('heading', { name: 'Codex 安装器', exact: true }).count(), 1);
   assert.equal(await page.getByRole('heading', { name: 'Codex 聊天记录迁移器', exact: true }).count(), 1);
-  assert.equal(await page.locator('a[data-link][href="/downloads/software/codex-installer"]').count(), 1);
+  assert.equal(await page.locator('[data-download-software="codex-installer"]').count(), 1);
+  assert.equal(await page.locator('[data-download-software="codex-chat-record-migrator"]').count(), 1);
+  assert.equal(await page.locator('.downloads-file-card').count(), 2);
   await page.evaluate(() => { window.__downloadsShell = document.querySelector('.workspace-shell'); });
-  await page.locator('a[data-link][href="/downloads/software/codex-installer"]').click();
-  await page.getByRole('heading', { name: 'Codex 安装器', exact: true }).waitFor();
   assert.equal(await page.locator('.workspace-shell').count(), 1);
   assert.equal(await page.evaluate(() => window.__downloadsShell === document.querySelector('.workspace-shell')), true);
   assert.equal(await page.locator('[role="tab"][aria-selected="true"]').getAttribute('data-workspace-tab'), 'downloads');
   assert.equal(await page.locator('.workspace-panel--docs[hidden]').count(), 1);
-  await page.locator('.downloads-back-link[data-link]').click();
-  await page.getByRole('heading', { name: '软件下载中心', exact: true }).waitFor();
-  assert.equal(await page.locator('.workspace-shell').count(), 1);
-  assert.equal(await page.locator('[role="tab"][aria-selected="true"]').getAttribute('data-workspace-tab'), 'downloads');
   await context.close();
 });
 
@@ -708,6 +741,9 @@ test('[mocked/source evidence] workspace tab switches keep one document and expo
   await page.getByRole('heading', { name: '模型价格', exact: true }).first().waitFor();
   assert.equal(await page.locator('.workspace-shell').count(), 1);
   assert.equal(await page.evaluate(() => window.__workspaceShell === document.querySelector('.workspace-shell')), true);
+  assert.equal(await page.locator('.workspace-tabs').count(), 1);
+  assert.equal(await page.locator('.primary-nav').count(), 0);
+  assert.equal(await page.locator('header nav').count(), 0);
   assert.equal(await page.locator('[data-workspace-tab="pricing"]').getAttribute('aria-selected'), 'true');
   assert.equal(await page.locator('.workspace-panel--home[hidden]').count(), 1);
   assert.equal(await page.locator('.workspace-panel--docs[hidden]').count(), 1);
@@ -770,6 +806,32 @@ test('[mocked/source evidence] Downloads panel renders empty and downstream erro
   await page.goto(`${baseUrl}/downloads/software/empty-software`, { waitUntil: 'domcontentloaded' });
   await page.getByRole('heading', { name: 'empty', exact: true }).waitFor();
   assert.equal(await page.getByRole('heading', { name: '暂无可用下载', exact: true }).count(), 1);
+  await context.close();
+});
+
+test('[mocked/source evidence] Downloads root keeps per-program error state in the same panel', { timeout: 25_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 900, height: 844 } });
+  const page = await newPage(context);
+  await page.route('**/api/downloads/catalog', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { software: [{ id: 'empty-software' }, { id: 'error-software' }] } }),
+    });
+  });
+  await page.route('**/downloads/api/empty-software/public', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ release_id: 'empty', files: [] }) });
+  });
+  await page.route('**/downloads/api/error-software/public', async (route) => {
+    await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ success: false, error: { message: 'metadata unavailable' } }) });
+  });
+  await page.goto(`${baseUrl}/downloads`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: '软件下载中心', exact: true }).waitFor();
+  await page.getByRole('heading', { name: '暂无可用下载', exact: true }).first().waitFor();
+  assert.equal(await page.locator('[data-download-software]').count(), 2);
+  assert.equal(await page.locator('.downloads-card-status--error').count(), 1);
+  assert.equal(await page.getByText('metadata unavailable', { exact: true }).count(), 0);
+  assert.equal(await page.locator('.workspace-panel--downloads[hidden]').count(), 0);
   await context.close();
 });
 
