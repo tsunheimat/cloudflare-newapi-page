@@ -33,6 +33,7 @@ const e = {
   "{{count}} 项操作_one": "{{count}} operations",
   "{{count}} 项操作_other": "{{count}} operations",
   "{{discount}}折": "{{discount}}/10 price",
+  "{{percent}}% off": "{{percent}}% off",
   "{{discount}}折 · 省 {{percent}}%": "{{discount}}/10 price · save {{percent}}%",
   "{{inputDesc}} + {{outputDesc}}{{extraServices}} = {{symbol}}{{total}}": "{{inputDesc}} + {{outputDesc}}{{extraServices}} = {{symbol}}{{total}}",
   "{{label}} {{price}} / 1M tokens": "{{label}} {{price}} / 1M tokens",

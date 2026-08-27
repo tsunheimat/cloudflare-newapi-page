@@ -835,6 +835,67 @@ test('Pricing language switching changes the mounted runtime and persists anonym
   await context.close();
 });
 
+test('Pricing discount labels stay compact and locale-correct in the canonical group card', { timeout: 45_000 }, async () => {
+  for (const viewport of [
+    { width: 1280, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    const context = await browser.newContext({ viewport });
+    const page = await newPage(context);
+    await page.route('**/api/status', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      success: true,
+      data: {
+        display_in_currency: true,
+        quota_display_type: 'USD',
+        price: 1,
+        usd_exchange_rate: 1,
+        custom_currency_exchange_rate: 1,
+        custom_currency_symbol: '¤',
+        quota_per_unit: 1_000_000,
+        model_marketplace_default: { vendor: '1', group: 'default' },
+      },
+    }),
+    }));
+    await page.route('**/api/pricing', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      success: true,
+      data: [{
+        model_name: 'discount-label-long-model-name-for-wrapping-regression',
+        vendor_id: 1,
+        quota_type: 0,
+        model_ratio: 1,
+        completion_ratio: 2,
+        enable_groups: ['default'],
+      }],
+      vendors: [{ id: 1, name: 'Canonical vendor with a representative long label' }],
+      group_ratio: { default: 0.029 },
+      usable_group: { default: 'Default / 默认分组' },
+      supported_endpoint: {},
+      auto_groups: [],
+      video_resolution_dimensions: {},
+      pricing_version: 'browser-discount-label-v1',
+    }),
+    }));
+    await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
+    await page.locator('.pricing-group-card').first().waitFor();
+
+    const discount = page.locator('.pricing-group-discount').first();
+    assert.equal((await discount.textContent()).trim(), '0.29折');
+
+    await page.evaluate(() => window.__i18n.changeLanguage('en'));
+    await page.waitForFunction(() => document.documentElement.lang === 'en');
+    assert.equal((await discount.textContent()).trim(), '97.1% off');
+    assert.match((await discount.textContent()).trim(), /^\d+(?:\.\d+)?% off$/);
+    assert.doesNotMatch((await discount.textContent()).trim(), /off\s+\d+%|\/10 price|^\d+(?:\.\d+)?%$/);
+    await context.close();
+  }
+});
+
 test('[mocked/source evidence] Downloads root keeps every program and file target in one panel', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await newPage(context);
