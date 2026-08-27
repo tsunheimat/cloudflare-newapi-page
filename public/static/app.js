@@ -50,7 +50,18 @@ const state = {
   advancedFiltersOpen: false,
 };
 
+const WORKSPACE_SURFACES = Object.freeze([
+  { id: 'home', label: '首页', href: '/' },
+  { id: 'docs', label: '文档', href: '/docs/quickstart' },
+  { id: 'pricing', label: '价格', href: '/console/pricing' },
+  { id: 'downloads', label: '下载', href: '/downloads' },
+]);
+
 const main = document.querySelector('#main-content');
+let workspaceShell = null;
+let workspacePanels = new Map();
+let workspaceSurface = 'home';
+let workspaceRenderToken = 0;
 let activeDocsSearchButton = null;
 let activeDocsTocObserver = null;
 let surfaceReturnFocus = null;
@@ -128,6 +139,7 @@ document.addEventListener('click', (event) => {
 });
 
 installThemeToggle();
+ensureWorkspaceShell();
 renderRoute();
 
 /*
@@ -171,14 +183,112 @@ function installThemeToggle() {
 function handlePricingViewportChange() {
   if (!isPricingPath(normalizePath(window.location.pathname))) return;
   closeSurfaceOverlay({ restoreFocus: false });
-  void renderPricing();
+  void renderPricing(workspaceRenderToken);
+}
+
+/**
+ * The public site is one document. Each surface gets a persistent panel so
+ * switching tabs never tears down the JuAPI shell or performs a document
+ * navigation. Canonical Docs/Pricing runtimes are mounted into their panels;
+ * their existing URLs remain history-compatible aliases for this workspace.
+ */
+function ensureWorkspaceShell() {
+  if (!main) return null;
+  if (workspaceShell?.isConnected) return workspaceShell;
+
+  workspaceShell = node('div', {
+    class: 'workspace-shell',
+    'data-workspace-shell': '',
+    'aria-label': 'JuAPI 工作区',
+  });
+  document.body.classList.add('workspace-active');
+  const tabs = node('nav', {
+    class: 'workspace-tabs',
+    role: 'tablist',
+    'aria-label': 'JuAPI 工作区分区',
+  });
+  const panels = node('div', { class: 'workspace-panels' });
+
+  for (const surface of WORKSPACE_SURFACES) {
+    const panelId = `workspace-panel-${surface.id}`;
+    const tabId = `workspace-tab-${surface.id}`;
+    const tab = node('a', {
+      id: tabId,
+      class: 'workspace-tab',
+      href: surface.href,
+      'data-link': '',
+      'data-workspace-tab': surface.id,
+      'aria-controls': panelId,
+      role: 'tab',
+      'aria-selected': 'false',
+      tabindex: '-1',
+    }, surface.label);
+    const panel = node('section', {
+      id: panelId,
+      class: `workspace-panel workspace-panel--${surface.id}`,
+      'data-workspace-panel': surface.id,
+      role: 'tabpanel',
+      'aria-labelledby': tabId,
+      tabindex: '-1',
+      hidden: '',
+    });
+    tab.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const tabsInOrder = [...tabs.querySelectorAll('[role="tab"]')];
+      const currentIndex = tabsInOrder.indexOf(tab);
+      const nextIndex = event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? tabsInOrder.length - 1
+          : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabsInOrder.length) % tabsInOrder.length;
+      tabsInOrder[nextIndex]?.focus();
+      const target = tabsInOrder[nextIndex]?.getAttribute('href');
+      if (target) navigate(target);
+    });
+    tabs.append(tab);
+    panels.append(panel);
+    workspacePanels.set(surface.id, panel);
+  }
+
+  workspaceShell.append(tabs, panels);
+  main.replaceChildren(workspaceShell);
+  return workspaceShell;
+}
+
+function surfaceForPath(path) {
+  if (isDocsPath(path)) return 'docs';
+  if (isPricingPath(path)) return 'pricing';
+  if (isDownloadsPath(path)) return 'downloads';
+  return 'home';
+}
+
+function activateWorkspaceSurface(surface) {
+  const next = WORKSPACE_SURFACES.some((item) => item.id === surface) ? surface : 'home';
+  workspaceSurface = next;
+  ensureWorkspaceShell();
+  document.body.dataset.workspaceSurface = next;
+  workspacePanels.forEach((panel, id) => {
+    const active = id === next;
+    panel.hidden = !active;
+    panel.classList.toggle('is-active', active);
+  });
+  workspaceShell?.querySelectorAll('[data-workspace-tab]').forEach((tab) => {
+    const active = tab.dataset.workspaceTab === next;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+    tab.setAttribute('tabindex', active ? '0' : '-1');
+  });
 }
 
 async function renderRoute() {
+  const renderToken = ++workspaceRenderToken;
   const path = canonicalizeDocsLocation();
+  ensureWorkspaceShell();
   const canonicalDocs = isDocsPath(path);
   if (!canonicalDocs) deactivateCanonicalDocs();
   const canonicalPricing = isPricingPath(path);
+  activateWorkspaceSurface(surfaceForPath(path));
   document.body.classList.toggle('canonical-pricing-active', canonicalPricing);
   const canonicalStyles = document.querySelector('link[data-canonical-pricing-css]');
   if (canonicalStyles) canonicalStyles.disabled = !canonicalPricing;
@@ -195,27 +305,31 @@ async function renderRoute() {
 
   try {
     if (isDocsPath(path)) {
-      await renderCanonicalDocs();
+      await renderCanonicalDocs(renderToken);
       return;
     }
     if (path === '/') {
-      await renderHome();
+      await renderHome(renderToken);
     } else if (isPricingPath(path)) {
-      await renderPricing();
+      await renderPricing(renderToken);
     } else if (isDownloadsPath(path)) {
-      await renderDownloads(path);
+      await renderDownloads(path, renderToken);
     } else {
       await ensureDocsCatalog();
-      renderNotFound();
+      if (isCurrentRender(renderToken)) renderNotFound(renderToken);
     }
   } catch (error) {
-    renderError(error);
+    if (isCurrentRender(renderToken)) renderError(error, renderToken);
   } finally {
-    main.removeAttribute('aria-busy');
+    if (isCurrentRender(renderToken)) main.removeAttribute('aria-busy');
   }
 }
 
-async function renderCanonicalDocs() {
+function isCurrentRender(renderToken) {
+  return renderToken === workspaceRenderToken;
+}
+
+async function renderCanonicalDocs(renderToken) {
   document.body.classList.add('canonical-docs-active', 'docs-hub-worker-body');
   document.body.classList.remove('canonical-pricing-active');
   const canonicalStyles = document.querySelector('link[data-canonical-docs-css]') || node('link', {
@@ -230,11 +344,12 @@ async function renderCanonicalDocs() {
     return;
   }
   if (!canonicalDocsRoot) canonicalDocsRoot = node('div', { id: 'root' });
-  main.replaceChildren(canonicalDocsRoot);
+  workspacePanels.get('docs')?.replaceChildren(canonicalDocsRoot);
   if (!canonicalDocsScriptPromise) {
     canonicalDocsScriptPromise = import('./docs-hub.js');
   }
   await canonicalDocsScriptPromise;
+  if (!isCurrentRender(renderToken)) return;
   canonicalDocsMounted = true;
   document.title = '文档';
 }
@@ -245,16 +360,16 @@ function deactivateCanonicalDocs() {
     && !canonicalDocsRoot?.isConnected
     && !document.body.classList.contains('canonical-docs-active')
   ) return;
-  canonicalDocsRoot?.remove();
   document.querySelector('link[data-canonical-docs-css]')?.remove();
   document.body.classList.remove('canonical-docs-active', 'docs-hub-worker-body');
 }
 
-async function renderHome() {
+async function renderHome(renderToken) {
   const [integration, content] = await Promise.all([
     state.integration || api('/api/integrations/downloads'),
     loadContentSurfaces(),
   ]);
+  if (!isCurrentRender(renderToken)) return;
   state.integration = integration;
   const docsHref = content.docs.defaultSlug ? docsPath(content.docs.defaultSlug) : '/docs';
   document.title = 'JuAPI 开发者中心';
@@ -274,7 +389,7 @@ async function renderHome() {
     node(
       'p',
       { class: 'home-lead' },
-      `开发文档、模型价格与客户端下载的公共入口，运行在独立的 Cloudflare Worker 上。Docs ${content.docs.sourceText}，Pricing ${content.pricing.sourceText}。`,
+      `首页、开发文档、模型价格与客户端下载共用一个 JuAPI document workspace，切换时保持同一 shell。Docs ${content.docs.sourceText}，Pricing ${content.pricing.sourceText}。`,
     ),
     actions,
     heroMeta(downloads, content),
@@ -285,11 +400,11 @@ async function renderHome() {
   const head = node('div', { class: 'home-section__head' });
   head.append(
     node('div', { class: 'eyebrow' }, 'SITE MAP'),
-    node('h2', {}, '三个入口，一套界面语言。'),
+    node('h2', {}, '四个 surface，一套工作区。'),
     node(
       'p',
       {},
-      '文档、价格与下载共用同一套排版、色板与组件，切换页面时不会有断层。',
+      '首页、文档、价格与下载共用同一套排版、色板与组件，在同一个 document 内原地切换，不会出现分裂页面。',
     ),
   );
   const cards = node('div', {
@@ -329,7 +444,7 @@ async function renderHome() {
   boundary.append(boundaryCard);
 
   fragment.append(hero, overview, boundary);
-  replaceMain(fragment);
+  if (isCurrentRender(renderToken)) replaceMain(fragment, renderToken);
 }
 
 function heroMeta(downloads, content) {
@@ -386,18 +501,18 @@ async function ensureDocsNavigation() {
   }
 }
 
-async function renderPricing() {
+async function renderPricing(renderToken = workspaceRenderToken) {
   // Both public pricing URLs are the same canonical NewAPI runtime. There is
   // no handcrafted compatibility renderer for `/pricing`.
-  await renderCanonicalPricing();
+  await renderCanonicalPricing(renderToken);
   return;
 }
 
-async function renderDownloads(path) {
+async function renderDownloads(path, renderToken) {
   document.title = path === '/downloads' ? '软件下载中心 · JuAPI' : '软件详情 · JuAPI';
   const softwareId = downloadSoftwareId(path);
   if (softwareId) {
-    await renderDownloadSoftware(state.downloadCatalog || { software: [] }, softwareId);
+    await renderDownloadSoftware(state.downloadCatalog || { software: [] }, softwareId, renderToken);
     return;
   }
   const catalog = await ensureDownloadCatalog();
@@ -433,10 +548,10 @@ async function renderDownloads(path) {
         : downloadsEmpty('当前没有配置可展示的软件。'),
     ),
   );
-  replaceMain(content);
+  if (isCurrentRender(renderToken)) replaceMain(content, renderToken);
 }
 
-async function renderDownloadSoftware(catalog, softwareId) {
+async function renderDownloadSoftware(catalog, softwareId, renderToken) {
   const software = catalog.software.find((item) => item.id === softwareId) || {
     id: softwareId,
     label: humanizeSoftwareId(softwareId),
@@ -444,24 +559,26 @@ async function renderDownloadSoftware(catalog, softwareId) {
   const content = node('div', { class: 'downloads-page downloads-detail-page' });
   const hero = node('section', { class: 'downloads-hero downloads-detail-hero' });
   hero.append(
-    // The mounted downloads root is downstream-owned HTML. A normal browser
-    // navigation is required here so the detail SPA does not recreate a
-    // client-only root shell at `/downloads`.
-    node('a', { class: 'downloads-back-link', href: '/downloads' }, '← 全部软件'),
+    // Detail navigation stays inside the Downloads panel while preserving the
+    // downstream service's mounted metadata/download authority routes.
+    node('a', { class: 'downloads-back-link', href: '/downloads', 'data-link': '' }, '← 全部软件'),
     node('div', { class: 'eyebrow' }, 'PUBLIC RELEASE'),
     node('h1', {}, software.label || humanizeSoftwareId(software.id)),
     node('p', { class: 'downloads-lead' }, `软件 ID：${software.id}`),
   );
   content.append(hero);
-  replaceMain(content);
+  if (!isCurrentRender(renderToken)) return;
+  replaceMain(content, renderToken);
 
   let resolved;
   try {
     resolved = await loadPublicDownloadMetadata(software.id);
   } catch (error) {
+    if (!isCurrentRender(renderToken)) return;
     content.append(downloadError(error));
     return;
   }
+  if (!isCurrentRender(renderToken)) return;
   const metadata = resolved.metadata;
   const files = Array.isArray(metadata?.files) ? metadata.files : [];
   const releaseDate = metadata?.release_date || metadata?.generated_at || metadata?.updated_at;
@@ -640,10 +757,11 @@ function formatDownloadDate(value) {
   return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(date);
 }
 
-async function renderCanonicalPricing() {
+async function renderCanonicalPricing(renderToken = workspaceRenderToken) {
   // `/console/pricing` is the public default view. It has no browser session
   // or end-user credential boundary; the canonical bundle calls the public
   // Worker Pricing endpoint backed by the server-side live-content adapter.
+  if (isCurrentRender(renderToken)) document.title = '模型价格 · JuAPI';
   const languageBar = node('div', { class: 'pricing-language-bar' });
   languageBar.append(createPricingLanguageSelector());
   const root = node('div', {
@@ -653,7 +771,8 @@ async function renderCanonicalPricing() {
   });
   const surface = node('div', { class: 'canonical-pricing-surface' });
   surface.append(languageBar, root);
-  replaceMain(surface);
+  if (!isCurrentRender(renderToken)) return;
+  replaceMain(surface, renderToken);
   // Semi's distributed CommonJS helpers retain a guarded process.env read;
   // provide the browser-safe production value before the canonical module is
   // evaluated without shipping a Node runtime shim.
@@ -681,7 +800,12 @@ async function renderCanonicalPricing() {
     });
   }
   await canonicalPricingScriptPromise;
+  if (!isCurrentRender(renderToken)) return;
   await globalThis.__mountCanonicalPricing?.();
+  if (!isCurrentRender(renderToken)) {
+    globalThis.__unmountCanonicalPricing?.();
+    return;
+  }
   bindPricingLanguageSelector(languageBar.firstElementChild);
 }
 
@@ -976,6 +1100,7 @@ function downloadsCard(status) {
     const card = node('a', {
       class: 'feature-card status-card',
       href: '/downloads',
+      'data-link': '',
     });
     card.append(...copy, node('strong', { class: 'status-on' }, '打开下载页 →'));
     return card;
@@ -1140,12 +1265,16 @@ function icon(name) {
   return svg;
 }
 
-function replaceMain(content) {
-  main.replaceChildren(content);
-  main.focus({ preventScroll: true });
+function replaceMain(content, renderToken = workspaceRenderToken) {
+  if (!isCurrentRender(renderToken)) return false;
+  const target = workspacePanels.get(workspaceSurface) || main;
+  target.replaceChildren(content);
+  target.focus({ preventScroll: true });
+  return true;
 }
 
-function renderNotFound() {
+function renderNotFound(renderToken = workspaceRenderToken) {
+  if (!isCurrentRender(renderToken)) return;
   document.title = '页面不存在 · JuAPI';
   const docsSlug = docsNavigationSlug(state.docsCatalog);
   replaceMain(node('section', { class: 'error-page' },
@@ -1153,17 +1282,18 @@ function renderNotFound() {
     node('h1', {}, '没有找到这个页面'),
     node('p', {}, '链接可能已经移动，或者尚未开放。'),
     docsSlug ? linkButton(docsPath(docsSlug), '返回文档', 'primary') : null,
-  ));
+  ), renderToken);
 }
 
-function renderError(error) {
+function renderError(error, renderToken = workspaceRenderToken) {
+  if (!isCurrentRender(renderToken)) return;
   console.error(error);
   replaceMain(node('section', { class: 'error-page' },
     node('span', {}, 'ERROR'),
     node('h1', {}, '内容暂时无法载入'),
     node('p', {}, error.message || '请稍后重试。'),
     linkButton('/', '返回首页', 'primary'),
-  ));
+  ), renderToken);
 }
 
 async function api(path, options = {}) {

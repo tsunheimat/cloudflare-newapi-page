@@ -22,7 +22,8 @@ does not deploy, stop, unbind, mutate, or delete that Worker.
 If a runtime has no callable `DOWNLOADS` R2 binding, the existing explicit
 service-binding gate can still carry the old direct and mounted families:
 
-- landing, software pages, and assets;
+- mounted landing/detail authority routes and assets (the public browser
+  document itself is now the JuAPI workspace shell);
 - legacy and software-specific latest/public/previous metadata and targets;
 - download redirects/streams;
 - WeChat QR metadata/image;

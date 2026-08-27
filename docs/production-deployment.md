@@ -164,7 +164,7 @@ curl --fail-with-body --silent --show-error "$PRODUCTION_BASE_URL/api/pricing" \
     '
 ```
 
-再运行 repository-owned 的 production read-only downloads probe。它只接受 HTTPS production URL，输出每个请求的无 body summary；先检查 exact GET `/downloads` 是 NewAPI R2-backed landing HTML（`JuAPI 软件下载中心`、两个 configured software groups 与 `download-group-grid`），再检查 `/downloads/software/:softwareId` 是 R2-backed software page，然后从 `/api/downloads/catalog` 发现并校验每个 software ID，逐一读取 `/downloads/api/:softwareId/public`，对明确 404 的 ID 再读取对应 `latest` metadata，最后验证一个代表性的 mounted `/downloads/download/...` 与 direct `/download/...` 路由。代表性 download response 只读 headers 后立即取消 body，不下载大 artifact，也不 follow redirect。旧版 `main#main-content` 与 `/static/app.js` detail-SPA markers 在 R2 migration 后不再是必要条件：
+再运行 repository-owned 的 production read-only downloads probe。它只接受 HTTPS production URL，输出每个请求的无 body summary；先检查 exact GET `/downloads` 与 `/downloads/software/:softwareId` 都返回 JuAPI workspace document（`<title>JuAPI 开发者中心</title>`、`<main id="main-content">`、`/static/app.js`），再从 `/api/downloads/catalog` 发现并校验每个 software ID，逐一读取 `/downloads/api/:softwareId/public`，对明确 404 的 ID 再读取对应 `latest` metadata，最后验证一个代表性的 mounted `/downloads/download/...` 与 direct `/download/...` 路由。代表性 download response 只读 headers 后立即取消 body，不下载大 artifact，也不 follow redirect。Workspace 的软件 groups/detail 是同一 document 的 Downloads panel，不再由另一份 downstream HTML page runtime 渲染：
 
 ```bash
 PROBE_EVIDENCE_DIR="$(mktemp -d)"

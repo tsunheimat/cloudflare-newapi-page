@@ -4,8 +4,9 @@
 
 ```text
 Browser
-  ├─ /docs/*, /console/docs/*, /console/pricing, /pricing ──> Worker Assets (canonical SPA surfaces)
-  ├─ Downloads direct + /downloads/* ─────────────────> Worker Downloads R2 authority
+  ├─ /, /docs/*, /console/docs/*, /console/pricing, /pricing, /downloads, /downloads/software/* ──> one Worker Assets workspace shell
+  │      └─ persistent Home / Docs / Pricing / Downloads panels
+  ├─ Downloads APIs, direct targets, /admin/* ─────────> Worker Downloads R2 authority / rollback binding
   ├─ /api/content/* ─────> ContentAdapter
   │                          └─ FixtureAdapter (Phase 1 only)
   └─ download routes ─────> `DOWNLOADS` (tokenrouter R2 bucket)
@@ -32,8 +33,7 @@ Public canonical bootstrap:
          └─ NEWAPI_VPC_SERVICE -> `/api/internal/live-content/v1/status`
 
 Public Downloads:
-  exact GET `/downloads` -> NewAPI Downloads R2 authority landing HTML
-  `/downloads/software/:softwareId` -> NewAPI R2-backed software page
+  `/downloads` and `/downloads/software/:softwareId` -> the shared workspace shell
        └─ `/api/downloads/catalog` -> fixed two-profile registry projection
        └─ `/downloads/api/:softwareId/public` -> R2 metadata object
        └─ `/downloads/download/:softwareId/:site/:platform/:arch` -> R2 redirect/stream
@@ -144,7 +144,7 @@ callability, and unverified live state separately. Local tests use an in-memory
 R2 double; Wrangler dry-runs do not prove the production bucket, objects, or
 Cloudflare route acceptance.
 
-Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only probe，检查 R2-backed landing/software pages、动态 catalog IDs、每个 discovered public/latest metadata、representative mounted/direct download routing、redirect 与 content type。Production 则只能经 fail-closed entrypoint 部署并按 runbook 执行同一条真实 catalog chain GET probe。Browser Playwright Downloads cases 明确是 `[mocked/source evidence]`；两者都不得把 mock、dry-run 或缺少实际 stdout 当成 remote/live evidence；详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md) 与 [production-deployment.md](production-deployment.md)。
+Staging remote closure 可用 Phase 2B temporary preview 执行 GET/HEAD-only probe，检查 shared workspace document、动态 catalog IDs、每个 discovered public/latest metadata、representative mounted/direct download routing、redirect 与 content type。Production 则只能经 fail-closed entrypoint 部署并按 runbook 执行同一条真实 catalog chain GET probe。Browser Playwright Downloads cases 明确是 `[mocked/source evidence]`；两者都不得把 mock、dry-run 或缺少实际 stdout 当成 remote/live evidence；详见 [phase-2b-remote-probe.md](phase-2b-remote-probe.md) 与 [production-deployment.md](production-deployment.md)。
 
 ## NewAPI live adapter cutover gates
 

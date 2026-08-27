@@ -104,7 +104,7 @@ await probe({
   path: '/downloads?probe=phase2b',
   statuses: [200],
   contentType: 'text/html',
-  textIncludes: ['<title>JuAPI 软件下载中心</title>', 'Codex 安装器', 'Codex 聊天记录迁移器', 'download-group-grid'],
+  textIncludes: ['<title>JuAPI 开发者中心</title>', 'id="main-content"', '/static/app.js'],
 });
 await probe({
   method: 'HEAD',
@@ -155,9 +155,9 @@ await probe({
   path: `/downloads/software/${encodeURIComponent(discoveredSoftware[0].id)}?probe=phase2b`,
   statuses: [200],
   contentType: 'text/html',
-  // Legacy SPA markers (<main id="main-content", /static/app.js) are not
-  // required after the Downloads R2 authority migration.
-  textIncludes: ['Codex'],
+  // Both the root and detail compatibility URLs enter the same shell. The
+  // panel fetches R2-backed metadata after the document loads.
+  textIncludes: ['<title>JuAPI 开发者中心</title>', 'id="main-content"', '/static/app.js'],
 });
 await probe({
   method: 'GET',

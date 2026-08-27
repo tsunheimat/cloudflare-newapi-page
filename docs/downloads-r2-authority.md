@@ -16,8 +16,8 @@ Unsafe URLs are ignored and safely derived from the reviewed public base
 variables. QR image metadata is validated against the configured
 `wechat-group-qrcode/images/` prefix before redirecting or streaming.
 
-The complete direct and mounted route families are handled locally: landing
-and software pages, static assets, legacy and software-specific latest/public/
+The complete direct and mounted authority families are handled locally:
+catalog/detail data APIs, static assets, legacy and software-specific latest/public/
 previous APIs, target metadata, download redirects/streaming, QR image/latest
 routes, admin login/session/logout, public lock/unlock/set actions, and QR
 upload. Admin sessions are HMAC-SHA256 cookies signed with

@@ -55,7 +55,7 @@ Probe script 有以下硬边界：
 - 只允许 GET/HEAD，`credentials: omit`；
 - `redirect: manual`，不会跟随 R2/external redirect；
 - 只对 `/admin` 做匿名 GET，不请求 login、不发送 cookie、不调用任何 admin action/upload；
-- exact GET `/downloads` 必须返回 NewAPI R2-backed landing HTML，并包含 pinned root markers（`JuAPI 软件下载中心`、两个 configured software groups 与 `download-group-grid`）；`/downloads/software/:softwareId` 返回 R2-backed software HTML，旧版 detail-SPA markers 不再是必要条件；
+- exact GET `/downloads` 与 `/downloads/software/:softwareId` 必须返回 JuAPI workspace document markers（`JuAPI 开发者中心`、`main#main-content` 与 `/static/app.js`）；实际软件 groups/detail 内容在同一 document 的 Downloads panel 中由 catalog 与 R2 metadata 读取；
 - 先 GET `/api/downloads/catalog`，校验每个发现的 software ID 与 SPA href，再逐一 GET `/downloads/api/:softwareId/public`；若某个 public metadata 明确返回 404，才对同一 ID GET `/downloads/api/:softwareId/latest`；
 - 从发现的 metadata 选择一个带 `site`、`platform`、`arch` 的代表 target，验证 `/downloads/download/:softwareId/:site/:platform/:arch` 与 direct `/download/...` 路由。若 download Worker 返回 direct binary stream，script 只检查 headers 后立即 cancel body，不下载大 artifact；这仍属于实际 R2 read，必须计入 read-operation/billing budget；
 - 检查 health/status 为 `active=true`，但仍是 `healthy=null`、`live=false`、`bound-unverified`，避免把 R2 binding presence 冒充 health。

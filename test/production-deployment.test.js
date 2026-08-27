@@ -85,7 +85,8 @@ test('production runbook probes a successful live Docs page and target-specific 
   assert.match(source, /Current production cutover verification \(live target only\)/);
   assert.match(source, /probe:production:downloads/);
   assert.match(source, /\/api\/downloads\/catalog/);
-  assert.match(source, /main#main-content/);
+  assert.match(source, /<title>JuAPI 开发者中心<\/title>/);
+  assert.match(source, /id=\\?"main-content/);
   assert.match(source, /最后一行为.*success/);
   assert.match(source, /\.content_adapter == "newapi"/);
   assert.match(source, /ROLLBACK_FIXTURE_PARENT_COMMIT/);

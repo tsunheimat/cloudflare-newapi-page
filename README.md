@@ -4,7 +4,7 @@
 
 ## 已包含
 
-- `/`：公共站点与 integration boundary 概览。
+- `/`：JuAPI single-document workspace；Home、Docs、Pricing、Downloads 以同一 shell 的 tabs/panels 原地切换，保留 integration boundary 概览。
 - `/docs/*` 与 `/console/docs/*`：复用 pinned NewAPI Docs Hub 2.0 的信息层级与 reader chrome，包括分组侧栏、Ctrl/Cmd+K 搜索、页内目录、移动端 drawer、翻页、表格、callout 和可复制代码示例；console alias 在浏览器中映射到 canonical `/docs/*` 页面路径。已知旧版 `/docs/tokenrouter`（以及 console alias）会安全映射到 `/docs/quickstart/tokenrouter`；真实 Docs spaces 保持通用路径语义。
 - `/console/pricing` 与 `/pricing`：挂载同一个 canonical NewAPI Pricing runtime，使用同一 `/api/pricing` 数据路径；Worker 仅通过 token-only live-content adapter 读取后端 canonical Pricing。
 - `/api/content/docs`、`/api/content/docs/:slug`：可替换 Docs adapter contract。
@@ -13,7 +13,7 @@
 - `/api/status`：通过 Worker token 请求 `/api/internal/live-content/v1/status`，提供 canonical Pricing 的 display/conversion bootstrap。
 - `CONTENT_ADAPTER="newapi"`：通过 `NEWAPI_VPC_SERVICE` 读取私有 NewAPI live Docs/Pricing；仅 production named environment 选择该模式，top-level/staging 保持 fixture safety mode。
 - `/api/integrations/downloads`：既有下载 Worker Service Binding 的状态、route mode 与能力边界。
-- exact GET `/downloads`：转发下游 `cloudflare-download-site` 的原始 root HTML，因此保留其两个配置软件组与 root-relative links/assets；`/downloads/software/:softwareId` 仍是本站 detail SPA，软件目录由下游公开 landing response 发现。
+- `/downloads` 与 `/downloads/software/:softwareId`：进入同一 workspace 的 Downloads panel；软件目录仍由下游公开 landing response 或生产 R2 catalog authority 提供，detail panel 读取既有 public/latest metadata。下游 `/downloads/api/*`、下载 redirect/stream、`/admin/*`、direct routes 与 rollback binding 保持原 contract。
 - Worker security headers、API fail-closed 行为与 SPA asset fallback。
 
 Fixture 内容在 API 和 UI 都明确标记为演示数据；live badge 只会在经过 v1 response/schema 验证的 live payload 上出现，不代表尚未执行的生产部署或 provider 能力。
@@ -107,18 +107,18 @@ service_id = "01a027bb-280d-7630-b837-7afd6a0ca196"
 
 Default/top-level 不声明 `DOWNLOADS_SERVICE` 且 gate 为 `disabled`，继续供 local/dev fail closed。命名 staging 与 production 都显式绑定同一个已部署的 `cloudflare-download-site`，但使用不同 runtime gate；只有当前 gate 与 callable binding 同时存在才会转发。未知 mode、缺失或无效 binding 全部返回 503。
 
-既有 `/mnt/vibe-coding-share/tokenrouter/cloudflare-download-site` 仍然单独持有下载、admin session、R2、rollback 和微信群二维码功能。本 repo 只负责 HTTP forwarding boundary；exact GET `/downloads` 是下游 root HTML 入口，`/downloads/software/:softwareId` 是本站 detail SPA，不覆盖其余 mounted forwarding。保留的入口包括：
+既有 `/mnt/vibe-coding-share/tokenrouter/cloudflare-download-site` 仍然单独持有下载、admin session、R2、rollback 和微信群二维码功能。本 repo 的 `/downloads` document 入口只回到 JuAPI workspace；authority/API 与 direct forwarding boundary 不变。保留的入口包括：
 
-- mounted `/downloads/*`（除 `/downloads/software/:softwareId` detail SPA）转发时移除 `/downloads` 并设置可信的 `x-forwarded-prefix: /downloads`；exact GET `/downloads` 也转发到 downstream `/`，但使用固定 `GET`/`Accept: text/html` 请求，不携带浏览器 credentials 或任意客户端 headers；
+- mounted `/downloads/*` authority/API routes（除 workspace document `/downloads` 与 `/downloads/software/:softwareId`）转发时移除 `/downloads` 并设置可信的 `x-forwarded-prefix: /downloads`；workspace document 由本站 ASSETS 提供，浏览器不会被送到另一个独立 HTML runtime；
 - `/api/downloads/catalog` 仅通过 Service Binding GET 下游 landing HTML，提取软件详情链接的 ID；它不读取 R2，不处理 release state，也不转发浏览器 headers；
 - direct `/software/*`、`/download/*`、`/admin/*`、`/assets/*`、`/wechat-group-qrcode*`；
 - default、software-specific 与微信群二维码 public metadata API。
 
-Gateway 保留其余 forwarding route 的 method、body bytes、query、cookie、content type、binary response stream、status、redirect 与 downstream headers；root GET 只保留固定 HTML accept，direct route 会删除不可信的 incoming `x-forwarded-prefix`。Gateway 只在 path segment boundary 命中下载路由，并保留下游自己的 CSP；本 SPA 的 `style-src 'self'` 只应用于本站 assets/API response。
+Gateway 保留其余 forwarding route 的 method、body bytes、query、cookie、content type、binary response stream、status、redirect 与 downstream headers；只有没有本站 ASSETS workspace 的兼容 fallback root GET 才使用固定 HTML accept，direct route 会删除不可信的 incoming `x-forwarded-prefix`。Gateway 只在 path segment boundary 命中下载路由，并保留下游自己的 CSP；本 SPA 的 `style-src 'self'` 只应用于本站 assets/API response。
 
 状态 API 会分别报告 `configured`、`bound`、`active`、`healthy` 与 `live`。`configured`/`bound` 保留 Phase 1 的 binding present/callable 语义；只有命名环境对应 gate 与 callable binding 同时成立才有 `active=true`。Active binding 仍固定为 `healthy=null`、`live=false`、`phase=bound-unverified`，不得冒充 live verification。
 
-完整 source snapshot、route/response contract 和本地测试范围见 [download-service-contract.md](docs/download-service-contract.md)。Staging temporary preview 可沿用 [Phase 2B read-only remote probe](docs/phase-2b-remote-probe.md)；production deployment 后使用 `PRODUCTION_BASE_URL=... npm run probe:production:downloads` 验证真实 downstream root groups、detail SPA/catalog/metadata/download chain。Local browser tests 明确标记为 `[mocked/source evidence]`，mock、dry-run 与命令文本都不是实际 Cloudflare binding 或 deployment 证据。
+完整 source snapshot、route/response contract 和本地测试范围见 [download-service-contract.md](docs/download-service-contract.md)。Staging temporary preview 可沿用 [Phase 2B read-only remote probe](docs/phase-2b-remote-probe.md)；production deployment 后使用 `PRODUCTION_BASE_URL=... npm run probe:production:downloads` 验证 workspace document、catalog/metadata/download chain 与 authority boundaries。Local browser tests 明确标记为 `[mocked/source evidence]`，mock、dry-run 与命令文本都不是实际 Cloudflare binding 或 deployment 证据。
 
 ## Production deployment
 

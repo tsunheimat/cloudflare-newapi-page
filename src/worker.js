@@ -179,6 +179,27 @@ export async function route(request, env = {}, ctx = undefined) {
     throw new HttpError(404, 'Content API route not found.');
   }
 
+  // Public catalog/detail document requests are rendered by the single JuAPI
+  // workspace. The downstream service remains the authority for its mounted
+  // APIs, direct download targets, admin flows, and rollback transport; this
+  // narrow public document branch only supplies the shared SPA shell.
+  if (
+    request.method === 'GET'
+    && isDownloadsWorkspaceDocument(pathname)
+  ) {
+    if (isProductionR2BindingMode(env) && !hasDownloadsBinding(env)) {
+      throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
+    }
+    // Test/runtime adapters without an ASSETS binding continue through the
+    // existing authority path; deployed environments have ASSETS and return
+    // the shared workspace document.
+    if (typeof env.ASSETS?.fetch !== 'function') {
+      // fall through to the authority/rollback contract below
+    } else {
+      return withSecurityHeaders(await env.ASSETS.fetch(request));
+    }
+  }
+
   if (isProductionR2BindingMode(env) && isDownloadsAuthorityRoute(pathname) && !hasDownloadsBinding(env)) {
     throw new HttpError(503, 'Downloads storage is temporarily unavailable.');
   }
@@ -584,6 +605,10 @@ function downloadCatalog() {
 
 function isDownloadsSpaRoute(pathname) {
   return /^\/downloads\/software\/[a-z0-9][a-z0-9-]{0,62}$/.test(pathname);
+}
+
+function isDownloadsWorkspaceDocument(pathname) {
+  return pathname === '/downloads' || isDownloadsSpaRoute(pathname);
 }
 
 function decodeDocSlug(rawSlug) {

@@ -916,28 +916,13 @@ test('SPA routes pass through the asset binding with security headers', async ()
   }
 });
 
-test('exact GET /downloads forwards the downstream root with both configured groups and no browser credentials', async () => {
-  let observed;
-  const downstreamRoot = `<!doctype html><html><head><title>JuAPI 软件下载中心</title><link rel="icon" href="/assets/favicon.png"></head><body>
-    <h1>JuAPI 下载中心</h1><div class="download-group-grid">
-      <article class="download-group"><h3>Codex 安装器</h3><a href="/software/codex-installer">详情</a><a href="/download/codex-installer/tokenrouter/windows/x64">下载</a></article>
-      <article class="download-group"><h3>Codex 聊天记录迁移器</h3><a href="/software/codex-chat-record-migrator">详情</a><a href="/download/codex-chat-record-migrator/tokenrouter/windows/x64">下载</a></article>
-    </div></body></html>`;
+test('exact GET /downloads returns the shared workspace shell and does not call the rollback service', async () => {
+  let serviceCalled = false;
   const response = await fetchWorker('/downloads?probe=root', {
     ...fixtureEnv,
     DOWNLOADS_INTEGRATION: 'staging-service-binding',
     DOWNLOADS_SERVICE: {
-      fetch: async (request) => {
-        observed = {
-          method: request.method,
-          pathname: new URL(request.url).pathname,
-          search: new URL(request.url).search,
-          headers: Object.fromEntries(request.headers),
-        };
-        return new Response(downstreamRoot, {
-          headers: { 'content-type': 'text/html; charset=utf-8' },
-        });
-      },
+      fetch: async () => { serviceCalled = true; return new Response('legacy'); },
     },
   }, {
     headers: {
@@ -946,22 +931,33 @@ test('exact GET /downloads forwards the downstream root with both configured gro
       'x-api-key': 'hostile',
       'x-worker-secret': 'must-not-forward',
       'x-forwarded-prefix': '/spoofed',
+      'sec-fetch-dest': 'document',
     },
   });
 
   assert.equal(response.status, 200);
-  const body = await response.text();
-  assert.match(body, /Codex 安装器/);
-  assert.match(body, /Codex 聊天记录迁移器/);
-  assert.match(body, /href="\/assets\/favicon\.png"/);
-  assert.match(body, /href="\/software\/codex-installer"/);
-  assert.match(body, /href="\/download\/codex-chat-record-migrator\/tokenrouter\/windows\/x64"/);
-  assert.deepEqual(observed, {
-    method: 'GET',
-    pathname: '/',
-    search: '?probe=root',
-    headers: { accept: 'text/html', 'x-forwarded-prefix': '/downloads' },
+  assert.equal(await response.text(), 'asset:/downloads');
+  assert.equal(serviceCalled, false);
+  assert.equal(response.headers.get('x-frame-options'), 'DENY');
+});
+
+test('Downloads workspace document keeps production R2 fail-closed behavior', async () => {
+  const production = {
+    ...fixtureEnv,
+    DOWNLOADS_INTEGRATION: 'production-r2-binding',
+    DOWNLOADS: { get: async () => null, put: async () => null },
+    DOWNLOADS_SERVICE: { fetch: async () => new Response('rollback') },
+  };
+  const shell = await fetchWorker('/downloads/software/codex-installer', production);
+  assert.equal(shell.status, 200);
+  assert.equal(await shell.text(), 'asset:/downloads/software/codex-installer');
+
+  const missing = await fetchWorker('/downloads', {
+    ...production,
+    DOWNLOADS: undefined,
   });
+  assert.equal(missing.status, 503);
+  assert.doesNotMatch(await missing.text(), /rollback|DOWNLOADS_SERVICE/);
 });
 
 test('Downloads software detail keeps the shared Worker shell while legacy service routes fail closed', async () => {

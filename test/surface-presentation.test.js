@@ -62,7 +62,7 @@ test('Docs compatibility alias maps root and nested console paths to the canonic
   assert.match(app, /function canonicalizeDocsLocation\(\)[\s\S]*?window\.history\.replaceState[\s\S]*?window\.location\.search[\s\S]*?window\.location\.hash/);
   assert.match(app, /function installDocsHistoryNormalizer\(\)[\s\S]*?window\.history\[method\][\s\S]*?normalizeDocsHistoryUrl\(url\)/);
   assert.match(app, /function normalizeDocsHistoryUrl\(value\)[\s\S]*?canonicalDocsPath\(currentPath\)/);
-  assert.match(app, /if \(isDocsPath\(path\)\)[\s\S]*?await renderCanonicalDocs\(\)/);
+  assert.match(app, /if \(isDocsPath\(path\)\)[\s\S]*?await renderCanonicalDocs\([^)]*\)/);
 });
 
 test('Docs route mapping keeps real spaces generic and resolves only the known legacy page alias', async () => {
@@ -86,13 +86,16 @@ test('Pricing presentation mounts one canonical runtime at both public URLs', as
   assert.doesNotMatch(app, /legacyPricing|pricing-page-intro|renderPricingProviders/);
 });
 
-test('Downloads presentation keeps the downstream-owned root and a separate detail SPA', async () => {
+test('Downloads presentation is a workspace panel with the existing authority flows', async () => {
   const [app, styles, index] = await sources;
-  assert.match(index, /href="\/downloads" data-nav="downloads"/);
-  assert.doesNotMatch(index, /href="\/downloads" data-link/);
+  assert.match(index, /href="\/downloads" data-link data-nav="downloads"/);
+  assert.match(app, /WORKSPACE_SURFACES/);
+  assert.match(app, /workspace-tabs/);
+  assert.match(app, /workspace-panel--\$\{surface\.id\}/);
+  assert.match(app, /function surfaceForPath\(path\)/);
   assert.match(app, /function isDownloadsPath\(path\)/);
   assert.match(app, /function downloadSoftwareId\(path\)/);
-  assert.match(app, /class: 'downloads-back-link', href: '\/downloads' \}/);
+  assert.match(app, /class: 'downloads-back-link', href: '\/downloads', 'data-link'/);
   assert.match(app, /\/api\/downloads\/catalog/);
   assert.match(app, /\/downloads\/api\/\$\{encoded\}\/public/);
   assert.match(app, /\/downloads\/download\/\$\{encodeURIComponent\(softwareId\)\}/);
@@ -101,6 +104,9 @@ test('Downloads presentation keeps the downstream-owned root and a separate deta
   assert.match(app, /公开元数据暂时无法载入/);
   assert.match(styles, /\.downloads-file-grid/);
   assert.match(styles, /\.downloads-metadata-details/);
+  assert.match(styles, /\.workspace-shell/);
+  assert.match(styles, /\.workspace-panel\[hidden\]/);
+  assert.doesNotMatch(styles, /body\.canonical-(?:docs|pricing)-active[^}]*display:\s*none/);
 });
 test('public Pricing route ships the canonical component bundle without browser auth', async () => {
   const [app, bundle, stylesheet] = await Promise.all([

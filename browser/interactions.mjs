@@ -331,7 +331,7 @@ test('shell Home -> Docs re-entry refreshes the mounted page and preserves histo
   await page.locator('a[data-nav="home"]').click();
   await page.waitForURL((url) => url.pathname === '/');
   await page.getByRole('heading', { name: '把接口能力，变成清晰的开发体验。', exact: true }).waitFor();
-  assert.equal(await page.locator('.docs-hub-page-title').count(), 0);
+  assert.equal(await page.locator('.workspace-panel--docs .docs-hub-page-title:visible').count(), 0);
 
   await page.locator('a[data-nav="docs"]').click();
   await page.waitForURL((url) => url.pathname === '/docs/quickstart/quickstart');
@@ -624,36 +624,99 @@ test('Pricing language switching changes the mounted runtime and persists anonym
   await context.close();
 });
 
-test('[mocked/source evidence] mounted Downloads root renders both downstream software groups and usable root-relative links', { timeout: 25_000 }, async () => {
+test('[mocked/source evidence] Downloads root renders inside the shared workspace and preserves both software groups', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await newPage(context);
-  await page.route(`${baseUrl}/downloads`, async (route) => {
-    assert.equal(route.request().headers().cookie, 'hostile-session=must-not-forward');
+  await page.route('**/api/downloads/catalog', async (route) => {
+    assert.equal(route.request().headers().cookie, undefined);
     await route.fulfill({
       status: 200,
-      contentType: 'text/html; charset=utf-8',
-      body: `<!doctype html><html><head><title>JuAPI 软件下载中心</title><link rel="icon" href="/assets/favicon.png"></head><body>
-        <h1>JuAPI 软件下载中心</h1><div class="download-group-grid">
-          <article class="download-group"><h3>Codex 安装器</h3><a href="/software/codex-installer">详情</a><a href="/download/codex-installer/tokenrouter/windows/x64">下载</a></article>
-          <article class="download-group"><h3>Codex 聊天记录迁移器</h3><a href="/software/codex-chat-record-migrator">详情</a><a href="/download/codex-chat-record-migrator/tokenrouter/windows/x64">下载</a></article>
-        </div></body></html>`,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: {
+          software: [
+            { id: 'codex-installer', label: 'Codex 安装器' },
+            { id: 'codex-chat-record-migrator', label: 'Codex 聊天记录迁移器' },
+          ],
+        },
+      }),
     });
   });
-  await context.addCookies([
-    { name: 'hostile-session', value: 'must-not-forward', domain: '127.0.0.1', path: '/' },
-  ]);
+  for (const id of ['codex-installer', 'codex-chat-record-migrator']) {
+    await page.route(`**/downloads/api/${id}/public`, async (route) => {
+      assert.equal(route.request().headers().cookie, undefined);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ release_id: `${id}-v1`, files: [] }),
+      });
+    });
+  }
   await page.goto(`${baseUrl}/downloads`, { waitUntil: 'domcontentloaded' });
-  await page.getByRole('heading', { name: 'JuAPI 软件下载中心', exact: true }).waitFor();
-  assert.equal(await page.locator('.download-group').count(), 2);
+  await page.getByRole('heading', { name: '软件下载中心', exact: true }).waitFor();
+  assert.equal(await page.locator('.workspace-shell').count(), 1);
+  assert.equal(await page.locator('[role="tab"]').count(), 4);
+  assert.equal(await page.locator('[role="tab"][aria-selected="true"]').getAttribute('data-workspace-tab'), 'downloads');
+  assert.equal(await page.locator('.workspace-panel--home[hidden]').count(), 1);
   assert.equal(await page.getByRole('heading', { name: 'Codex 安装器', exact: true }).count(), 1);
   assert.equal(await page.getByRole('heading', { name: 'Codex 聊天记录迁移器', exact: true }).count(), 1);
-  assert.equal(await page.locator('link[href="/assets/favicon.png"]').count(), 1);
-  assert.equal(await page.locator('a[href="/software/codex-installer"]').count(), 1);
-  assert.equal(await page.locator('a[href="/download/codex-chat-record-migrator/tokenrouter/windows/x64"]').count(), 1);
+  assert.equal(await page.locator('a[data-link][href="/downloads/software/codex-installer"]').count(), 1);
+  await page.evaluate(() => { window.__downloadsShell = document.querySelector('.workspace-shell'); });
+  await page.locator('a[data-link][href="/downloads/software/codex-installer"]').click();
+  await page.getByRole('heading', { name: 'Codex 安装器', exact: true }).waitFor();
+  assert.equal(await page.locator('.workspace-shell').count(), 1);
+  assert.equal(await page.evaluate(() => window.__downloadsShell === document.querySelector('.workspace-shell')), true);
+  assert.equal(await page.locator('[role="tab"][aria-selected="true"]').getAttribute('data-workspace-tab'), 'downloads');
+  assert.equal(await page.locator('.workspace-panel--docs[hidden]').count(), 1);
+  await page.locator('.downloads-back-link[data-link]').click();
+  await page.getByRole('heading', { name: '软件下载中心', exact: true }).waitFor();
+  assert.equal(await page.locator('.workspace-shell').count(), 1);
+  assert.equal(await page.locator('[role="tab"][aria-selected="true"]').getAttribute('data-workspace-tab'), 'downloads');
   await context.close();
 });
 
-test('[mocked/source evidence] Downloads detail SPA renders public metadata and links through mounted service routes', { timeout: 30_000 }, async () => {
+test('[mocked/source evidence] workspace tab switches keep one document and expose the canonical shell', { timeout: 35_000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await newPage(context);
+  await page.route('**/api/downloads/catalog', async (route) => {
+    await route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { software: [] } }),
+    });
+  });
+  await page.route('**/api/status', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, data: {
+      display_in_currency: true, quota_display_type: 'CNY', price: 7.2,
+      usd_exchange_rate: 7.2, custom_currency_exchange_rate: 1,
+      custom_currency_symbol: '¤', quota_per_unit: 500000,
+      model_marketplace_default: { vendor: '1', group: 'default' },
+    } }) });
+  });
+  await page.route('**/api/pricing', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      success: true, data: [], vendors: [], group_ratio: { default: 1 },
+      usable_group: { default: 'Default' }, supported_endpoint: {}, auto_groups: [],
+      video_resolution_dimensions: {},
+    }) });
+  });
+  await page.goto(`${baseUrl}/`, { waitUntil: 'domcontentloaded' });
+  await page.getByRole('heading', { name: '把接口能力，变成清晰的开发体验。', exact: true }).waitFor();
+  await page.evaluate(() => { window.__workspaceShell = document.querySelector('.workspace-shell'); });
+  await page.locator('[data-workspace-tab="pricing"]').click();
+  await page.waitForURL((url) => url.pathname === '/console/pricing');
+  await page.getByRole('heading', { name: '模型价格', exact: true }).first().waitFor();
+  assert.equal(await page.locator('.workspace-shell').count(), 1);
+  assert.equal(await page.evaluate(() => window.__workspaceShell === document.querySelector('.workspace-shell')), true);
+  assert.equal(await page.locator('[data-workspace-tab="pricing"]').getAttribute('aria-selected'), 'true');
+  assert.equal(await page.locator('.workspace-panel--home[hidden]').count(), 1);
+  assert.equal(await page.locator('.workspace-panel--docs[hidden]').count(), 1);
+  assert.equal(await page.locator('.workspace-panel--downloads[hidden]').count(), 1);
+  assert.equal(await page.locator('.site-header .brand-logo').count(), 2);
+  await context.close();
+});
+
+test('[mocked/source evidence] Downloads detail panel renders public metadata and links through mounted service routes', { timeout: 30_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   await context.addCookies([
     { name: 'hostile-session', value: 'must-not-forward', domain: '127.0.0.1', path: '/' },
@@ -695,7 +758,7 @@ test('[mocked/source evidence] Downloads detail SPA renders public metadata and 
   await context.close();
 });
 
-test('[mocked/source evidence] Downloads SPA renders empty and downstream error states', { timeout: 25_000 }, async () => {
+test('[mocked/source evidence] Downloads panel renders empty and downstream error states', { timeout: 25_000 }, async () => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await newPage(context);
   await page.route('**/api/downloads/catalog', async (route) => {
