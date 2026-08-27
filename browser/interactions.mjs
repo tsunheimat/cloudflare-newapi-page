@@ -500,6 +500,83 @@ test('both public Pricing URLs mount the canonical runtime and share the same re
   }
 });
 
+test('public Pricing is card-first before any toggle on desktop, laptop, and mobile, with table switching preserved', { timeout: 60_000 }, async () => {
+  const payload = {
+    success: true,
+    data: [{
+      model_name: 'initial card-first pricing model',
+      vendor_id: 1,
+      quota_type: 0,
+      model_ratio: 1,
+      completion_ratio: 2,
+      enable_groups: ['default'],
+    }],
+    vendors: [{ id: 1, name: 'Canonical vendor' }],
+    group_ratio: { default: 1 },
+    usable_group: { default: 'Default' },
+    supported_endpoint: {},
+    auto_groups: [],
+    video_resolution_dimensions: {},
+    pricing_version: 'browser-initial-card-v1',
+  };
+  const status = {
+    success: true,
+    data: {
+      display_in_currency: true,
+      quota_display_type: 'USD',
+      price: 7.2,
+      usd_exchange_rate: 7.2,
+      custom_currency_exchange_rate: 1,
+      custom_currency_symbol: '¤',
+      quota_per_unit: 1_000_000,
+      model_marketplace_default: { vendor: '1', group: 'default' },
+    },
+  };
+
+  for (const viewport of [
+    { name: 'desktop', width: 1440, height: 900 },
+    { name: 'laptop', width: 1042, height: 900 },
+    { name: 'mobile', width: 390, height: 844 },
+  ]) {
+    for (const pathname of ['/pricing', '/console/pricing']) {
+      const context = await browser.newContext({ viewport });
+      const page = await newPage(context);
+      await page.route('**/api/status', async (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(status),
+      }));
+      await page.route('**/api/pricing', async (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(payload),
+      }));
+
+      await page.goto(`${baseUrl}${pathname}`, { waitUntil: 'domcontentloaded' });
+      await page.locator('.pricing-page-shell').waitFor();
+      // Do not click a view control before this assertion: this is the
+      // customer-visible initial state regression.
+      await page.locator('.pricing-model-card').first().waitFor();
+      assert.ok(await page.locator('.pricing-model-card').count() > 0, `${viewport.name} ${pathname} has no initial cards`);
+      assert.equal(await page.locator('.pricing-model-table').count(), 0, `${viewport.name} ${pathname} starts in table view`);
+      const cardToggle = page.locator('.pricing-view-switch button[aria-label="卡片视图"]');
+      const tableToggle = page.locator('.pricing-view-switch button[aria-label="表格视图"]');
+      assert.equal(await cardToggle.getAttribute('aria-pressed'), 'true');
+      assert.equal(await tableToggle.getAttribute('aria-pressed'), 'false');
+
+      // The visitor can still switch to the canonical table and back.
+      await tableToggle.click();
+      await page.locator('.pricing-model-table').waitFor();
+      assert.equal(await page.locator('.pricing-model-card').count(), 0, `${viewport.name} ${pathname} table toggle kept cards visible`);
+      assert.equal(await tableToggle.getAttribute('aria-pressed'), 'true');
+      await cardToggle.click();
+      await page.locator('.pricing-model-card').first().waitFor();
+      assert.equal(await page.locator('.pricing-model-table').count(), 0, `${viewport.name} ${pathname} card toggle kept table visible`);
+      await context.close();
+    }
+  }
+});
+
 test('Pricing cards keep long mixed-language names and live price hierarchy readable at desktop and mobile widths', { timeout: 45_000 }, async () => {
   const payload = {
     success: true,
@@ -563,10 +640,6 @@ test('Pricing cards keep long mixed-language names and live price hierarchy read
     }));
     await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
     await page.locator('.pricing-page-shell').waitFor();
-    // The canonical runtime remembers the user's table/card preference. Make
-    // this regression deterministic by selecting the card view explicitly.
-    const cardView = page.getByRole('button', { name: '卡片视图', exact: true });
-    if (await cardView.count()) await cardView.click();
     await page.locator('.pricing-model-card').first().waitFor();
 
     const metrics = await page.locator('.pricing-model-card').evaluateAll((cards) => cards.map((card) => {

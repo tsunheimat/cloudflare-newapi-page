@@ -112,3 +112,19 @@ test('customer pricing cards have a deterministic hierarchy at laptop and mobile
   assert.match(app, /lower\.startsWith\('zh-hans'\)/);
   assert.match(app, /lower\.startsWith\('zh-hant'\)/);
 });
+
+test('public Pricing initializes the canonical runtime in card view at every public breakpoint', async () => {
+  const [_layout, canonical, app] = await sources;
+
+  // The mounted NewAPI component owns view state. Keep this contract tied to
+  // its initial state rather than a shell-side click or copied renderer.
+  assert.match(canonical, /\[o, i\] = z\.useState\(\s*"card"\s*\)/);
+  assert.match(canonical, /defaultViewMode:\s*"card"/);
+  assert.match(canonical, /onClick:\s*\(\) => y\("table"\)/);
+  assert.match(canonical, /onClick:\s*\(\) => y\("card"\)/);
+
+  // Both public aliases mount this same canonical bundle and do not replace
+  // its initial mode with a shell-side desktop table default.
+  assert.match(app, /function isPricingPath\(path\)[\s\S]*?\/console\/pricing'[\s\S]*?'\/pricing'/);
+  assert.match(app, /viewMode:\s*'card'/);
+});

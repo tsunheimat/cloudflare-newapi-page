@@ -191242,14 +191242,14 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
     };
   }, Uto = () => {
     const e = Kto(), t = v9e(), [r, n] = z.useState(!1), [o, i] = z.useState(
-      () => t ? "card" : "table"
+      "card"
     ), [c, s] = b.useState(dl), f = {
       ...e,
       showRatio: r,
       setShowRatio: n,
       viewMode: o,
       setViewMode: i,
-      defaultViewMode: t ? "card" : "table",
+      defaultViewMode: "card",
       pricingMode: c,
       setPricingMode: s
     };

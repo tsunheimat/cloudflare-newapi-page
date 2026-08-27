@@ -41,7 +41,9 @@ const state = {
   tokenUnit: 'M',
   showWithRecharge: true,
   pricingMode: 'group',
-  viewMode: pricingMobileMedia?.matches ? 'card' : 'table',
+  // The canonical NewAPI runtime is card-first at every public breakpoint;
+  // its own toggle remains the authority for switching to table view.
+  viewMode: 'card',
   advancedFiltersOpen: false,
 };
 
