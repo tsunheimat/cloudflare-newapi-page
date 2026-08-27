@@ -188632,7 +188632,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
                       onClick: () => J(re.name),
                       children: [
                         /* @__PURE__ */ a.jsx("span", { className: "pricing-group-name", children: re.name }),
-                        /* @__PURE__ */ a.jsx("span", { className: "pricing-group-rate", children: P(re.headline.key, re.headline.params) }),
+                        /* @__PURE__ */ a.jsx("span", { className: "pricing-group-rate", children: re.comparison.kind === "saving" ? /* @__PURE__ */ a.jsxs(a.Fragment, { children: [
+                          /* @__PURE__ */ a.jsx("span", { className: "pricing-group-price-prefix", children: P("{{discount}}折", { discount: re.discount }) }),
+                          /* @__PURE__ */ a.jsx("strong", { className: "pricing-group-saving-badge", children: P("省 {{percent}}%", { percent: re.comparison.percent }) })
+                        ] }) : P(re.headline.key, re.headline.params) }),
                         re.formula && /* @__PURE__ */ a.jsx("span", { className: "pricing-group-formula", children: P(re.formula.key, re.formula.params) }),
                         re.pricePercent != null && /* @__PURE__ */ a.jsx(
                           "span",
@@ -190056,7 +190059,10 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
                         f === N0 ? `${N("基础价格")} · 1x` : ie.usedGroup || N("分组价格"),
                         Oe && /* @__PURE__ */ a.jsx("small", { className: "pricing-card-comparison-formula", children: N(Oe.key, Oe.params) })
                       ] }),
-                      de.kind !== "official" && /* @__PURE__ */ a.jsx("strong", { children: N(me.key, me.params) })
+                      de.kind !== "official" && (de.kind === "saving" ? /* @__PURE__ */ a.jsxs(a.Fragment, { children: [
+                        /* @__PURE__ */ a.jsx("span", { className: "pricing-card-comparison-price-prefix", children: N("{{discount}}折", { discount: de.discount }) }),
+                        /* @__PURE__ */ a.jsx("strong", { className: "pricing-card-savings-badge", children: N("省 {{percent}}%", { percent: de.percent }) })
+                      ] }) : /* @__PURE__ */ a.jsx("strong", { children: N(me.key, me.params) }))
                     ]
                   }
                 )

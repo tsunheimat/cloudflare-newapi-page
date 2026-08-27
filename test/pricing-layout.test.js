@@ -141,6 +141,10 @@ test('in-card savings badge keeps a primary-blue, large, wrapping presentation c
   // presentation-only repair and cannot reintroduce the retired group badge.
   assert.match(canonical, /className:\s*`pricing-card-comparison is-\$\{de\.kind\}`/);
   assert.doesNotMatch(canonical, /pricing-group-discount/);
+  assert.match(canonical, /pricing-card-comparison-price-prefix/);
+  assert.match(canonical, /pricing-card-savings-badge/);
+  assert.match(canonical, /pricing-group-price-prefix/);
+  assert.match(canonical, /pricing-group-saving-badge/);
 
   const badgeRule = /body\.canonical-pricing-active \.pricing-card-comparison\.is-saving > strong\s*\{([\s\S]*?)\}/.exec(layout)?.[1] || '';
   assert.match(badgeRule, /display:\s*inline-flex/);
@@ -153,6 +157,8 @@ test('in-card savings badge keeps a primary-blue, large, wrapping presentation c
   assert.match(badgeRule, /word-break:\s*break-word/);
   assert.match(badgeRule, /white-space:\s*normal/);
   assert.match(badgeRule, /background:\s*var\(--semi-color-primary-light-default\)/);
+  assert.match(layout, /pricing-card-comparison-price-prefix[\s\S]*?color:\s*var\(--semi-color-text-3\)\s*!important/);
+  assert.match(layout, /pricing-group-saving-badge[\s\S]*?font-size:\s*clamp\(18px,/);
 });
 
 test('public Pricing initializes the canonical runtime in card view at every public breakpoint', async () => {

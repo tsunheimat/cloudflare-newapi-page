@@ -918,6 +918,40 @@ test('Pricing group cards move the name into the former discount slot in every l
       assert.ok(metrics.cardRight - metrics.nameRight < 20, `${language} group name should occupy the upper-right edge`);
       assert.ok(metrics.nameTop - metrics.cardTop < 20, `${language} group name should start in the card header`);
       assert.equal(metrics.overflow, false, `${language} group name must not overflow`);
+
+      const savingsBadge = card.locator('.pricing-group-saving-badge').first();
+      const pricePrefix = card.locator('.pricing-group-price-prefix').first();
+      assert.equal(await savingsBadge.count(), 1, `${language} group savings must be an independent badge`);
+      assert.equal(await pricePrefix.count(), 1, `${language} group discount prefix must remain separate`);
+      const savingsMetrics = await savingsBadge.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const prefix = element.closest('.pricing-group-rate').querySelector('.pricing-group-price-prefix');
+        const prefixStyle = getComputedStyle(prefix);
+        const color = style.color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--semi-color-primary)';
+        document.body.append(probe);
+        const primaryColor = getComputedStyle(probe).color;
+        probe.remove();
+        return {
+          text: element.textContent.trim(),
+          prefixText: prefix.textContent.trim(),
+          fontSize: Number.parseFloat(style.fontSize),
+          prefixFontSize: Number.parseFloat(prefixStyle.fontSize),
+          color: color ? color.slice(1).map(Number) : null,
+          primaryColor,
+          overflow: element.scrollWidth > element.clientWidth,
+          prefixColor: prefixStyle.color,
+        };
+      });
+      assert.match(savingsMetrics.text, language === 'en' ? /save\s+\d+(?:\.\d+)?%/i : /省\s*\d+(?:\.\d+)?%/);
+      assert.match(savingsMetrics.prefixText, language === 'en' ? /\/10 price/i : /折/);
+      assert.ok(savingsMetrics.fontSize >= 18, `${language} group savings badge must be large`);
+      assert.ok(savingsMetrics.fontSize >= savingsMetrics.prefixFontSize + 5, `${language} group savings must exceed prefix text`);
+      assert.ok(savingsMetrics.color && savingsMetrics.color[2] > savingsMetrics.color[0] && savingsMetrics.color[2] > savingsMetrics.color[1], `${language} group savings badge must be blue`);
+      assert.equal(`rgb(${savingsMetrics.color?.join(', ')})`, savingsMetrics.primaryColor, `${language} group savings badge must use the primary color token`);
+      assert.equal(savingsMetrics.overflow, false, `${language} group savings badge must not overflow`);
+      assert.notEqual(savingsMetrics.prefixColor, savingsMetrics.primaryColor, `${language} group discount prefix must remain neutral`);
     }
     await context.close();
   }
@@ -993,6 +1027,7 @@ test('in-card savings badge stays locale-correct, primary blue, large, and conta
         const style = getComputedStyle(element);
         const color = style.color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
         const secondary = comparison.querySelector('.pricing-card-comparison-formula');
+        const prefix = comparison.querySelector('.pricing-card-comparison-price-prefix');
         const probe = document.createElement('span');
         probe.style.color = 'var(--semi-color-primary)';
         document.body.append(probe);
@@ -1007,6 +1042,9 @@ test('in-card savings badge stays locale-correct, primary blue, large, and conta
           text: element.textContent.trim(),
           fontSize: Number.parseFloat(style.fontSize),
           secondaryFontSize: secondary ? Number.parseFloat(getComputedStyle(secondary).fontSize) : 0,
+          prefixFontSize: prefix ? Number.parseFloat(getComputedStyle(prefix).fontSize) : 0,
+          prefixText: prefix?.textContent.trim() || '',
+          prefixColor: prefix ? getComputedStyle(prefix).color : '',
           color: color ? color.slice(1).map(Number) : null,
           primaryColor,
           overflow: element.scrollWidth > element.clientWidth,
@@ -1017,15 +1055,56 @@ test('in-card savings badge stays locale-correct, primary blue, large, and conta
         };
       });
       assert.match(metrics.text, expected, `${viewport.name} ${language} savings text must stay locale-correct`);
+      assert.match(metrics.prefixText, language === 'en' ? /\/10 price/i : /折/, `${viewport.name} ${language} discount prefix must stay separate`);
       assert.ok(metrics.fontSize >= 18, `${viewport.name} ${language} savings badge must be at least 18px`);
-      assert.ok(metrics.fontSize >= metrics.secondaryFontSize + 5, `${viewport.name} ${language} savings badge must materially exceed secondary text`);
+      assert.ok(metrics.fontSize >= metrics.prefixFontSize + 5, `${viewport.name} ${language} savings badge must materially exceed discount prefix text`);
       assert.ok(metrics.color && metrics.color[2] > metrics.color[0] && metrics.color[2] > metrics.color[1], `${viewport.name} ${language} savings badge must be blue`);
       assert.equal(`rgb(${metrics.color?.join(', ')})`, metrics.primaryColor, `${viewport.name} ${language} savings badge must use the primary color token`);
+      assert.notEqual(metrics.prefixColor, metrics.primaryColor, `${viewport.name} ${language} discount prefix must remain neutral`);
       assert.equal(metrics.overflow, false, `${viewport.name} ${language} savings badge text must not overflow`);
       assert.equal(metrics.cardOverflow, false, `${viewport.name} ${language} card must not overflow`);
       assert.equal(metrics.withinComparison, true, `${viewport.name} ${language} savings badge must remain in comparison area`);
       assert.equal(metrics.withinCard, true, `${viewport.name} ${language} savings badge must remain within card bounds`);
       assert.equal(metrics.notCoveringFollowingContent, true, `${viewport.name} ${language} savings badge must not cover following card content`);
+    }
+
+    // Exercise the canonical table renderer as well: its comparison cell has
+    // the same computed savings semantics, with the discount prefix kept in
+    // a separate neutral node from the blue badge.
+    const tableToggle = page.locator('.pricing-view-switch button[aria-label="表格视图"]');
+    if (await tableToggle.count() > 0) {
+      await tableToggle.click();
+      await page.locator('.pricing-comparison-cell.is-saving').first().waitFor();
+      const tableComparison = page.locator('.pricing-comparison-cell.is-saving').first();
+      const tableMetrics = await tableComparison.evaluate((comparison) => {
+      const badge = comparison.querySelector('.pricing-save-badge');
+      const prefix = comparison.querySelector('strong');
+      const badgeStyle = getComputedStyle(badge);
+      const prefixStyle = getComputedStyle(prefix);
+      const color = badgeStyle.color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--semi-color-primary)';
+      document.body.append(probe);
+      const primaryColor = getComputedStyle(probe).color;
+      probe.remove();
+      return {
+        badgeText: badge.textContent.trim(),
+        prefixText: prefix.textContent.trim(),
+        badgeFontSize: Number.parseFloat(badgeStyle.fontSize),
+        prefixFontSize: Number.parseFloat(prefixStyle.fontSize),
+        color: color ? color.slice(1).map(Number) : null,
+        primaryColor,
+        prefixColor: prefixStyle.color,
+        overflow: comparison.scrollWidth > comparison.clientWidth,
+      };
+      });
+      assert.match(tableMetrics.badgeText, /省\s*50%/);
+      assert.match(tableMetrics.prefixText, /折/);
+      assert.ok(tableMetrics.badgeFontSize >= 18, 'table savings badge must be large');
+      assert.ok(tableMetrics.badgeFontSize >= tableMetrics.prefixFontSize + 5, 'table savings badge must exceed prefix text');
+      assert.equal(`rgb(${tableMetrics.color?.join(', ')})`, tableMetrics.primaryColor, 'table savings badge must use the primary color token');
+      assert.notEqual(tableMetrics.prefixColor, tableMetrics.primaryColor, 'table discount prefix must remain neutral');
+      assert.equal(tableMetrics.overflow, false, 'table savings comparison must not overflow');
     }
     await context.close();
   }
