@@ -5,12 +5,14 @@ import test from 'node:test';
 const LAYOUT_URL = new URL('../public/static/canonical-pricing-layout.css', import.meta.url);
 const CANONICAL_JS_URL = new URL('../public/static/canonical-pricing.js', import.meta.url);
 const APP_URL = new URL('../public/static/app.js', import.meta.url);
+const FIXTURE_URL = new URL('../src/fixtures/pricing.js', import.meta.url);
 
 const sources = Promise.all([
   readFile(LAYOUT_URL, 'utf8'),
   readFile(CANONICAL_JS_URL, 'utf8'),
   readFile(APP_URL, 'utf8'),
 ]);
+const fixtureSource = readFile(FIXTURE_URL, 'utf8');
 
 test('English Pricing layout contract wraps translated labels within the canonical panel', async () => {
   const [layout] = await sources;
@@ -61,4 +63,52 @@ test('layout companion is presentation-only and keeps canonical Pricing authorit
   assert.match(app, /function createPricingLanguageSelector/);
   // No formula/data source is introduced by this companion stylesheet.
   assert.doesNotMatch(layout, /group_ratio|quota_type|billing_expr|fixture|hardcode/i);
+});
+
+test('customer pricing cards have a deterministic hierarchy at laptop and mobile widths', async () => {
+  const [layout, canonical, app] = await sources;
+  const fixture = await fixtureSource;
+
+  // The card view is the canonical bundle's actual DOM seam. Keep the
+  // selectors tied to that runtime so a future bundle cannot silently fall
+  // back to a copied/fixture pricing renderer.
+  for (const selector of [
+    'pricing-model-card-header',
+    'pricing-card-price-block',
+    'pricing-card-price-row',
+    'pricing-card-comparison',
+    'pricing-card-comparison-formula',
+    'pricing-dynamic-card-prices',
+    'pricing-card-meta',
+  ]) {
+    assert.ok(canonical.includes(selector), selector);
+  }
+
+  // At the approximately 1042px customer viewport, cards retain a usable
+  // minimum rather than becoming three narrow table-like columns.
+  assert.match(layout, /\.pricing-card-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(100%,\s*380px\),\s*1fr\)/);
+  assert.match(layout, /\.pricing-model-card\s*\{[\s\S]*?overflow:\s*hidden/);
+  assert.match(layout, /\.pricing-model-card-header\s*>\s*\.flex\.items-start\s*\{[\s\S]*?grid-template-columns:\s*44px\s+minmax\(0,\s*1fr\)/);
+
+  // Names/badges, primary values, unit labels, and comparison/formula copy
+  // each have independent layout contracts; this prevents overlap without
+  // changing any value supplied by NewAPI.
+  assert.match(layout, /\.pricing-model-card-header[\s\S]*?\.pricing-model-name\s*\{[\s\S]*?flex:\s*1 1 100%/);
+  assert.match(layout, /\.pricing-card-price-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(92px,\s*max-content\)\s+minmax\(0,\s*1fr\)/);
+  assert.match(layout, /\.pricing-card-price-row\s+small\s*\{[\s\S]*?grid-column:\s*2/);
+  assert.match(layout, /\.pricing-card-comparison\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/);
+  assert.match(layout, /\.pricing-dynamic-card-prices\s+details\s*\{[\s\S]*?border-top:\s*1px dashed/);
+
+  // Mobile is explicitly one card per row and keeps the same value hierarchy.
+  assert.match(layout, /@media\s*\(max-width:\s*767px\)[\s\S]*?\.pricing-card-grid\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(layout, /@media\s*\(max-width:\s*767px\)[\s\S]*?\.pricing-card-price-row\s*\{[\s\S]*?minmax\(78px,\s*max-content\)/);
+
+  // Exercise the contract against a realistic payload shape containing
+  // mixed-language/long model names and a real dynamic billing expression.
+  assert.match(fixture, /model_name:\s*'demo-tiered-context'/);
+  assert.match(fixture, /billing_expr:\s*'/);
+  assert.match(fixture, /custom_currency_symbol:/);
+  assert.match(fixture, /supported_endpoint_types:/);
+  assert.match(app, /lower\.startsWith\('zh-hans'\)/);
+  assert.match(app, /lower\.startsWith\('zh-hant'\)/);
 });

@@ -500,6 +500,110 @@ test('both public Pricing URLs mount the canonical runtime and share the same re
   }
 });
 
+test('Pricing cards keep long mixed-language names and live price hierarchy readable at desktop and mobile widths', { timeout: 45_000 }, async () => {
+  const payload = {
+    success: true,
+    data: [
+      {
+        model_name: 'OpenAI 中文超長模型名稱 / gpt-4o-enterprise-preview-with-very-long-plan-name',
+        vendor_id: 1,
+        vendor_name: 'English Vendor / 中文供應商',
+        quota_type: 0,
+        model_ratio: 1.25,
+        completion_ratio: 2,
+        enable_groups: ['default'],
+        supported_endpoint_types: ['openai', 'responses'],
+        tags: 'Chat,Premium',
+      },
+      {
+        model_name: 'tiered-context-long-plan-名稱-32k',
+        vendor_id: 1,
+        quota_type: 0,
+        model_ratio: 0,
+        completion_ratio: 0,
+        enable_groups: ['default'],
+        billing_mode: 'tiered_expr',
+        billing_expr: 'v1:len <= 32000 ? tier("<= 32K", p * 0.8 + c * 3.2) : tier("> 32K", p * 1.6 + c * 6.4)|||when(header("x-priority") has "fast") * 2',
+        supported_endpoint_types: ['openai'],
+      },
+    ],
+    vendors: [{ id: 1, name: 'English Vendor / 中文供應商' }],
+    group_ratio: { default: 1.25 },
+    usable_group: { default: 'Default / 預設方案' },
+    supported_endpoint: {},
+    auto_groups: [],
+    video_resolution_dimensions: {},
+    pricing_version: 'browser-layout-regression-v1',
+  };
+
+  for (const viewport of [{ width: 1042, height: 900 }, { width: 390, height: 844 }]) {
+    const context = await browser.newContext({ viewport });
+    const page = await newPage(context);
+    await page.route('**/api/status', async (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: {
+          display_in_currency: true,
+          quota_display_type: 'USD',
+          price: 7.2,
+          usd_exchange_rate: 7.2,
+          custom_currency_exchange_rate: 1,
+          custom_currency_symbol: '¤',
+          quota_per_unit: 1_000_000,
+          model_marketplace_default: { vendor: '1', group: 'default' },
+        },
+      }),
+    }));
+    await page.route('**/api/pricing', async (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(payload),
+    }));
+    await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
+    await page.locator('.pricing-page-shell').waitFor();
+    // The canonical runtime remembers the user's table/card preference. Make
+    // this regression deterministic by selecting the card view explicitly.
+    const cardView = page.getByRole('button', { name: '卡片视图', exact: true });
+    if (await cardView.count()) await cardView.click();
+    await page.locator('.pricing-model-card').first().waitFor();
+
+    const metrics = await page.locator('.pricing-model-card').evaluateAll((cards) => cards.map((card) => {
+      const name = card.querySelector('.pricing-model-name');
+      const price = card.querySelector('.pricing-card-price-block');
+      const comparison = card.querySelector('.pricing-card-comparison');
+      const cardRect = card.getBoundingClientRect();
+      const nameRect = name?.getBoundingClientRect();
+      const priceRect = price?.getBoundingClientRect();
+      const comparisonRect = comparison?.getBoundingClientRect();
+      return {
+        width: cardRect.width,
+        cardScrollWidth: card.scrollWidth,
+        nameBottom: nameRect?.bottom,
+        priceTop: priceRect?.top,
+        priceBottom: priceRect?.bottom,
+        comparisonTop: comparisonRect?.top,
+        nameText: name?.textContent,
+      };
+    }));
+    assert.equal(metrics.length, 2);
+    for (const metric of metrics) {
+      assert.ok(metric.width > 0);
+      assert.ok(metric.cardScrollWidth <= metric.width + 1, `card overflow at ${viewport.width}px`);
+      assert.ok(metric.nameBottom <= metric.priceTop, 'model name overlaps price block');
+      assert.ok(metric.priceBottom >= metric.comparisonTop, 'comparison must follow the price block');
+      assert.match(metric.nameText, /中文|OpenAI|tiered/);
+    }
+    if (viewport.width <= 767) {
+      assert.ok(metrics.every((metric) => metric.width >= 320), 'mobile card is unexpectedly narrow');
+    } else {
+      assert.ok(metrics.every((metric) => metric.width >= 380), 'desktop card lost its readable minimum width');
+    }
+    await context.close();
+  }
+});
+
 test('public Pricing exposes the canonical seven-language switch on desktop and mobile', { timeout: 45_000 }, async () => {
   const languages = [
     ['zh-CN', '简体中文'],

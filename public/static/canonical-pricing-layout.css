@@ -127,6 +127,206 @@ body.canonical-pricing-active .dynamic-tier-price-item {
   white-space: normal;
 }
 
+/*
+ * Customer-facing card hierarchy.  The canonical bundle intentionally owns
+ * the model/pricing values and labels; these rules only give those existing
+ * nodes enough room and a predictable visual order at public breakpoints.
+ */
+body.canonical-pricing-active .pricing-card-grid {
+  /* A card should not become a miniature data table at laptop widths. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  gap: 16px;
+}
+
+body.canonical-pricing-active .pricing-model-card {
+  min-width: 0;
+  overflow: hidden;
+  padding: 20px;
+}
+
+/* Avatar and identity are separate columns; the identity may shrink freely. */
+body.canonical-pricing-active .pricing-model-card-header > .flex.items-start {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+body.canonical-pricing-active .pricing-model-card-header > .flex.items-start > .flex-1 {
+  min-width: 0;
+}
+
+/* Keep badges below the name instead of competing with a long model label. */
+body.canonical-pricing-active .pricing-model-card-header .flex.items-center.gap-2 {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+body.canonical-pricing-active .pricing-model-card-header .pricing-model-name {
+  display: block;
+  flex: 1 1 100%;
+  width: 100%;
+  max-width: none;
+  overflow: visible;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+body.canonical-pricing-active .pricing-model-card-header .pricing-model-vendor {
+  display: block;
+  width: 100%;
+  max-width: none;
+  margin-top: 5px;
+  overflow: visible;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+/* Price rows have a stable label column and a readable value column. */
+body.canonical-pricing-active .pricing-card-price-block {
+  margin-top: 16px;
+  border: 1px solid var(--semi-color-border);
+  padding: 14px 15px;
+}
+
+body.canonical-pricing-active .pricing-card-price-lines {
+  gap: 11px;
+}
+
+body.canonical-pricing-active .pricing-card-price-row {
+  grid-template-columns: minmax(92px, max-content) minmax(0, 1fr);
+  align-items: start;
+  gap: 8px 12px;
+}
+
+body.canonical-pricing-active .pricing-card-price-row > span {
+  padding-top: 2px;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+body.canonical-pricing-active .pricing-card-price-row strong {
+  display: block;
+  min-width: 0;
+  color: var(--semi-color-primary);
+  font-size: 15px;
+  font-weight: 760;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+body.canonical-pricing-active .pricing-card-price-row small {
+  display: block;
+  grid-column: 2;
+  min-width: 0;
+  margin-top: -4px;
+  color: var(--semi-color-text-3);
+  font-size: 10.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* Discount/group comparison is a distinct, compact summary below prices. */
+body.canonical-pricing-active .pricing-model-card > .pricing-card-price-block > .pricing-card-comparison,
+body.canonical-pricing-active .pricing-card-comparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  margin-top: 14px;
+  border-top: 1px solid var(--semi-color-border);
+  padding-top: 12px;
+}
+
+body.canonical-pricing-active .pricing-card-comparison > span {
+  min-width: 0;
+  color: var(--semi-color-text-2);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+body.canonical-pricing-active .pricing-card-comparison-formula {
+  display: block;
+  margin-top: 3px;
+  color: var(--semi-color-text-3) !important;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+body.canonical-pricing-active .pricing-card-comparison > strong {
+  justify-self: end;
+  color: var(--semi-color-primary);
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.35;
+  text-align: right;
+  white-space: normal;
+}
+
+/* Dynamic expressions retain every backend value, but read as secondary detail. */
+body.canonical-pricing-active .pricing-dynamic-card-prices {
+  min-width: 0;
+}
+
+body.canonical-pricing-active .pricing-dynamic-card-prices details {
+  margin-top: 10px;
+  border-top: 1px dashed var(--semi-color-border);
+  padding-top: 9px;
+}
+
+body.canonical-pricing-active .pricing-dynamic-card-prices details summary {
+  color: var(--semi-color-text-2);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+body.canonical-pricing-active .pricing-dynamic-card-prices details > *:not(summary) {
+  margin-top: 8px;
+}
+
+body.canonical-pricing-active .pricing-card-meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+body.canonical-pricing-active .pricing-card-tags,
+body.canonical-pricing-active .pricing-card-endpoints {
+  margin-top: 0;
+}
+
+body.canonical-pricing-active .pricing-card-ratio {
+  border-top: 1px solid var(--semi-color-border);
+  padding-top: 10px;
+}
+
+@media (max-width: 767px) {
+  body.canonical-pricing-active .pricing-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  body.canonical-pricing-active .pricing-model-card {
+    padding: 16px;
+  }
+
+  body.canonical-pricing-active .pricing-card-price-row {
+    grid-template-columns: minmax(78px, max-content) minmax(0, 1fr);
+    gap: 6px 10px;
+  }
+
+  body.canonical-pricing-active .pricing-card-price-row strong {
+    font-size: 14px;
+  }
+}
+
 @media (max-width: 767px) {
   /* Keep the mobile header/action row usable with longer English labels. */
   .pricing-language-bar {
