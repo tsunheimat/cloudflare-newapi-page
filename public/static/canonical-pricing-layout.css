@@ -34,6 +34,20 @@ body.canonical-pricing-active :is(.pricing-vendor-chip,.pricing-group-card,.pric
   max-width: 100%;
 }
 
+/* Keep the tax status visible beside the price-list heading without competing
+ * with the live model count or the mode switch. */
+body.canonical-pricing-active .pricing-tax-note {
+  display: inline-flex;
+  max-width: 100%;
+  margin-top: 7px;
+  color: var(--semi-color-text-2);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
 body.canonical-pricing-active :is(.pricing-vendor-chip > span:nth-child(2),.pricing-vendor-name,
   .pricing-group-name,.pricing-model-name,.pricing-model-vendor) {
   min-width: 0;

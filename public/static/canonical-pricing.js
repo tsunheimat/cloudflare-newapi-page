@@ -188579,7 +188579,8 @@ In order to be iterable, non-array objects must have a [Symbol.iterator]() metho
               /* @__PURE__ */ a.jsxs("div", { className: "pricing-price-list-title-row", children: [
                 /* @__PURE__ */ a.jsx("h2", { children: P("模型价格") }),
                 /* @__PURE__ */ a.jsx(cr, { color: "blue", shape: "circle", children: P("共 {{count}} 个模型", { count: i.length }) })
-              ] })
+              ] }),
+              /* @__PURE__ */ a.jsx("div", { className: "pricing-tax-note", role: "note", children: P("价格均已含税") })
             ] }),
             /* @__PURE__ */ a.jsxs(
               "div",

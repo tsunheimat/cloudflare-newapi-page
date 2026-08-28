@@ -1705,6 +1705,7 @@ const e = {
   官方价: "Official price",
   官方价格: "Official price",
   官方价格为上游配置的原始美元基础价: "Official price is the upstream configured USD base price",
+  价格均已含税: "All prices include tax",
   "官方价格按 $1 = ￥7 折算": "Official price is converted at $1 = ¥7",
   官方文档: "Official documentation",
   官方模型同步: "Official models sync",

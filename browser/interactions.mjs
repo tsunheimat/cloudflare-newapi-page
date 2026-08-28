@@ -677,6 +677,87 @@ test('Pricing cards keep long mixed-language names and live price hierarchy read
   }
 });
 
+test('Pricing price-list heading keeps localized tax note and live formula hierarchy', { timeout: 45_000 }, async () => {
+  const payload = {
+    success: true,
+    data: [{
+      model_name: 'live-tax-note-regression-model',
+      vendor_id: 1,
+      quota_type: 0,
+      model_ratio: 1,
+      completion_ratio: 2,
+      enable_groups: ['default'],
+    }],
+    vendors: [{ id: 1, name: 'Tax note vendor' }],
+    group_ratio: { default: 1 },
+    usable_group: { default: 'Default' },
+    supported_endpoint: {},
+    auto_groups: [],
+    video_resolution_dimensions: {},
+    pricing_version: 'browser-tax-note-v1',
+  };
+  const status = {
+    success: true,
+    data: {
+      display_in_currency: true,
+      quota_display_type: 'CNY',
+      price: 0.04,
+      usd_exchange_rate: 7.2,
+      custom_currency_exchange_rate: 1,
+      custom_currency_symbol: '¤',
+      quota_per_unit: 1_000_000,
+      model_marketplace_default: { vendor: '1', group: 'default' },
+    },
+  };
+
+  for (const viewport of [
+    { name: 'desktop', width: 1042, height: 900 },
+    { name: 'mobile', width: 390, height: 844 },
+  ]) {
+    for (const [language, expectedTaxNote] of [
+      ['zh-CN', '价格均已含税'],
+      ['zh-TW', '價格均已含稅'],
+      ['en', 'All prices include tax'],
+    ]) {
+      const context = await browser.newContext({ viewport });
+      await context.addInitScript((lng) => localStorage.setItem('i18nextLng', lng), language);
+      const page = await newPage(context);
+      await page.route('**/api/status', async (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(status),
+      }));
+      await page.route('**/api/pricing', async (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(payload),
+      }));
+      await page.goto(`${baseUrl}/pricing`, { waitUntil: 'domcontentloaded' });
+      await page.locator('.pricing-page-shell').waitFor();
+      await page.locator('.pricing-tax-note').waitFor();
+      assert.equal((await page.locator('.pricing-tax-note').textContent()).trim(), expectedTaxNote);
+      assert.equal(await page.locator('[data-pricing-mode="group"]').getAttribute('aria-pressed'), 'true');
+      const evidence = await page.locator('.pricing-price-list-card').evaluate((card) => {
+        const heading = card.querySelector('.pricing-price-list-title-row h2');
+        const tax = card.querySelector('.pricing-tax-note');
+        const formula = document.querySelector('.pricing-rule-summary');
+        const headingRect = heading.getBoundingClientRect();
+        const taxRect = tax.getBoundingClientRect();
+        return {
+          taxFits: tax.scrollWidth <= tax.clientWidth + 1,
+          headingBottom: headingRect.bottom,
+          taxTop: taxRect.top,
+          formula: formula?.textContent || '',
+        };
+      });
+      assert.ok(evidence.taxFits, `${viewport.name} ${language} tax note overflows`);
+      assert.ok(evidence.taxTop >= evidence.headingBottom);
+      assert.match(evidence.formula, /0\.04\s*CNY\/USD/);
+      await context.close();
+    }
+  }
+});
+
 test('public Pricing exposes the canonical seven-language switch on desktop and mobile', { timeout: 45_000 }, async () => {
   const languages = [
     ['zh-CN', '简体中文'],

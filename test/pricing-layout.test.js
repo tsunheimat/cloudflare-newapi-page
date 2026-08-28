@@ -36,6 +36,7 @@ test('English Pricing layout contract wraps translated labels within the canonic
     '.pricing-search-actions',
     '.pricing-toolbar-actions',
     '.pricing-price-list-title-row',
+    '.pricing-tax-note',
     '.pricing-comparison-cell',
     '.pricing-save-badge',
     '.sbg-badge',
@@ -48,6 +49,7 @@ test('English Pricing layout contract wraps translated labels within the canonic
   assert.match(layout, /\.pricing-toolbar-actions\s*\{[^}]*flex-wrap:\s*wrap/);
   assert.match(layout, /@media\s*\(max-width:\s*767px\)/);
   assert.match(layout, /\.pricing-price-list-title-row[\s\S]*?flex-wrap:\s*wrap/);
+  assert.match(layout, /\.pricing-tax-note\s*\{[\s\S]*?overflow-wrap:\s*anywhere/);
 });
 
 test('layout companion is presentation-only and keeps canonical Pricing authority', async () => {
@@ -60,6 +62,7 @@ test('layout companion is presentation-only and keeps canonical Pricing authorit
   assert.match(app, /canonicalPricingScriptPromise/);
   assert.match(canonical, /__mountCanonicalPricing/);
   assert.match(canonical, /\/api\/pricing/);
+  assert.match(canonical, /className: "pricing-tax-note"/);
   assert.match(app, /function createPricingLanguageSelector/);
   // No formula/data source is introduced by this companion stylesheet.
   assert.doesNotMatch(layout, /group_ratio|quota_type|billing_expr|fixture|hardcode/i);
